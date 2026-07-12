@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StockWay — Neon Pulse</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #0a0c10; font-family: 'Segoe UI', system-ui, sans-serif; overflow: hidden; user-select: none; -webkit-app-region: drag; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(circle at 50% 35%, rgba(56,189,248,0.14), transparent 55%); pointer-events: none; }
+    .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 18px; }
+    .pulse-ring { width: 96px; height: 96px; border-radius: 50%; display: grid; place-items: center; position: relative; }
+    .pulse-ring::before, .pulse-ring::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(56,189,248,0.35); animation: ripple 2.4s ease-out infinite; }
+    .pulse-ring::after { animation-delay: 1.2s; }
+    @keyframes ripple { 0% { transform: scale(0.85); opacity: 0.8; } 100% { transform: scale(1.45); opacity: 0; } }
+    .pulse-core { width: 72px; height: 72px; border-radius: 20px; background: #0f1419; border: 1px solid rgba(56,189,248,0.25); box-shadow: 0 0 32px rgba(56,189,248,0.2); overflow: hidden; }
+    .pulse-core canvas { width: 100%; height: 100%; display: block; }
+    .logo { font-size: 34px; font-weight: 900; letter-spacing: -1px; color: #e8f4ff; text-shadow: 0 0 24px rgba(56,189,248,0.35); }
+    .ver { font-size: 11px; font-weight: 600; letter-spacing: 4px; color: #38bdf8; text-transform: uppercase; opacity: 0.7; }
+    .status { font-size: 13px; color: #7dd3fc; min-height: 20px; -webkit-app-region: no-drag; }
+    .wave-panel { width: 280px; height: 72px; border-radius: 16px; background: rgba(15,20,25,0.9); border: 1px solid rgba(56,189,248,0.15); box-shadow: 0 0 40px rgba(56,189,248,0.08); overflow: hidden; -webkit-app-region: no-drag; }
+    .wave-panel canvas { width: 100%; height: 100%; display: block; }
+    .tagline { font-size: 10px; color: #475569; letter-spacing: 2px; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="pulse-ring"><div class="pulse-core"><canvas id="mini" width="144" height="144"></canvas></div></div>
+    <div class="logo">StockWay</div>
+    <div class="ver">Simulator v1.0.0</div>
+    <div class="status" id="status">Starting up…</div>
+    <div class="wave-panel"><canvas id="wave" width="560" height="144"></canvas></div>
+    <div class="tagline">Paper Trade · Live Data · Real Practice</div>
+  </div>
+  <script>
+    function makeLine(n, start) {
+      const pts = [start];
+      for (let i = 1; i < n; i++) pts.push(pts[i-1] + (Math.random() - 0.48) * 3.2);
+      return pts;
+    }
+    function drawLine(canvas, pts, color, glow) {
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height, pad = 12;
+      ctx.clearRect(0, 0, w, h);
+      const mn = Math.min(...pts), mx = Math.max(...pts), rg = Math.max(0.01, mx - mn);
+      const y = v => pad + (h - pad * 2) - ((v - mn) / rg) * (h - pad * 2);
+      const step = (w - pad * 2) / (pts.length - 1);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = glow ? 3 : 2;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = glow ? 14 : 8;
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const x = pad + i * step;
+        i === 0 ? ctx.moveTo(x, y(p)) : ctx.lineTo(x, y(p));
+      });
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      const lx = pad + (pts.length - 1) * step;
+      const ly = y(pts.at(-1));
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(lx, ly, glow ? 5 : 4, 0, Math.PI * 2);
+      ctx.fill();
+      const grad = ctx.createLinearGradient(0, pad, 0, h - pad);
+      grad.addColorStop(0, color.replace('1)', '0.18)').replace('rgb', 'rgba').replace('#38bdf8', 'rgba(56,189,248,0.18)'));
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = 'rgba(56,189,248,0.12)';
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const x = pad + i * step;
+        i === 0 ? ctx.moveTo(x, y(p)) : ctx.lineTo(x, y(p));
+      });
+      ctx.lineTo(pad + (pts.length - 1) * step, h - pad);
+      ctx.lineTo(pad, h - pad);
+      ctx.closePath();
+      ctx.fill();
+    }
+    function mount(id, count, interval, glow) {
+      const canvas = document.getElementById(id);
+      let pts = makeLine(count, 50);
+      let last = performance.now();
+      (function frame(now) {
+        if (now - last > interval) {
+          pts.push(pts.at(-1) + (Math.random() - 0.46) * 3.5);
+          if (pts.length > count) pts.shift();
+          last = now;
+        }
+        drawLine(canvas, pts, '#38bdf8', glow);
+        requestAnimationFrame(frame);
+      })(0);
+    }
+    mount('mini', 24, 420, true);
+    mount('wave', 48, 280, false);
+  </script>
+</body>
+</html>

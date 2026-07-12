@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net https://unpkg.com 'unsafe-inline'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://query1.finance.yahoo.com https://finnhub.io; frame-ancestors 'none'; base-uri 'self'; form-action 'self'">
+  <title>StockWay — Paper Trade Simulator</title>
+  <link rel="icon" href="assets/icon.ico?v=1.0.0" sizes="any">
+  <link rel="icon" href="assets/icon.svg?v=1.0.0" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css?v=1.0.7">
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script>
+    if (typeof LightweightCharts === 'undefined') {
+      document.write('<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"><\/script>');
+    }
+    window.__STOCKSTAY_BOOT = Date.now();
+    if (/Electron/i.test(navigator.userAgent)) document.documentElement.classList.add('electron');
+    if (location.protocol === 'file:') {
+      document.addEventListener('DOMContentLoaded', function() {
+        document.body.innerHTML = '<div style="font-family:system-ui;background:#0b0e11;color:#e8eaed;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:40px"><div style="max-width:520px;text-align:center"><h1 style="color:#ef5350;margin-bottom:16px">Cannot run from file://</h1><p style="color:#8b949e;line-height:1.6;margin-bottom:24px">StockWay must be started through a local server.<br><br><strong>Double-click <code style="background:#1a1f27;padding:4px 8px;border-radius:4px">START HERE.bat</code></strong> in the StockWay folder.<br>Do NOT open index.html directly.</p></div></div>';
+      });
+    }
+  </script>
+</head>
+<body>
+  <div id="nav-drawer-overlay" class="nav-drawer-overlay hidden" aria-hidden="true"></div>
+  <div class="app-shell">
+    <!-- Left sidebar -->
+    <aside class="sidebar-left" id="sidebar-left">
+      <div class="sidebar-left-resize" id="sidebar-left-resize" role="separator" aria-orientation="vertical" aria-label="Resize navigation panel" title="Drag to resize · double-click to reset"></div>
+      <div class="brand-block">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 64 64" role="img" focusable="false">
+              <rect class="brand-tile" x="4" y="4" width="56" height="56" rx="14"/>
+              <g class="brand-candles" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round">
+                <path d="M20 18v8M20 38v8"/>
+                <rect x="16" y="26" width="8" height="12" rx="1.5" fill="#fff" stroke="none"/>
+                <path d="M32 14v10M32 36v14"/>
+                <rect x="28" y="24" width="8" height="12" rx="1.5" fill="#fff" stroke="none" opacity="0.92"/>
+                <path d="M44 22v6M44 40v6"/>
+                <rect x="40" y="28" width="8" height="12" rx="1.5" fill="#fff" stroke="none" opacity="0.85"/>
+              </g>
+            </svg>
+          </div>
+          <div class="brand-copy">
+            <div class="brand-name-row">
+              <div class="brand-name">StockWay</div>
+              <div class="feed-status" id="feed-status" data-gloss="feed-status">
+                <span class="feed-live-pill loading" id="feed-live-pill">
+                  <span class="feed-live-dot" aria-hidden="true"></span>
+                  <span id="feed-live-label">Sync</span>
+                </span>
+              </div>
+            </div>
+            <div class="brand-sub-row">
+              <div class="brand-sub">Paper Trade Simulator</div>
+              <span class="feed-live-detail" id="feed-status-detail">Starting…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-label">Workspace</div>
+        <div class="nav-group">
+          <button class="nav-item active" data-view="dashboard">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5z"/></svg></span>
+            <span>Dashboard</span>
+          </button>
+          <button class="nav-item" data-view="trade">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M4 19V5M4 19h16"/><path d="M8 16v-5M12 16V8M16 16v-3"/></svg></span>
+            <span>Trade</span>
+          </button>
+          <button class="nav-item" data-view="portfolio">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></span>
+            <span>Portfolio</span>
+          </button>
+          <button class="nav-item" data-view="listings">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M4 7h16M4 12h16M4 17h10"/></svg></span>
+            <span>Listings</span>
+          </button>
+        </div>
+        <div class="nav-label">Firm</div>
+        <div class="nav-group">
+          <button class="nav-item" data-view="events">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span>
+            <span>World Events</span>
+          </button>
+          <button class="nav-item" data-view="perks">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M13 3 5 14h6l-1 7 9-12h-6l1-6z"/></svg></span>
+            <span>Perks</span>
+          </button>
+          <button class="nav-item" data-view="staff">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.5"/><path d="M3 19c0-3 3-5 6-5s6 2 6 5M14 19c.3-2 2-3.5 4.5-3.5 1.8 0 3.2.8 3.5 2.5"/></svg></span>
+            <span>Staff</span> <span class="nav-badge" id="staff-badge"></span>
+          </button>
+          <button class="nav-item" data-view="finance">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="10" width="4" height="10" rx="1"/><rect x="10" y="6" width="4" height="14" rx="1"/><rect x="16" y="3" width="4" height="17" rx="1"/></svg></span>
+            <span>Financing</span>
+          </button>
+          <button class="nav-item" data-view="blackmarket">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 12 12 4l9 8-9 8-9-8z"/><path d="M9 12h6M12 9v6"/></svg></span>
+            <span>Black Market</span>
+          </button>
+        </div>
+        <div class="nav-label">Progress</div>
+        <div class="nav-group">
+          <button class="nav-item" data-view="achievements">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M8 4h8v3a4 4 0 0 1-8 0V4z"/><path d="M8 7H5a2 2 0 0 0 2 4M16 7h3a2 2 0 0 1-2 4"/><path d="M12 11v4M9 21h6M10 15h4v3a2 2 0 0 1-4 0v-3z"/></svg></span>
+            <span>Achievements</span> <span class="nav-badge" id="ach-badge"></span>
+          </button>
+          <button class="nav-item" data-view="vault">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/><path d="M7 8V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/><path d="M9 13h6M12 10v6"/></svg></span>
+            <span>Trophy Vault</span>
+          </button>
+          <button class="nav-item" data-view="collection">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M5 5h6v6H5zM13 5h6v6h-6zM5 13h6v6H5zM13 13h6v6h-6z"/></svg></span>
+            <span>Collection Log</span>
+          </button>
+          <button class="nav-item" data-view="ai">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="5" y="7" width="14" height="11" rx="3"/><circle cx="9.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><circle cx="14.5" cy="12" r="1.2" fill="currentColor" stroke="none"/><path d="M9 4h6M12 4v3"/></svg></span>
+            <span>AI Advisor</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="watchlist-block">
+        <div class="block-title">Watchlist <button class="btn-icon" id="btn-add-watch" title="Add current symbol">+</button></div>
+        <div id="watchlist" class="watchlist"></div>
+        <div class="block-title" style="margin-top:10px">Triggered alerts</div>
+        <div id="triggered-alerts-list" class="alert-history-list"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button type="button" class="user-chip" id="user-chip" title="Edit profile in Settings">
+          <div class="avatar" id="user-avatar" aria-hidden="true">T</div>
+          <div class="user-meta">
+            <div class="user-name" id="user-name">Paper Trader</div>
+            <div class="user-cosmetic-badge hidden" id="user-cosmetic-badge"></div>
+            <div class="user-tier" id="player-tier">Unknown Trader · REP 0</div>
+          </div>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main-area">
+      <header class="top-bar">
+        <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open menu">☰</button>
+        <div class="top-stats">
+          <div class="stat-cell" data-gloss="cash"><span class="stat-lbl">Cash</span><span class="stat-num" id="cash">$500</span></div>
+          <div class="stat-cell equity-cell has-stat-popover" id="equity-stat-cell" tabindex="0" aria-describedby="equity-popover">
+            <span class="stat-lbl">Equity</span><span class="stat-num" id="equity">$500</span>
+          </div>
+          <div class="stat-cell" data-gloss="pnl"><span class="stat-lbl">P&amp;L</span><span class="stat-num" id="pnl">$0</span></div>
+          <div class="stat-cell" data-gloss="buying-power"><span class="stat-lbl">Buying Power</span><span class="stat-num" id="buying-power">$500</span></div>
+          <div class="stat-cell rep-cell has-stat-popover" id="rep-stat-cell" tabindex="0" aria-describedby="rep-popover">
+            <span class="stat-lbl">REP <span class="rep-rank" id="rep-rank">Newcomer</span></span>
+            <span class="stat-num" id="reputation">0</span>
+          </div>
+        </div>
+
+        <div class="top-center">
+          <div class="day-phase-block" id="day-phase-block" data-gloss="day-phase">
+            <div class="day-phase-row">
+              <span class="day-tag" id="market-day">DAY 1</span>
+              <span class="phase-tag" id="market-phase">Pre-Market</span>
+              <span class="macro-fed" id="macro-fed" data-gloss="fed-rate">Fed 4.50%</span>
+            </div>
+            <div class="phase-bar"><div class="phase-bar-fill" id="phase-bar-fill"></div></div>
+          </div>
+          <span id="market-clock" class="clock-readout">9:30 AM</span>
+          <span class="market-badge open" id="market-status" data-gloss="market-status">OPEN</span>
+        </div>
+
+        <div class="top-toolbar">
+          <div class="speed-group" data-gloss="game-speed">
+            <button type="button" class="speed-btn active" data-speed="1">1x</button>
+            <button type="button" class="speed-btn" data-speed="2">2x</button>
+            <button type="button" class="speed-btn" data-speed="5">5x</button>
+            <button type="button" class="speed-btn" data-speed="10">10x</button>
+          </div>
+          <div class="toolbar-cluster" role="toolbar" aria-label="Desk controls">
+            <button class="tb-btn" id="btn-help" title="Help">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1.9-1.1 1.8M12 17h.01"/></svg>
+            </button>
+            <button class="tb-btn" id="btn-refresh" title="Refresh quotes">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/></svg>
+            </button>
+            <button class="tb-btn" id="btn-pause" title="Pause / resume">
+              <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="3.5" height="14" rx="1"/><rect x="13.5" y="5" width="3.5" height="14" rx="1"/></svg>
+              <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5-11-6.5z"/></svg>
+            </button>
+            <span class="tb-sep"></span>
+            <button class="tb-btn" id="btn-save" title="Save">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M5 4h11l3 3v13H5V4z"/><path d="M8 4v5h8V4M8 20v-7h8v7"/></svg>
+            </button>
+            <button class="tb-btn" id="btn-settings" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V19a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H5a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V5a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H19a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+              </svg>
+            </button>
+            <button class="tb-btn tb-danger" id="btn-reset" title="Reset save">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M7 7l1 13h8l1-13"/></svg>
+            </button>
+            <button class="tb-btn tb-danger" id="btn-quit" title="Quit StockWay">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M10 6H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4"/><path d="M15 16l4-4-4-4M19 12H9"/></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+      <div id="margin-stress-banner" class="margin-stress-banner hidden" role="status" data-gloss="margin-stress"></div>
+
+      <div class="market-ticker" aria-hidden="true">
+        <div class="ticker-track" id="ticker-track"></div>
+      </div>
+
+      <div id="api-notice" class="api-notice hidden">
+        Quote feed not connected yet — the desk will use simulated seed prices until a proxy or desktop app is available.
+      </div>
+
+      <!-- Dashboard -->
+      <section class="view-panel active" id="view-dashboard">
+        <div class="dashboard-view">
+          <div class="dash-welcome">
+            <div>
+              <h2>Welcome to the desk.</h2>
+                  <p class="muted-text">Turn $500 into a trading empire — live starting prices, accelerated days, staff & leverage.</p>
+            </div>
+            <div class="dash-quick">
+              <button class="btn btn-accent" data-goto="trade">Open Trade Desk</button>
+              <button class="btn" data-goto="listings">Browse Listings</button>
+              <button class="btn" data-goto="finance">Financing</button>
+            </div>
+          </div>
+          <div class="dash-challenge" id="dash-challenge"></div>
+          <div class="dash-stats" id="dash-stats"></div>
+          <div class="dash-charts">
+            <div class="dash-card">
+              <div class="dash-card-head">
+                <span>Net Worth Live</span>
+                <span class="up" id="dash-equity-delta">+$0</span>
+              </div>
+              <canvas id="equity-chart" width="600" height="160"></canvas>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-head"><span>Today's Challenge</span></div>
+              <div id="dash-challenge-detail"></div>
+            </div>
+          </div>
+          <div class="dash-bottom">
+            <div class="dash-card">
+              <div class="dash-card-head"><span>Recent Flips</span></div>
+              <div id="dash-recent"></div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-head"><span>Firm Snapshot</span></div>
+              <div id="dash-firm"></div>
+            </div>
+            <div class="dash-card">
+              <div class="dash-card-head"><span>Best Runs</span></div>
+              <div id="dash-leaderboard"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Trade view -->
+      <section class="view-panel" id="view-trade">
+        <div class="symbol-header">
+          <div class="symbol-identity">
+            <div class="sym-mark" id="chart-mark">A</div>
+            <div class="symbol-copy">
+              <div class="symbol-title-row">
+                <h2 id="chart-symbol">AAPL</h2>
+                <span class="symbol-name" id="chart-name">Apple</span>
+              </div>
+              <div class="symbol-tags" id="chart-tags"></div>
+              <div class="symbol-meta-row" id="chart-meta-row"></div>
+              <div class="position-summary" id="position-summary"></div>
+            </div>
+          </div>
+          <div class="symbol-price-block">
+            <div class="big-price" id="chart-price">$0.00</div>
+            <div class="price-change" id="chart-change">+0.00%</div>
+          </div>
+          <div class="symbol-actions">
+            <div class="symbol-search-row">
+              <input type="text" id="symbol-search" placeholder="Search symbol…" maxlength="12">
+              <button class="btn btn-accent" id="btn-search">Go</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-toolbar">
+          <div class="chart-toolbar-left">
+            <div class="tf-group" role="toolbar" aria-label="Chart range">
+              <button class="tf-btn active" data-res="1D">1D</button>
+              <button class="tf-btn" data-res="5D">5D</button>
+              <button class="tf-btn" data-res="1M">1M</button>
+              <button class="tf-btn" data-res="6M">6M</button>
+              <button class="tf-btn" data-res="YTD">YTD</button>
+              <button class="tf-btn" data-res="1Y">1Y</button>
+              <button class="tf-btn" data-res="5Y">5Y</button>
+              <button class="tf-btn" data-res="MAX">MAX</button>
+            </div>
+            <div class="zoom-group" role="toolbar" aria-label="Chart zoom">
+              <button type="button" class="zoom-btn" id="chart-zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+              <button type="button" class="zoom-btn" id="chart-zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+              <button type="button" class="zoom-btn zoom-reset" id="chart-zoom-reset" title="Reset zoom" aria-label="Reset zoom">Reset</button>
+            </div>
+          </div>
+          <div class="chart-toolbar-right">
+            <div class="chart-tabs">
+              <button class="chart-tab active">Chart</button>
+              <button class="chart-tab" id="tab-news">News</button>
+              <button class="chart-tab" id="tab-stats">Stats</button>
+            </div>
+            <div class="symbol-action-btns">
+              <button type="button" class="sym-icon-btn" id="btn-price-alert" title="Set price alert">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M6 9a6 6 0 0 1 12 0c0 7 3 7 3 9H3c0-2 3-2 3-9"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>
+              </button>
+              <button type="button" class="btn-watchlist" id="btn-watch-symbol">
+                <span aria-hidden="true">+</span> Add to watchlist
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="chart-container" class="chart-box"></div>
+        <div id="ai-summary-panel" class="ai-summary-panel hidden"></div>
+        <div id="news-panel" class="news-panel hidden"></div>
+        <div id="stats-panel" class="stats-panel hidden">
+          <div class="stats-grid" id="stats-grid"></div>
+        </div>
+
+        <div class="trade-bar">
+          <label class="trade-field"><span>Shares</span><input type="number" id="quick-shares" value="1" min="1" title="Scroll to adjust shares"></label>
+          <select id="order-type">
+            <option value="market">Market</option>
+            <option value="limit">Limit</option>
+          </select>
+          <input type="number" id="limit-price" class="hidden" placeholder="Limit $" step="0.01">
+          <label class="trade-field" data-gloss="stop-loss"><span>SL</span><input type="number" id="stop-loss" placeholder="Stop $" step="0.01" title="Scroll to adjust stop loss"></label>
+          <label class="trade-field" data-gloss="take-profit"><span>TP</span><input type="number" id="take-profit" placeholder="Target $" step="0.01" title="Scroll to adjust take profit"></label>
+          <button class="btn btn-long" id="btn-quick-long">Buy Long</button>
+          <button class="btn btn-short" id="btn-quick-short">Short</button>
+          <button class="btn" id="btn-quick-sell">Sell / Cover</button>
+        </div>
+        <div class="recent-trades-strip" id="recent-trades-strip"></div>
+      </section>
+
+      <!-- Other views -->
+      <section class="view-panel" id="view-portfolio"><div id="portfolio-full"></div></section>
+      <section class="view-panel" id="view-listings">
+        <div class="listings-view">
+          <header class="listings-hero">
+            <div>
+              <h2 class="listings-title">Deal desk</h2>
+              <p class="listings-sub">Off-market asks, mispriced lots, and live quotes — snipe before the tape catches up.</p>
+            </div>
+            <div class="listings-hero-actions">
+              <button type="button" class="btn listings-refresh-btn" id="listings-refresh" title="Refresh deal desk quotes">
+                <svg class="listings-refresh-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.6-6.3"/><path d="M21 3v6h-6"/></svg>
+                <span class="listings-refresh-label">Refresh</span>
+              </button>
+              <span class="listings-meta" id="listings-meta"></span>
+            </div>
+          </header>
+          <div class="listings-toolbar">
+            <div class="listings-search-wrap">
+              <input type="text" id="listing-search" placeholder="Search Ford, Honda, Adidas, penny stocks…">
+              <button class="btn btn-accent" id="listing-search-go">Search</button>
+            </div>
+            <select id="listings-sort" class="listings-sort" title="Sort listings">
+              <option value="deals">Best deals first</option>
+              <option value="az">Symbol A → Z</option>
+              <option value="za">Symbol Z → A</option>
+              <option value="price-desc">Price high → low</option>
+              <option value="price-asc">Price low → high</option>
+              <option value="change-desc">% change high → low</option>
+              <option value="change-asc">% change low → high</option>
+              <option value="sector">Sector A → Z</option>
+            </select>
+          </div>
+          <div id="listing-search-results" class="listing-search-results hidden"></div>
+          <div id="listings-full" class="listings-board"></div>
+          <button class="btn listings-show-more hidden" id="listings-show-more">Show more listings</button>
+        </div>
+      </section>
+      <section class="view-panel" id="view-events">
+        <div class="events-view">
+          <header class="events-hero">
+            <div>
+              <h2 class="events-title">World Events</h2>
+              <p class="events-sub">Live wire headlines and simulated desk briefs that move the tape. Expand a card for the full write-up — News Wire unlocks in-depth sim stories.</p>
+            </div>
+            <div class="events-legend" aria-hidden="true">
+              <span class="events-legend-item"><span class="feed-dot live"></span> Live wire</span>
+              <span class="events-legend-item"><span class="feed-dot sim"></span> Simulated</span>
+              <span class="events-legend-item"><span class="feed-dot tip"></span> Insider tip</span>
+            </div>
+          </header>
+          <div id="events-full" class="events-board"></div>
+        </div>
+      </section>
+      <section class="view-panel" id="view-perks"><div id="perks-full" class="perks-full-root"></div></section>
+      <section class="view-panel" id="view-staff">
+        <div class="staff-view">
+          <div class="staff-hero">
+            <div class="staff-hero-copy">
+              <p class="staff-eyebrow">Human Resources</p>
+              <h3 class="staff-title">Your Trading Firm</h3>
+              <p class="staff-sub">Hire automation for sniping, research, risk, and execution. Unlock <strong>HR Department</strong>, then train Newbie → Veteran ($150) → Expert ($400).</p>
+            </div>
+            <div class="staff-hr-chip" id="staff-hr-status"></div>
+          </div>
+          <div class="staff-kpi-strip" id="staff-stats"></div>
+          <div class="staff-hire-section">
+            <div class="staff-section-head">
+              <h4>Open roles</h4>
+              <span class="staff-section-hint">Role · what they automate · hire &amp; day cost</span>
+            </div>
+            <div id="staff-hire-list" class="hire-grid"></div>
+          </div>
+          <div class="staff-roster-section">
+            <div class="staff-section-head roster-head">
+              <h4>Team board <span id="roster-count"></span></h4>
+              <span class="staff-section-hint">Tier · P&amp;L · train / fire</span>
+            </div>
+            <div id="staff-roster" class="roster-list"></div>
+          </div>
+          <div class="staff-activity-section">
+            <div class="staff-section-head">
+              <h4>Floor activity</h4>
+            </div>
+            <div id="staff-log" class="staff-log"></div>
+          </div>
+        </div>
+      </section>
+      <section class="view-panel" id="view-achievements">
+        <div class="achievements-view">
+          <div class="ach-header">
+            <div>
+              <h3>Achievements</h3>
+              <p class="muted-text" id="ach-progress">0 / 0 unlocked</p>
+            </div>
+            <button class="btn btn-accent" id="btn-claim-all">Claim all</button>
+          </div>
+          <div id="achievements-grid" class="achievements-grid"></div>
+        </div>
+      </section>
+      <section class="view-panel" id="view-vault"><div id="vault-root" class="vault-view"></div></section>
+      <section class="view-panel" id="view-collection"><div id="collection-log-root" class="collection-log-view"></div></section>
+      <section class="view-panel" id="view-blackmarket"><div id="blackmarket-root" class="blackmarket-view"></div></section>
+      <section class="view-panel" id="view-finance">
+        <div class="finance-view">
+          <header class="finance-hero">
+            <div>
+              <h2 class="finance-title">Financing Desk</h2>
+              <p class="finance-sub">Live APR quotes from your credit, utilization, and bank relationship. Hold a loan through one day-end interest tick before payoff builds score — miss payments and it tanks fast.</p>
+            </div>
+            <div class="credit-pills" id="credit-pills"></div>
+          </header>
+          <div class="finance-grid">
+            <div class="finance-col">
+              <h4 class="finance-col-title">Lenders</h4>
+              <div id="bank-list" class="bank-list"></div>
+            </div>
+            <div class="finance-col">
+              <h4 class="finance-col-title">Active loans</h4>
+              <div id="loan-payoff-calc" class="loan-payoff-calc"></div>
+              <div id="loan-list" class="loan-list"></div>
+              <h4 class="finance-col-title mt">Payment history</h4>
+              <div id="loan-history" class="loan-history"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="view-panel" id="view-ai">
+        <div id="ai-locked-host" class="ai-locked-host hidden"></div>
+        <div class="ai-view" id="ai-view-live">
+          <div class="ai-view-col">
+            <h3>Today's AI Picks</h3>
+            <p class="muted-text">Top setups from momentum, RSI, moving averages & live news.</p>
+            <div id="ai-picks-full"></div>
+          </div>
+          <div class="ai-view-col ai-chat-col">
+            <h3>Ask StockWay</h3>
+            <div id="ai-chat-log" class="ai-chat-log"></div>
+            <div class="ai-chat-input-row">
+              <input type="text" id="ai-chat-input" placeholder="Should I buy NVDA? What to short today?">
+              <button class="btn btn-accent" id="ai-chat-send">Ask</button>
+            </div>
+            <div class="ai-suggestions">
+              <button class="ai-suggest" data-q="What should I buy today?">Today's picks</button>
+              <button class="ai-suggest" data-q="What's moving the market?">Market news</button>
+              <button class="ai-suggest" data-q="Should I short TSLA?">Short TSLA?</button>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="view-panel" id="view-settings">
+        <div class="settings-view">
+          <aside class="settings-nav" aria-label="Settings categories">
+            <div class="settings-nav-head">Settings</div>
+            <button type="button" class="settings-nav-item active" data-settings-tab="general">General</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="profile">Profile</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="appearance">Appearance</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="data">Save data</button>
+            <button type="button" class="settings-nav-item" data-settings-tab="shortcuts">Shortcuts</button>
+          </aside>
+          <div class="settings-main">
+            <div class="settings-panel active" data-settings-panel="general">
+              <h2 class="settings-panel-title">General</h2>
+              <p class="settings-panel-sub">Desk preferences and session controls.</p>
+              <div class="settings-block">
+                <h3>Session</h3>
+                <p class="muted-text">Progress autosaves while you play and flushes when you close the window. Use Save now for an instant write, or Export under Save data for a portable backup.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn btn-accent" id="settings-quick-save">Save now</button>
+                  <button type="button" class="btn" id="settings-goto-trade">Back to Trade</button>
+                </div>
+              </div>
+              <div class="settings-block">
+                <h3>Danger zone</h3>
+                <p class="muted-text">Reset wipes cash, positions, staff, loans, and progress. Your profile name and photo are kept.</p>
+                <button type="button" class="btn btn-short" id="settings-reset-desk">Reset desk</button>
+              </div>
+            </div>
+            <div class="settings-panel" data-settings-panel="profile">
+              <h2 class="settings-panel-title">Profile</h2>
+              <p class="settings-panel-sub">How you appear on the desk. Saved on this machine.</p>
+              <div class="settings-block profile-editor">
+                <div class="profile-preview">
+                  <div class="avatar profile-avatar-lg" id="settings-avatar-preview" aria-hidden="true">T</div>
+                  <div>
+                    <div class="profile-preview-name" id="settings-preview-name">Paper Trader</div>
+                    <div class="muted-text">Shown in the sidebar footer</div>
+                  </div>
+                </div>
+                <label class="settings-field-label" for="settings-trader-name">Display name</label>
+                <input type="text" id="settings-trader-name" maxlength="32" placeholder="Paper Trader" autocomplete="nickname">
+                <div class="settings-actions profile-photo-actions">
+                  <button type="button" class="btn btn-accent" id="settings-avatar-pick">Upload photo</button>
+                  <button type="button" class="btn" id="settings-avatar-clear">Remove photo</button>
+                  <input type="file" id="settings-avatar-input" accept="image/*" class="hidden">
+                </div>
+                <p class="muted-text">Square crop, stored locally. Max ~4MB before compress.</p>
+              </div>
+            </div>
+            <div class="settings-panel" data-settings-panel="appearance">
+              <h2 class="settings-panel-title">Appearance</h2>
+              <p class="settings-panel-sub">Pick a preset or fine-tune colors. Changes save automatically.</p>
+              <div id="theme-panel"></div>
+            </div>
+            <div class="settings-panel" data-settings-panel="data">
+              <h2 class="settings-panel-title">Save data</h2>
+              <p class="settings-panel-sub">Autosave runs in the background. Export a backup anytime.</p>
+              <div class="settings-block">
+                <h3>Export / import</h3>
+                <p class="muted-text">Exports include portfolio, perks, staff, loans, achievements, profile, theme, sidebar width, and best runs.</p>
+                <div class="save-io-row">
+                  <button type="button" class="btn btn-accent" id="btn-export-save">Export save</button>
+                  <button type="button" class="btn" id="btn-import-save">Import save</button>
+                  <input type="file" id="save-import-input" accept="application/json,.json" class="hidden">
+                </div>
+              </div>
+              <div class="settings-block">
+                <h3>Day checkpoints</h3>
+                <p class="muted-text">Rotating recovery slots from recent days. Profile &amp; theme are kept on desk reset; the run is archived to Best Runs first.</p>
+                <div id="checkpoint-list" class="checkpoint-list"></div>
+              </div>
+            </div>
+            <div class="settings-panel" data-settings-panel="shortcuts">
+              <h2 class="settings-panel-title">Shortcuts</h2>
+              <p class="settings-panel-sub">Keyboard controls while the desk is focused.</p>
+              <div class="settings-block">
+                <div class="hotkey-grid">
+                  <div class="hotkey-row"><kbd>B</kbd><span>Buy / open long</span></div>
+                  <div class="hotkey-row"><kbd>S</kbd><span>Sell / cover</span></div>
+                  <div class="hotkey-row"><kbd>W</kbd><span>Add to watchlist</span></div>
+                  <div class="hotkey-row"><kbd>Shift</kbd>+<kbd>W</kbd><span>Remove from watchlist</span></div>
+                  <div class="hotkey-row"><kbd>Space</kbd><span>Pause / resume</span></div>
+                  <div class="hotkey-row"><kbd>R</kbd><span>Refresh quotes</span></div>
+                  <div class="hotkey-row"><kbd>Ctrl</kbd>+<kbd>S</kbd><span>Save now</span></div>
+                  <div class="hotkey-row"><kbd>1</kbd>–<kbd>8</kbd><span>Chart ranges 1D…MAX</span></div>
+                  <div class="hotkey-row"><kbd>[</kbd> <kbd>]</kbd><span>Previous / next tab</span></div>
+                  <div class="hotkey-row"><kbd>/</kbd><span>Search listings</span></div>
+                  <div class="hotkey-row"><kbd>Esc</kbd><span>Close any panel</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="log-bar">
+        <div class="log-col">
+          <div class="log-title">Pending orders</div>
+          <div id="pending-orders" class="log-scroll pending-orders"></div>
+        </div>
+        <div class="log-col flex-grow">
+          <div class="log-title">Trade Log</div>
+          <div id="trade-log" class="log-scroll"></div>
+        </div>
+      </footer>
+    </main>
+
+    <!-- Right panel -->
+    <aside class="sidebar-right" id="sidebar-right">
+      <div class="sidebar-right-resize" id="sidebar-right-resize" role="separator" aria-orientation="vertical" aria-label="Resize side panel" title="Drag to resize · double-click to reset"></div>
+      <div class="right-section right-hot">
+        <div class="hot-head">
+          <span class="live-pill on" title="Live desk feed"><span class="live-dot"></span>Live</span>
+          <span class="hot-title">
+            <svg class="hot-title-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17 9 9l3.5 4.5L17 7l3 4"/><path d="M4 20h16"/></svg>
+            Hot listings
+          </span>
+          <span class="hot-count" id="hot-listings-count">0</span>
+        </div>
+        <div id="listings" class="mini-listings"></div>
+      </div>
+      <div class="right-section right-ai flex-grow">
+        <div class="hot-head ai-head">
+          <span class="hot-title">
+            <svg class="hot-title-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.2 2.4c-.6.4-1 1-1 1.8M12 17h.01"/></svg>
+            AI Advisor
+          </span>
+          <span class="ai-lock-label" id="ai-lock-label">LOCKED</span>
+        </div>
+        <div id="ai-chat-log-side" class="ai-chat-log ai-chat-log-side"></div>
+        <div class="ai-chat-input-row ai-chat-side-row">
+          <input type="text" id="ai-chat-side" placeholder="Should I buy NVDA? What to short today?">
+          <button type="button" class="btn btn-accent btn-sm" id="ai-chat-side-send">Ask</button>
+        </div>
+        <div class="ai-suggestions ai-suggestions-side">
+          <button type="button" class="ai-suggest" data-q="What should I buy today?">Today's picks</button>
+          <button type="button" class="ai-suggest" data-q="What's moving the market?">Market news</button>
+          <button type="button" class="ai-suggest" data-q="Should I short TSLA?">Short TSLA?</button>
+        </div>
+      </div>
+      <div class="right-section right-events">
+        <div class="hot-head events-head">
+          <span class="hot-title">
+            <svg class="hot-title-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/><circle cx="12" cy="12" r="4"/></svg>
+            Events &amp; Tips
+          </span>
+        </div>
+        <div id="events-feed" class="events-feed events-feed-compact"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Trade Modal -->
+  <div id="trade-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <div>
+          <h2 id="modal-sym">AAPL</h2>
+          <p class="modal-sub" id="modal-name">Apple Inc.</p>
+        </div>
+        <button class="btn-icon modal-x" id="modal-close">✕</button>
+      </div>
+      <div class="modal-grid">
+        <div class="modal-row"><span>Listing Price</span><span id="modal-price">$0</span></div>
+        <div class="modal-row"><span>Market Price</span><span id="modal-mkt">$0</span></div>
+        <div class="modal-row" id="modal-value-row"><span>Insider True Value</span><span id="modal-value">$0</span></div>
+      </div>
+      <label>Shares / Contracts</label>
+      <input type="number" id="modal-shares" value="10" min="1">
+      <div class="modal-row total-row"><span>Total</span><span id="modal-total">$0</span></div>
+      <div class="modal-actions">
+        <button class="btn btn-long" id="btn-buy-long">Buy Long</button>
+        <button class="btn btn-short" id="btn-short">Short Sell</button>
+        <button class="btn" id="btn-options">Options ▾</button>
+      </div>
+      <div id="options-panel" class="options-panel hidden"></div>
+    </div>
+  </div>
+
+  <!-- Day Summary -->
+  <div id="day-summary-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="day-summary-title">
+    <div class="modal day-summary-modal">
+      <header class="eod-head">
+        <span class="eod-badge">End of day</span>
+        <h2 id="day-summary-title">Day 1 wrap-up</h2>
+        <p class="summary-flavor" id="day-summary-flavor">The trading floor lights dim. Time to count the haul.</p>
+      </header>
+      <div id="day-summary-body" class="day-summary-body"></div>
+      <div id="day-summary-extra" class="day-summary-extra"></div>
+      <button class="btn btn-accent eod-cta" id="day-summary-continue">Start next day</button>
+    </div>
+  </div>
+
+  <!-- Staff history modal -->
+  <div id="staff-history-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="staff-history-title">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="staff-history-title">Employee History</h2>
+        <button class="btn-icon modal-x" id="staff-history-close">✕</button>
+      </div>
+      <div id="staff-history-body" class="staff-history-body"></div>
+    </div>
+  </div>
+
+  <!-- Onboarding -->
+  <div id="onboard-overlay" class="modal-overlay blur-overlay hidden">
+    <div class="modal onboard-modal">
+      <div class="brand-mark big" aria-hidden="true">
+        <svg viewBox="0 0 64 64" role="img" focusable="false">
+          <rect class="brand-tile" x="4" y="4" width="56" height="56" rx="14"/>
+          <g class="brand-candles" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round">
+            <path d="M20 18v8M20 38v8"/>
+            <rect x="16" y="26" width="8" height="12" rx="1.5" fill="#fff" stroke="none"/>
+            <path d="M32 14v10M32 36v14"/>
+            <rect x="28" y="24" width="8" height="12" rx="1.5" fill="#fff" stroke="none" opacity="0.92"/>
+            <path d="M44 22v6M44 40v6"/>
+            <rect x="40" y="28" width="8" height="12" rx="1.5" fill="#fff" stroke="none" opacity="0.85"/>
+          </g>
+        </svg>
+      </div>
+      <h2>Welcome to StockWay</h2>
+      <p class="muted-text">Turn $500 into a trading empire. Live starting prices, accelerated market days, staff, perks & achievements — paper money only.</p>
+      <p class="onboard-q">Are you new here?</p>
+      <div class="onboard-actions">
+        <button class="btn btn-accent btn-block" id="onboard-new">I'm new — walk me through my first trade</button>
+        <button class="btn btn-block" id="onboard-skip">Skip — I know what I'm doing</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Boot quote preload (first launch / Reset only) -->
+  <div id="quote-preload-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="quote-preload-title">
+    <div class="modal quote-preload-modal">
+      <div class="help-section-label">MARKET DATA</div>
+      <h2 id="quote-preload-title">Loading live quotes</h2>
+      <p class="muted-text" id="quote-preload-sub">Anchoring ticker baselines before the desk opens…</p>
+      <div class="quote-preload-bar" aria-hidden="true">
+        <div class="quote-preload-fill" id="quote-preload-fill" style="width:0%"></div>
+      </div>
+      <p class="quote-preload-count" id="quote-preload-count" aria-live="polite">0 / 50 tickers loaded</p>
+      <div class="quote-preload-actions">
+        <button class="btn btn-block hidden" id="quote-preload-skip" type="button">Continue anyway</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help -->
+  <div id="help-overlay" class="modal-overlay blur-overlay hidden">
+    <div class="modal help-modal">
+      <div class="help-tabs">
+        <button class="help-tab active" data-tab="guide">Guide</button>
+        <button class="help-tab" data-tab="glossary">Glossary</button>
+        <button class="btn-icon modal-x" id="help-close">✕</button>
+      </div>
+      <div id="help-guide" class="help-scroll"></div>
+      <div id="help-glossary" class="help-scroll hidden"></div>
+      <button class="btn btn-accent btn-block" id="help-got-it">Got it</button>
+    </div>
+  </div>
+
+  <!-- In-app dialog (replaces window.alert / confirm) -->
+  <div id="app-dialog-overlay" class="modal-overlay blur-overlay hidden">
+    <div class="modal app-dialog-modal">
+      <div class="help-section-label" id="app-dialog-label">SYSTEM</div>
+      <h2 id="app-dialog-title">Notice</h2>
+      <div id="app-dialog-body" class="app-dialog-body"></div>
+      <div class="app-dialog-actions">
+        <button class="btn btn-block hidden" id="app-dialog-cancel">Cancel</button>
+        <button class="btn btn-accent btn-block" id="app-dialog-ok">Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Order Confirm -->
+  <div id="order-confirm-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="order-confirm-title">
+    <div class="modal order-confirm-modal">
+      <div class="help-section-label" id="order-confirm-label">ORDER PREVIEW</div>
+      <div class="modal-head">
+        <div>
+          <h2 id="order-confirm-title">Confirm trade</h2>
+          <p class="modal-sub" id="order-confirm-sub">Review the impact before sending.</p>
+        </div>
+        <button class="btn-icon modal-x" id="order-confirm-close">✕</button>
+      </div>
+      <div class="order-share-row">
+        <button class="btn" id="order-shares-minus">−</button>
+        <label><span>Shares</span><input type="number" id="order-confirm-shares" min="1" value="1"></label>
+        <button class="btn" id="order-shares-plus">+</button>
+      </div>
+      <div class="modal-grid" id="order-confirm-grid"></div>
+      <p class="order-risk-note" id="order-confirm-note"></p>
+      <div class="modal-actions">
+        <button class="btn" id="order-confirm-cancel">Cancel</button>
+        <button class="btn btn-accent" id="order-confirm-submit">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Price alert -->
+  <div id="price-alert-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="price-alert-title">
+    <div class="modal price-alert-modal">
+      <div class="help-section-label">WATCHLIST ALERT</div>
+      <div class="modal-head">
+        <div>
+          <h2 id="price-alert-title">Price alert</h2>
+          <p class="modal-sub" id="price-alert-sub">Notify when price crosses your levels.</p>
+        </div>
+        <button class="btn-icon modal-x" id="price-alert-cancel">✕</button>
+      </div>
+      <div class="price-alert-fields">
+        <label><span>Alert above $</span><input type="number" id="price-alert-above" step="0.01" placeholder="e.g. 200"></label>
+        <label><span>Alert below $</span><input type="number" id="price-alert-below" step="0.01" placeholder="e.g. 150"></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="price-alert-clear">Clear</button>
+        <button class="btn btn-accent" id="price-alert-save">Save alert</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true" role="status"></div>
+
+  <script type="module" src="js/app.js?v=1.0.4"></script>
+</body>
+</html>

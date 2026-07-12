@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StockWay — Volume Bars</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #12151a; font-family: 'Segoe UI', system-ui, sans-serif; overflow: hidden; user-select: none; -webkit-app-region: drag; }
+    body::after { content: ''; position: fixed; inset: 0; background: repeating-linear-gradient(0deg, transparent, transparent 23px, rgba(255,255,255,0.02) 24px); pointer-events: none; }
+    .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; position: relative; z-index: 1; }
+    .bars-logo { width: 88px; height: 88px; border-radius: 22px; background: #181c22; border: 1px solid rgba(255,255,255,0.06); display: flex; align-items: flex-end; justify-content: center; gap: 5px; padding: 14px 16px 16px; box-shadow: 0 16px 40px rgba(0,0,0,0.45); }
+    .bars-logo .bar { width: 8px; border-radius: 3px 3px 1px 1px; background: linear-gradient(180deg, #3fb950, #238636); animation: bob 1.1s ease-in-out infinite; transform-origin: bottom; }
+    .bars-logo .bar:nth-child(2) { animation-delay: 0.12s; background: linear-gradient(180deg, #58a6ff, #1f6feb); }
+    .bars-logo .bar:nth-child(3) { animation-delay: 0.24s; height: 55%; background: linear-gradient(180deg, #f0883e, #bd561d); }
+    .bars-logo .bar:nth-child(4) { animation-delay: 0.36s; background: linear-gradient(180deg, #3fb950, #238636); }
+    .bars-logo .bar:nth-child(5) { animation-delay: 0.48s; background: linear-gradient(180deg, #ef5350, #b62324); }
+    @keyframes bob { 0%, 100% { transform: scaleY(0.45); opacity: 0.55; } 50% { transform: scaleY(1); opacity: 1; } }
+    .logo { font-size: 34px; font-weight: 900; letter-spacing: -1px; color: #e8eaed; }
+    .ver { font-size: 11px; font-weight: 600; letter-spacing: 4px; color: #6e7681; text-transform: uppercase; }
+    .status { font-size: 13px; color: #8b949e; min-height: 20px; -webkit-app-region: no-drag; }
+    .bars-loader { width: 268px; height: 72px; border-radius: 14px; background: #0d1117; border: 1px solid rgba(255,255,255,0.06); display: flex; align-items: flex-end; justify-content: center; gap: 4px; padding: 10px 14px; -webkit-app-region: no-drag; }
+    .bars-loader .bar { flex: 1; max-width: 14px; border-radius: 3px 3px 1px 1px; min-height: 8px; transition: height 0.35s ease; }
+    .tagline { font-size: 10px; color: #484f58; letter-spacing: 2px; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="bars-logo" aria-hidden="true">
+      <div class="bar" style="height:42%"></div>
+      <div class="bar" style="height:68%"></div>
+      <div class="bar" style="height:55%"></div>
+      <div class="bar" style="height:80%"></div>
+      <div class="bar" style="height:36%"></div>
+    </div>
+    <div class="logo">StockWay</div>
+    <div class="ver">Simulator v1.0.0</div>
+    <div class="status" id="status">Starting up…</div>
+    <div class="bars-loader" id="loader" aria-hidden="true"></div>
+    <div class="tagline">Paper Trade · Live Data · Real Practice</div>
+  </div>
+  <script>
+    const COLORS = ['#3fb950', '#58a6ff', '#f0883e', '#ef5350', '#a371f7', '#26a69a'];
+    const loader = document.getElementById('loader');
+    const bars = [];
+    for (let i = 0; i < 22; i++) {
+      const b = document.createElement('div');
+      b.className = 'bar';
+      b.style.background = COLORS[i % COLORS.length];
+      b.style.height = `${20 + Math.random() * 60}%`;
+      loader.appendChild(b);
+      bars.push(b);
+    }
+    setInterval(() => {
+      bars.forEach(b => {
+        b.style.height = `${12 + Math.random() * 78}%`;
+        if (Math.random() > 0.7) b.style.background = COLORS[Math.floor(Math.random() * COLORS.length)];
+      });
+    }, 450);
+  </script>
+</body>
+</html>

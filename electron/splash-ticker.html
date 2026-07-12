@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StockWay — Ticker Tape</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #111318; font-family: 'Segoe UI', Consolas, system-ui, sans-serif; overflow: hidden; user-select: none; -webkit-app-region: drag; }
+    .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; }
+    .ticker-logo { width: 280px; height: 44px; border-radius: 10px; background: #0c0e12; border: 1px solid #2a2f38; overflow: hidden; position: relative; mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); }
+    .ticker-track { display: flex; gap: 28px; white-space: nowrap; animation: scroll 18s linear infinite; padding: 0 12px; height: 100%; align-items: center; }
+    .ticker-track span { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; }
+    .ticker-track .sym { color: #e8eaed; }
+    .ticker-track .up { color: #3fb950; }
+    .ticker-track .dn { color: #f85149; }
+    @keyframes scroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+    .mark { width: 80px; height: 80px; border-radius: 18px; background: linear-gradient(135deg, #1a2332, #0f1218); border: 1px solid #30363d; display: grid; place-items: center; font-size: 28px; font-weight: 900; color: #58a6ff; letter-spacing: -2px; box-shadow: 0 12px 40px rgba(0,0,0,0.4); }
+    .logo { font-size: 34px; font-weight: 900; letter-spacing: -1px; color: #f0f3f6; }
+    .ver { font-size: 11px; font-weight: 600; letter-spacing: 4px; color: #6e7681; text-transform: uppercase; }
+    .status { font-size: 13px; color: #8b949e; min-height: 20px; -webkit-app-region: no-drag; }
+    .tape-loader { width: 280px; height: 56px; border-radius: 12px; background: #0c0e12; border: 1px solid #2a2f38; overflow: hidden; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 8px 0; -webkit-app-region: no-drag; }
+    .tape-row { display: flex; gap: 20px; white-space: nowrap; font-size: 11px; font-weight: 600; }
+    .tape-row.a { animation: scroll 14s linear infinite; }
+    .tape-row.b { animation: scroll 11s linear infinite reverse; opacity: 0.75; }
+    .tagline { font-size: 10px; color: #484f58; letter-spacing: 2px; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="ticker-logo" aria-hidden="true">
+      <div class="ticker-track" id="top-tape"></div>
+    </div>
+    <div class="mark">SS</div>
+    <div class="logo">StockWay</div>
+    <div class="ver">Simulator v1.0.0</div>
+    <div class="status" id="status">Starting up…</div>
+    <div class="tape-loader" aria-hidden="true">
+      <div class="tape-row a" id="tape-a"></div>
+      <div class="tape-row b" id="tape-b"></div>
+    </div>
+    <div class="tagline">Paper Trade · Live Data · Real Practice</div>
+  </div>
+  <script>
+    const TICKERS = [
+      ['NVDA', 2.41], ['AAPL', 0.82], ['TSLA', -1.24], ['MSFT', 0.55], ['AMD', 3.12],
+      ['META', -0.67], ['GOOGL', 1.08], ['AMZN', 0.34], ['RKLB', 4.20], ['F', -0.91],
+      ['COIN', 2.88], ['PLTR', 1.76], ['NFLX', -0.42], ['BABA', 0.19], ['GME', 5.55],
+    ];
+    function tickHtml([sym, pct], jitter) {
+      const p = (pct + jitter).toFixed(2);
+      const cls = p >= 0 ? 'up' : 'dn';
+      const sign = p >= 0 ? '+' : '';
+      return `<span class="sym">${sym}</span> <span class="${cls}">${sign}${p}%</span>`;
+    }
+    function buildTape(el, jitterFn) {
+      const items = TICKERS.map(t => tickHtml(t, jitterFn()));
+      const html = items.join('<span style="opacity:.25"> · </span>');
+      el.innerHTML = html + html;
+    }
+    buildTape(document.getElementById('top-tape'), () => (Math.random() - 0.5) * 0.4);
+    buildTape(document.getElementById('tape-a'), () => (Math.random() - 0.5) * 0.6);
+    buildTape(document.getElementById('tape-b'), () => (Math.random() - 0.5) * 0.8);
+    setInterval(() => {
+      buildTape(document.getElementById('top-tape'), () => (Math.random() - 0.5) * 0.5);
+      buildTape(document.getElementById('tape-a'), () => (Math.random() - 0.5) * 0.7);
+      buildTape(document.getElementById('tape-b'), () => (Math.random() - 0.5) * 0.9);
+    }, 3200);
+  </script>
+</body>
+</html>

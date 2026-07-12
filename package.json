@@ -1,0 +1,59 @@
+{
+  "name": "stockway",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "StockWay Paper Trade Simulator",
+  "main": "electron/main.cjs",
+  "author": "Tom",
+  "license": "MIT",
+  "scripts": {
+    "icons": "node scripts/generate-icon.cjs",
+    "start": "electron .",
+    "stamp:win": "node scripts/stamp-win-exe.cjs",
+    "test:quality": "node scripts/quality-tests.cjs",
+    "test:quotes": "node scripts/quote-integrity-check.cjs",
+    "test:security": "node scripts/security-check.cjs",
+    "test:audit": "node scripts/feature-audit.cjs",
+    "test:ui": "node scripts/ui-smoke.cjs",
+    "test": "npm run test:quality && npm run test:quotes && npm run test:security && npm run test:audit",
+    "test:all": "npm test && npm run test:ui",
+    "build": "npm run icons && electron-builder --win dir -c.win.signAndEditExecutable=false && npm run stamp:win",
+    "build:portable": "npm run icons && electron-builder --win portable -c.win.signAndEditExecutable=false && npm run stamp:win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "playwright": "^1.61.1",
+    "rcedit": "^5.0.2",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "com.stockway.simulator",
+    "productName": "StockWay",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "electron/**/*",
+      "assets/**/*"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "win": {
+      "icon": "assets/icon.ico",
+      "executableName": "StockWay",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    }
+  }
+}

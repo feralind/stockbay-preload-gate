@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StockWay</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%;
+      background: #14171c;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% 0%, rgba(59, 130, 246, 0.12), transparent 60%),
+        radial-gradient(ellipse 60% 40% at 80% 100%, rgba(38, 166, 154, 0.08), transparent 55%);
+      pointer-events: none;
+    }
+    .wrap {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 100%; gap: 16px;
+      position: relative; z-index: 1;
+    }
+    .chart-brand {
+      width: 88px; height: 88px;
+      border-radius: 22px;
+      background: linear-gradient(145deg, #1e2229 0%, #161a20 100%);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow:
+        0 18px 48px rgba(0, 0, 0, 0.45),
+        0 0 0 1px rgba(59, 130, 246, 0.12),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+      position: relative;
+    }
+    .chart-brand canvas { display: block; width: 100%; height: 100%; }
+    .chart-brand::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, transparent 40%);
+      pointer-events: none;
+    }
+    .logo {
+      font-size: 34px; font-weight: 900;
+      letter-spacing: -1px; line-height: 1;
+      background: linear-gradient(180deg, #f3f4f6 0%, #c9d1d9 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .ver {
+      font-size: 11px; font-weight: 600;
+      letter-spacing: 4px; color: #6e7681;
+      text-transform: uppercase;
+    }
+    .status {
+      font-size: 13px; color: #8b949e;
+      min-height: 20px; margin-top: 2px;
+      -webkit-app-region: no-drag;
+    }
+    .chart-loader {
+      width: 268px; height: 78px;
+      border-radius: 14px;
+      background: #0d1117;
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.4), 0 8px 28px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+      position: relative;
+      -webkit-app-region: no-drag;
+    }
+    .chart-loader canvas { display: block; width: 100%; height: 100%; }
+    .chart-loader .scan {
+      position: absolute; top: 0; bottom: 0; width: 48px;
+      background: linear-gradient(90deg, transparent, rgba(88, 166, 255, 0.07), transparent);
+      animation: scan 2.8s ease-in-out infinite;
+      pointer-events: none;
+    }
+    @keyframes scan {
+      0% { left: -20%; opacity: 0; }
+      15% { opacity: 1; }
+      85% { opacity: 1; }
+      100% { left: 110%; opacity: 0; }
+    }
+    .tagline {
+      font-size: 10px; color: #484f58;
+      letter-spacing: 2px; text-transform: uppercase;
+      margin-top: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="chart-brand" aria-hidden="true">
+      <canvas id="brand-chart" width="176" height="176"></canvas>
+    </div>
+    <div class="logo" aria-label="StockWay">StockWay</div>
+    <div class="ver">Simulator v1.0.0</div>
+    <div class="status" id="status">Starting up…</div>
+    <div class="chart-loader" aria-hidden="true">
+      <canvas id="loader-chart" width="536" height="156"></canvas>
+      <div class="scan"></div>
+    </div>
+    <div class="tagline">Paper Trade · Live Data · Real Practice</div>
+  </div>
+  <script>
+    const BULL = '#26a69a';
+    const BEAR = '#ef5350';
+    const GRID = 'rgba(255,255,255,0.04)';
+    const MID = 'rgba(239, 83, 80, 0.45)';
+
+    function randBetween(a, b) { return a + Math.random() * (b - a); }
+
+    function makeCandle(prevClose, vol) {
+      const drift = randBetween(-vol * 0.55, vol * 0.55);
+      const open = prevClose;
+      const close = Math.max(2, open + drift);
+      const wick = vol * randBetween(0.25, 0.9);
+      const high = Math.max(open, close) + wick * randBetween(0.2, 1);
+      const low = Math.min(open, close) - wick * randBetween(0.2, 1);
+      return { open, high, low, close };
+    }
+
+    function seedSeries(count, start, vol) {
+      const out = [];
+      let price = start;
+      for (let i = 0; i < count; i++) {
+        const c = makeCandle(price, vol);
+        out.push(c);
+        price = c.close;
+      }
+      return out;
+    }
+
+    function pushCandle(series, vol) {
+      const last = series[series.length - 1]?.close ?? 50;
+      const next = makeCandle(last, vol);
+      series.push(next);
+      if (series.length > 48) series.shift();
+      return next;
+    }
+
+    function drawChart(canvas, series, opts = {}) {
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      const pad = opts.pad ?? 10;
+      const gridStep = opts.gridStep ?? 18;
+
+      ctx.clearRect(0, 0, w, h);
+
+      const lows = series.map(c => c.low);
+      const highs = series.map(c => c.high);
+      let min = Math.min(...lows);
+      let max = Math.max(...highs);
+      const range = Math.max(0.001, max - min);
+      min -= range * 0.12;
+      max += range * 0.12;
+
+      const plotW = w - pad * 2;
+      const plotH = h - pad * 2;
+      const yOf = (v) => pad + plotH - ((v - min) / (max - min)) * plotH;
+
+      ctx.strokeStyle = GRID;
+      ctx.lineWidth = 1;
+      for (let y = pad; y <= h - pad; y += gridStep) {
+        ctx.beginPath();
+        ctx.moveTo(pad, y);
+        ctx.lineTo(w - pad, y);
+        ctx.stroke();
+      }
+      for (let x = pad; x <= w - pad; x += gridStep) {
+        ctx.beginPath();
+        ctx.moveTo(x, pad);
+        ctx.lineTo(x, h - pad);
+        ctx.stroke();
+      }
+
+      const midY = yOf((min + max) / 2);
+      ctx.setLineDash([4, 6]);
+      ctx.strokeStyle = MID;
+      ctx.beginPath();
+      ctx.moveTo(pad, midY);
+      ctx.lineTo(w - pad, midY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      const n = series.length;
+      const slot = plotW / Math.max(n, 1);
+      const bodyW = Math.max(2, slot * 0.55);
+
+      series.forEach((c, i) => {
+        const x = pad + i * slot + slot / 2;
+        const yOpen = yOf(c.open);
+        const yClose = yOf(c.close);
+        const yHigh = yOf(c.high);
+        const yLow = yOf(c.low);
+        const up = c.close >= c.open;
+        const color = up ? BULL : BEAR;
+
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = Math.max(1, bodyW * 0.15);
+
+        ctx.beginPath();
+        ctx.moveTo(x, yHigh);
+        ctx.lineTo(x, yLow);
+        ctx.stroke();
+
+        const top = Math.min(yOpen, yClose);
+        const bodyH = Math.max(1.5, Math.abs(yClose - yOpen));
+        ctx.fillRect(x - bodyW / 2, top, bodyW, bodyH);
+      });
+
+      if (opts.glowLast && series.length) {
+        const last = series[series.length - 1];
+        const x = pad + (n - 1) * slot + slot / 2;
+        const up = last.close >= last.open;
+        const color = up ? BULL : BEAR;
+        const grd = ctx.createRadialGradient(x, yOf(last.close), 0, x, yOf(last.close), 16);
+        grd.addColorStop(0, up ? 'rgba(38,166,154,0.35)' : 'rgba(239,83,80,0.35)');
+        grd.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grd;
+        ctx.fillRect(x - 20, pad, 40, plotH);
+      }
+    }
+
+    function mountChart(canvasId, seedCount, vol, opts) {
+      const canvas = document.getElementById(canvasId);
+      const series = seedSeries(seedCount, randBetween(40, 58), vol);
+      let tick = 0;
+      let lastPush = performance.now();
+
+      function frame(now) {
+        if (now - lastPush > opts.interval) {
+          pushCandle(series, vol);
+          lastPush = now;
+          tick++;
+        }
+        drawChart(canvas, series, opts);
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    }
+
+    mountChart('brand-chart', 14, 4.2, { pad: 14, gridStep: 22, interval: 520, glowLast: true });
+    mountChart('loader-chart', 28, 2.8, { pad: 12, gridStep: 26, interval: 380, glowLast: true });
+  </script>
+</body>
+</html>

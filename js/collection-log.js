@@ -1,0 +1,321 @@
+// @ts-check
+import { VAULT_ITEMS } from './vault.js';
+import { isRelicItem } from './relics.js';
+
+function normalizeRarity(item, fallback = 'common') {
+  const r = String(item?.rarity || '').toLowerCase();
+  if (r === 'common' || r === 'rare' || r === 'legendary') return r;
+  return fallback;
+}
+
+/** Claimable completion milestones — cash/REP only; no buying-power hooks. */
+export const COLLECTION_MILESTONES = [
+  {
+    id: 'pct25',
+    label: 'First Quarter',
+    kind: 'pct',
+    threshold: 25,
+    rep: 25,
+    cash: 0,
+    flair: null,
+    blurb: 'Own 25% of the full catalog.',
+  },
+  {
+    id: 'pct50',
+    label: 'Halfway Desk',
+    kind: 'pct',
+    threshold: 50,
+    rep: 50,
+    cash: 750,
+    flair: null,
+    blurb: 'Half the catalog booked. Cash toast for the grind.',
+  },
+  {
+    id: 'pct75',
+    label: 'Near Complete',
+    kind: 'pct',
+    threshold: 75,
+    rep: 90,
+    cash: 2000,
+    flair: null,
+    blurb: 'Three-quarters done — rare chase territory.',
+  },
+  {
+    id: 'pct100',
+    label: 'Full Catalog',
+    kind: 'pct',
+    threshold: 100,
+    rep: 150,
+    cash: 5000,
+    flair: 'Collection Archivist',
+    blurb: 'Every registered piece owned. Prestige title unlocked.',
+  },
+  {
+    id: 'vaultSet',
+    label: 'Vault Cleared',
+    kind: 'vault_all',
+    rep: 60,
+    cash: 1500,
+    flair: null,
+    blurb: 'Every Trophy Vault item owned.',
+  },
+  {
+    id: 'bmRares',
+    label: 'Rare Floor',
+    kind: 'bm_rares',
+    rep: 80,
+    cash: 2500,
+    flair: null,
+    blurb: 'Every rare and legendary Black Market piece owned.',
+  },
+  {
+    id: 'seatTaken',
+    label: 'Seat Secured',
+    kind: 'seat',
+    rep: 40,
+    cash: 0,
+    flair: null,
+    blurb: 'A Seat on the Trading Floor is yours.',
+  },
+];
+
+export const KNOWN_COLLECTION_MILESTONE_IDS = new Set(COLLECTION_MILESTONES.map((m) => m.id));
+export const COLLECTION_MILESTONE_BY_ID = new Map(COLLECTION_MILESTONES.map((m) => [m.id, m]));
+
+/**
+ * Build collection entries from all registered sources.
+ * @param {object} state
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ */
+export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seatItem = null } = {}) {
+  const vaultOwned = new Set(Array.isArray(state.vaultOwned) ? state.vaultOwned : []);
+  const blackOwned = new Set(Array.isArray(state.blackMarketOwned) ? state.blackMarketOwned : []);
+  const entries = [];
+
+  Object.values(VAULT_ITEMS).forEach((item) => {
+    entries.push({
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      icon: item.icon || '',
+      source: 'vault',
+      rarity: normalizeRarity(item, 'common'),
+      owned: vaultOwned.has(item.id),
+      cost: Number(item.cost) || 0,
+    });
+  });
+
+  (Array.isArray(blackMarketPool) ? blackMarketPool : []).forEach((item) => {
+    if (!item?.id) return;
+    entries.push({
+      id: item.id,
+      name: item.name || item.id,
+      category: item.category || 'blackmarket',
+      icon: item.icon || '',
+      source: 'blackmarket',
+      rarity: normalizeRarity(item, 'rare'),
+      owned: blackOwned.has(item.id),
+      cost: Number(item.cost) || 0,
+    });
+  });
+
+  if (seatItem?.id) {
+    entries.push({
+      id: seatItem.id,
+      name: seatItem.name || seatItem.id,
+      category: seatItem.category || 'seat',
+      icon: seatItem.icon || '',
+      source: 'seat',
+      rarity: normalizeRarity(seatItem, 'legendary'),
+      owned: !!state.seatOwned,
+      cost: Number(seatItem.cost) || 0,
+    });
+  }
+
+  return entries.sort((a, b) => {
+    if (a.source !== b.source) return a.source.localeCompare(b.source);
+    if (a.category !== b.category) return a.category.localeCompare(b.category);
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * @param {object} state
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ */
+export function getCollectionCompletion(state = {}, opts = {}) {
+  const entries = getCollectionLogEntries(state, opts);
+  const total = entries.length;
+  const owned = entries.filter((entry) => entry.owned).length;
+  return {
+    owned,
+    total,
+    pct: total ? Math.round((owned / total) * 100) : 0,
+  };
+}
+
+/**
+ * Late-game progression score for leaderboard/profile flex.
+ * @param {object} state
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ */
+export function getCollectionPrestigeScore(state = {}, { blackMarketPool = [], seatItem = null } = {}) {
+  const vaultOwned = new Set(Array.isArray(state.vaultOwned) ? state.vaultOwned : []);
+  const blackOwned = new Set(Array.isArray(state.blackMarketOwned) ? state.blackMarketOwned : []);
+  const equippedRelics = new Set(
+    (Array.isArray(state.blackMarketEquippedRelics) ? state.blackMarketEquippedRelics : [])
+      .filter((id) => isRelicItem(id)),
+  );
+  let score = 0;
+
+  score += vaultOwned.size * 8;
+
+  (Array.isArray(blackMarketPool) ? blackMarketPool : []).forEach((item) => {
+    if (!item?.id || !blackOwned.has(item.id)) return;
+    const rarity = normalizeRarity(item, 'common');
+    if (rarity === 'legendary') score += 90;
+    else if (rarity === 'rare') score += 45;
+    else score += 20;
+  });
+
+  score += equippedRelics.size * 30;
+  if (seatItem?.id && state.seatOwned) score += 260;
+
+  const claims = Array.isArray(state.collectionClaims) ? state.collectionClaims.length : 0;
+  score += claims * 12;
+
+  return Math.max(0, Math.round(score));
+}
+
+function isMilestoneEarned(milestone, state, opts) {
+  const entries = getCollectionLogEntries(state, opts);
+  const completion = getCollectionCompletion(state, opts);
+  if (milestone.kind === 'pct') {
+    return completion.pct >= (milestone.threshold || 0);
+  }
+  if (milestone.kind === 'vault_all') {
+    const vault = entries.filter((e) => e.source === 'vault');
+    return vault.length > 0 && vault.every((e) => e.owned);
+  }
+  if (milestone.kind === 'bm_rares') {
+    const rares = entries.filter((e) => e.source === 'blackmarket' && (e.rarity === 'rare' || e.rarity === 'legendary'));
+    return rares.length > 0 && rares.every((e) => e.owned);
+  }
+  if (milestone.kind === 'seat') {
+    return !!state.seatOwned;
+  }
+  return false;
+}
+
+/**
+ * @param {object} state
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ */
+export function getCollectionMilestones(state = {}, opts = {}) {
+  const claimed = new Set(Array.isArray(state.collectionClaims) ? state.collectionClaims : []);
+  return COLLECTION_MILESTONES.map((milestone) => {
+    const earned = isMilestoneEarned(milestone, state, opts);
+    const isClaimed = claimed.has(milestone.id);
+    return {
+      ...milestone,
+      earned,
+      claimed: isClaimed,
+      claimable: earned && !isClaimed,
+    };
+  });
+}
+
+/**
+ * Missing chase targets — seat / legendary / rare / high-cost first.
+ * @param {object} state
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any, limit?: number }} [opts]
+ */
+export function getCollectionHuntTargets(state = {}, opts = {}) {
+  const limit = Math.max(1, Math.min(6, Math.floor(Number(opts.limit) || 3)));
+  const rarityRank = { legendary: 3, rare: 2, common: 1 };
+  const sourceRank = { seat: 4, blackmarket: 3, vault: 2 };
+  return getCollectionLogEntries(state, opts)
+    .filter((entry) => !entry.owned)
+    .slice()
+    .sort((a, b) => {
+      const sr = (sourceRank[b.source] || 0) - (sourceRank[a.source] || 0);
+      if (sr !== 0) return sr;
+      const rr = (rarityRank[b.rarity] || 0) - (rarityRank[a.rarity] || 0);
+      if (rr !== 0) return rr;
+      return (b.cost || 0) - (a.cost || 0);
+    })
+    .slice(0, limit);
+}
+
+/**
+ * Claim a milestone. Mutates state.portfolio.cash / collectionClaims / meta.collectionFlair.
+ * Caller should apply reputation via adjustReputation using returned rep.
+ * @param {object} state
+ * @param {string} milestoneId
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ */
+export function claimCollectionMilestone(state, milestoneId, opts = {}) {
+  const milestone = COLLECTION_MILESTONE_BY_ID.get(milestoneId);
+  if (!milestone) return { ok: false, msg: 'Unknown milestone.' };
+  if (!state.portfolio || typeof state.portfolio.cash !== 'number') {
+    return { ok: false, msg: 'No portfolio.' };
+  }
+  if (!Array.isArray(state.collectionClaims)) state.collectionClaims = [];
+  if (state.collectionClaims.includes(milestone.id)) {
+    return { ok: false, msg: 'Already claimed.' };
+  }
+  if (!isMilestoneEarned(milestone, state, opts)) {
+    return { ok: false, msg: 'Milestone not earned yet.' };
+  }
+
+  state.collectionClaims.push(milestone.id);
+  const cash = Math.max(0, Math.floor(Number(milestone.cash) || 0));
+  if (cash > 0) {
+    state.portfolio.cash += cash;
+  }
+  state.collectionRewardCashTotal = Math.max(0, Number(state.collectionRewardCashTotal) || 0) + cash;
+  if (milestone.flair) {
+    if (!state.meta || typeof state.meta !== 'object') state.meta = {};
+    state.meta.collectionFlair = String(milestone.flair).slice(0, 40);
+  }
+
+  return {
+    ok: true,
+    milestone,
+    cash,
+    rep: Math.max(0, Math.floor(Number(milestone.rep) || 0)),
+    flair: milestone.flair || null,
+    claims: state.collectionClaims.slice(),
+    rewardCashTotal: state.collectionRewardCashTotal,
+  };
+}
+
+/** Sum of cash rewards for a claim list (sanitize ledger). */
+export function getCollectionClaimedCashTotal(claims = []) {
+  let total = 0;
+  (Array.isArray(claims) ? claims : []).forEach((id) => {
+    const m = COLLECTION_MILESTONE_BY_ID.get(id);
+    if (m) total += Math.max(0, Math.floor(Number(m.cash) || 0));
+  });
+  return total;
+}
+
+/**
+ * Drop forged claims that are not currently earned.
+ * @param {string[]} claims
+ * @param {object} state
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ */
+export function sanitizeCollectionClaims(claims, state, opts = {}) {
+  const list = Array.isArray(claims) ? claims : [];
+  const kept = [];
+  const seen = new Set();
+  list.forEach((id) => {
+    if (!KNOWN_COLLECTION_MILESTONE_IDS.has(id) || seen.has(id)) return;
+    const milestone = COLLECTION_MILESTONE_BY_ID.get(id);
+    if (!milestone || !isMilestoneEarned(milestone, state, opts)) return;
+    seen.add(id);
+    kept.push(id);
+  });
+  return kept;
+}

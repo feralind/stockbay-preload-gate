@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StockWay — Candles</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: #14171c; font-family: 'Segoe UI', system-ui, sans-serif; overflow: hidden; user-select: none; -webkit-app-region: drag; }
+    body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(59,130,246,0.12), transparent 60%), radial-gradient(ellipse 60% 40% at 80% 100%, rgba(38,166,154,0.08), transparent 55%); pointer-events: none; }
+    .wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; position: relative; z-index: 1; }
+    .chart-brand { width: 88px; height: 88px; border-radius: 22px; background: linear-gradient(145deg, #1e2229, #161a20); border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 18px 48px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06); overflow: hidden; position: relative; }
+    .chart-brand canvas, .chart-loader canvas { display: block; width: 100%; height: 100%; }
+    .logo { font-size: 34px; font-weight: 900; letter-spacing: -1px; background: linear-gradient(180deg, #f3f4f6, #c9d1d9); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .ver { font-size: 11px; font-weight: 600; letter-spacing: 4px; color: #6e7681; text-transform: uppercase; }
+    .status { font-size: 13px; color: #8b949e; min-height: 20px; -webkit-app-region: no-drag; }
+    .chart-loader { width: 268px; height: 78px; border-radius: 14px; background: #0d1117; border: 1px solid rgba(255,255,255,0.07); overflow: hidden; position: relative; -webkit-app-region: no-drag; }
+    .chart-loader .scan { position: absolute; top: 0; bottom: 0; width: 48px; background: linear-gradient(90deg, transparent, rgba(88,166,255,0.07), transparent); animation: scan 2.8s ease-in-out infinite; pointer-events: none; }
+    @keyframes scan { 0% { left: -20%; opacity: 0; } 15%, 85% { opacity: 1; } 100% { left: 110%; opacity: 0; } }
+    .tagline { font-size: 10px; color: #484f58; letter-spacing: 2px; text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="chart-brand"><canvas id="brand-chart" width="176" height="176"></canvas></div>
+    <div class="logo">StockWay</div>
+    <div class="ver">Simulator v1.0.0</div>
+    <div class="status" id="status">Starting up…</div>
+    <div class="chart-loader"><canvas id="loader-chart" width="536" height="156"></canvas><div class="scan"></div></div>
+    <div class="tagline">Paper Trade · Live Data · Real Practice</div>
+  </div>
+  <script>
+    const BULL='#26a69a', BEAR='#ef5350', GRID='rgba(255,255,255,0.04)', MID='rgba(239,83,80,0.45)';
+    const rb=(a,b)=>a+Math.random()*(b-a);
+    const mk=(p,v)=>{const o=p,c=Math.max(2,o+rb(-v*.55,v*.55)),w=v*rb(.25,.9);return{open:o,close:c,high:Math.max(o,c)+w*rb(.2,1),low:Math.min(o,c)-w*rb(.2,1)}};
+    const seed=(n,s,v)=>{const o=[];let p=s;for(let i=0;i<n;i++){const c=mk(p,v);o.push(c);p=c.close;}return o;};
+    const push=(s,v)=>{const n=mk(s.at(-1)?.close??50,v);s.push(n);if(s.length>48)s.shift();return n;};
+    function draw(canvas,series,opts={}){const ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height,pad=opts.pad??10,gs=opts.gridStep??18;ctx.clearRect(0,0,w,h);const lo=series.map(c=>c.low),hi=series.map(c=>c.high);let mn=Math.min(...lo),mx=Math.max(...hi),rg=Math.max(.001,mx-mn);mn-=rg*.12;mx+=rg*.12;const pw=w-pad*2,ph=h-pad*2,y=v=>pad+ph-((v-mn)/(mx-mn))*ph;ctx.strokeStyle=GRID;ctx.lineWidth=1;for(let y0=pad;y0<=h-pad;y0+=gs){ctx.beginPath();ctx.moveTo(pad,y0);ctx.lineTo(w-pad,y0);ctx.stroke();}for(let x=pad;x<=w-pad;x+=gs){ctx.beginPath();ctx.moveTo(x,pad);ctx.lineTo(x,h-pad);ctx.stroke();}ctx.setLineDash([4,6]);ctx.strokeStyle=MID;ctx.beginPath();ctx.moveTo(pad,y((mn+mx)/2));ctx.lineTo(w-pad,y((mn+mx)/2));ctx.stroke();ctx.setLineDash([]);const n=series.length,slot=pw/Math.max(n,1),bw=Math.max(2,slot*.55);series.forEach((c,i)=>{const x=pad+i*slot+slot/2,up=c.close>=c.open,color=up?BULL:BEAR;ctx.strokeStyle=ctx.fillStyle=color;ctx.lineWidth=Math.max(1,bw*.15);ctx.beginPath();ctx.moveTo(x,y(c.high));ctx.lineTo(x,y(c.low));ctx.stroke();const t=Math.min(y(c.open),y(c.close));ctx.fillRect(x-bw/2,t,bw,Math.max(1.5,Math.abs(y(c.close)-y(c.open))));});}
+    function mount(id,n,v,opts){const c=document.getElementById(id),s=seed(n,rb(40,58),v);let lp=performance.now();(function f(now){if(now-lp>opts.interval){push(s,v);lp=now;}draw(c,s,opts);requestAnimationFrame(f);})(0);}
+    mount('brand-chart',14,4.2,{pad:14,gridStep:22,interval:520});mount('loader-chart',28,2.8,{pad:12,gridStep:26,interval:380});
+  </script>
+</body>
+</html>

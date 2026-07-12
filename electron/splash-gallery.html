@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>StockWay — Splash Picker</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0b0e11; color: #e8eaed; font-family: 'Segoe UI', system-ui, sans-serif; padding: 28px; }
+    h1 { font-size: 22px; margin-bottom: 6px; }
+    p { color: #8b949e; font-size: 14px; margin-bottom: 24px; max-width: 640px; line-height: 1.5; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 16px; overflow: hidden; }
+    .card.active { border-color: #3fb950; box-shadow: 0 0 0 1px rgba(63,185,80,0.3); }
+    .card-head { padding: 12px 14px; border-bottom: 1px solid #21262d; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .card-head strong { font-size: 14px; }
+    .card-head span { font-size: 11px; color: #6e7681; text-transform: uppercase; letter-spacing: 0.06em; }
+    .preview { height: 220px; background: #0d1117; }
+    .preview iframe { width: 100%; height: 100%; border: 0; pointer-events: none; transform: scale(0.72); transform-origin: top center; height: 138%; margin-top: -8%; }
+    .card-foot { padding: 12px 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn { border: 1px solid #30363d; background: #21262d; color: #e8eaed; padding: 8px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; }
+    .btn:hover { background: #30363d; }
+    .btn-accent { background: #238636; border-color: #2ea043; }
+    .btn-accent:hover { background: #2ea043; }
+    .note { margin-top: 24px; padding: 14px 16px; background: #161b22; border: 1px solid #30363d; border-radius: 12px; font-size: 13px; color: #8b949e; max-width: 720px; }
+    .note code { color: #58a6ff; }
+    #toast { position: fixed; bottom: 20px; right: 20px; background: #238636; color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 13px; font-weight: 600; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    #toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
+  <h1>StockWay splash options</h1>
+  <p>Pick the loading screen style you want. Preview each one below, then click <strong>Use this splash</strong> — Electron will load it on next launch.</p>
+  <div class="grid" id="grid"></div>
+  <div class="note">
+  Active choice is stored in <code>electron/splash-active.txt</code> (one word: <code>candles</code>, <code>neon</code>, <code>ticker</code>, or <code>bars</code>).
+  Open this page anytime at <code>/electron/splash-gallery.html</code> while the dev server is running.
+  </div>
+  <div id="toast"></div>
+  <script>
+    const OPTIONS = [
+      { id: 'candles', name: 'A — Live Candles', desc: 'Mini chart + candlestick loader', file: 'splash-candles.html' },
+      { id: 'neon', name: 'B — Neon Pulse', desc: 'Glowing line wave + ripple ring', file: 'splash-neon.html' },
+      { id: 'ticker', name: 'C — Ticker Tape', desc: 'Scrolling symbols & % moves', file: 'splash-ticker.html' },
+      { id: 'bars', name: 'D — Volume Bars', desc: 'Equalizer-style pulsing bars', file: 'splash-bars.html' },
+    ];
+    let active = 'candles';
+
+    async function loadActive() {
+      try {
+        const r = await fetch('splash-active.txt', { cache: 'no-store' });
+        if (r.ok) active = (await r.text()).trim().toLowerCase() || 'candles';
+      } catch (_) {}
+      render();
+    }
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2200);
+    }
+
+  async function setActive(id) {
+      active = id;
+      render();
+      try {
+        await fetch('/api/splash-choice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ choice: id }),
+        });
+        showToast(`Saved — ${id} splash will load next launch`);
+      } catch {
+        showToast(`Copy "${id}" into electron/splash-active.txt manually`);
+      }
+    }
+
+    function render() {
+      document.getElementById('grid').innerHTML = OPTIONS.map(o => `
+        <div class="card ${o.id === active ? 'active' : ''}">
+          <div class="card-head"><strong>${o.name}</strong><span>${o.desc}</span></div>
+          <div class="preview"><iframe src="${o.file}" title="${o.name}"></iframe></div>
+          <div class="card-foot">
+            <a class="btn" href="${o.file}" target="_blank">Fullscreen</a>
+            <button class="btn btn-accent" type="button" data-id="${o.id}">Use this splash</button>
+          </div>
+        </div>`).join('');
+      document.querySelectorAll('[data-id]').forEach(btn => {
+        btn.onclick = () => setActive(btn.dataset.id);
+      });
+    }
+
+    loadActive();
+  </script>
+</body>
+</html>
