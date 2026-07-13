@@ -1287,6 +1287,32 @@ async function main() {
     assert.equal(getVaultBookValue({ vaultOwned: [] }), 0);
   });
 
+  test('getPlayerStanding labels Rank, Collection, Desk, and Flair without inventing a new currency', async () => {
+    const { getPlayerStanding } = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
+    const standing = getPlayerStanding({
+      meta: { reputation: 130, collectionFlair: 'Master Collector' },
+      vaultOwned: ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'],
+      perks: [],
+      seatOwned: false,
+    }, {
+      cosmetics: {
+        dashboard: 'goldTerminal',
+        background: 'yachtBackground',
+        badge: 'apexBadge',
+        title: 'floorLegendTitle',
+      },
+      blackMarketPool: BLACKMARKET_ITEM_POOL,
+      seatItem: THE_SEAT,
+      salonPool: PRIVATE_SALON_POOL,
+    });
+    assert.equal(standing.rankName, 'Trusted Trader');
+    assert.equal(standing.rep, 130);
+    assert.ok(standing.collectionScore >= 8);
+    assert.equal(standing.deskTier, 3);
+    assert.match(standing.deskLabel, /Desk Prestige III/i);
+    assert.equal(standing.flair, 'Master Collector');
+  });
+
   test('Desk Prestige scales with equipped vault slots and caps daily REP', () => {
     const owned = ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'];
     const none = getVaultDeskAura({ cosmetics: {}, vaultOwned: owned });
@@ -1605,7 +1631,10 @@ async function main() {
 
   {
     const dashMod = await import(pathToFileURL(path.join(__dirname, '../js/ui/dashboard.js')).href);
-    const { buildFirmRelicRowHtml, configureDashboardUi } = dashMod;
+    const {
+      buildFirmRelicRowHtml, configureDashboardUi,
+      getSoftOfficeStage, getNextNetWorthMilestone,
+    } = dashMod;
     test('dashboard Firm Snapshot shows None equipped with correct slot count when empty', () => {
       const one = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [], seatOwned: false });
       assert.match(one, /None equipped \(1 slot\)/);
@@ -1613,6 +1642,27 @@ async function main() {
       const two = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [], seatOwned: true });
       assert.match(two, /None equipped \(2 slots\)/);
       assert.match(two, /data-goto="blackmarket"/);
+    });
+    test('getSoftOfficeStage advances with Net Worth and REP (eligibility gates)', () => {
+      const early = getSoftOfficeStage(500, 0);
+      assert.equal(early.current.id, 'bedroom');
+      assert.ok(early.next);
+      const mid = getSoftOfficeStage(120000, 250);
+      assert.equal(mid.current.id, 'professional');
+      const peak = getSoftOfficeStage(60_000_000, 2000);
+      assert.equal(peak.current.id, 'empire');
+      assert.equal(peak.next, null);
+    });
+    test('getNextNetWorthMilestone uses vault-inclusive NW and stays display-only', () => {
+      const first = getNextNetWorthMilestone(400);
+      assert.equal(first.id, 'nw1k');
+      assert.equal(first.complete, false);
+      assert.ok(first.pct < 100);
+      const mid = getNextNetWorthMilestone(50_000);
+      assert.equal(mid.id, 'nw100k');
+      const done = getNextNetWorthMilestone(2_000_000_000);
+      assert.equal(done.complete, true);
+      assert.equal(done.pct, 100);
     });
     test('dashboard Firm Snapshot lists equipped relic names', () => {
       const html = buildFirmRelicRowHtml({
@@ -1643,6 +1693,226 @@ async function main() {
       const handler = () => { navigated = fakeBtn.dataset.goto; };
       handler();
       assert.equal(navigated, 'blackmarket');
+    });
+  }
+
+  {
+    const officeMod = await import(pathToFileURL(path.join(__dirname, '../js/office.js')).href);
+    const {
+      OFFICE_TIERS, getEffectiveOfficeTier, getNextOfficeUpgrade, canPurchaseOfficeUpgrade,
+      purchaseOfficeUpgrade, sanitizeOfficeProgress, getCumulativeOfficeSpend,
+    } = officeMod;
+
+    test('office ladder starts at bedroom and purchases one step at a time', () => {
+      assert.equal(OFFICE_TIERS[0].id, 'bedroom');
+      assert.equal(OFFICE_TIERS[OFFICE_TIERS.length - 1].id, 'empire');
+      const state = {
+        portfolio: { cash: 5000 },
+        officeTierId: 'bedroom',
+        officeSpentTotal: 0,
+      };
+      assert.equal(getEffectiveOfficeTier(state).id, 'bedroom');
+      assert.equal(getNextOfficeUpgrade(state).id, 'studio');
+      const blocked = canPurchaseOfficeUpgrade(state, { netWorth: 500, reputation: 0 });
+      assert.equal(blocked.ok, false);
+      assert.ok(blocked.code === 'net' || blocked.code === 'rep');
+      const affordFail = canPurchaseOfficeUpgrade(
+        { ...state, portfolio: { cash: 100 } },
+        { netWorth: 3000, reputation: 25 },
+      );
+      assert.equal(affordFail.ok, false);
+      assert.equal(affordFail.code, 'cash');
+      const ok = purchaseOfficeUpgrade(state, { netWorth: 3000, reputation: 25 });
+      assert.equal(ok.ok, true);
+      assert.equal(state.officeTierId, 'studio');
+      assert.equal(state.officeSpentTotal, 2000);
+      assert.equal(state.portfolio.cash, 3000);
+      const cashBlocked = purchaseOfficeUpgrade(state, { netWorth: 200000, reputation: 300 });
+      assert.equal(cashBlocked.ok, false);
+      assert.equal(cashBlocked.code, 'cash');
+      const ordered = purchaseOfficeUpgrade(
+        { ...state, portfolio: { cash: 100000 } },
+        { netWorth: 5000, reputation: 300 },
+      );
+      assert.equal(ordered.ok, false);
+      assert.equal(ordered.code, 'net');
+    });
+
+    test('sanitizeOfficeProgress rejects forged high tiers without spend ledger', () => {
+      const forged = sanitizeOfficeProgress({ officeTierId: 'empire', officeSpentTotal: 0 });
+      assert.equal(forged.officeTierId, 'bedroom');
+      const studioSpend = getCumulativeOfficeSpend('studio');
+      const legit = sanitizeOfficeProgress({ officeTierId: 'studio', officeSpentTotal: studioSpend });
+      assert.equal(legit.officeTierId, 'studio');
+      assert.equal(legit.officeSpentTotal, studioSpend);
+      const unknown = sanitizeOfficeProgress({ officeTierId: 'penthouseX', officeSpentTotal: 99999 });
+      assert.equal(unknown.officeTierId, 'bedroom');
+    });
+  }
+
+  {
+    const megaMod = await import(pathToFileURL(path.join(__dirname, '../js/mega-goals.js')).href);
+    const luxMod = await import(pathToFileURL(path.join(__dirname, '../js/luxury.js')).href);
+    const {
+      getActiveMegaGoal, claimMegaGoal, canClaimMegaGoal, getNextNetWorthMilestone: megaNw,
+      sanitizeMegaGoalsClaimed,
+    } = megaMod;
+    const {
+      LUXURY_ITEMS, purchaseLuxury, canPurchaseLuxury, sanitizeLuxuryProgress, getNextLuxuryPurchase,
+    } = luxMod;
+
+    test('active mega goal prioritizes NW then office/REP/collection; claim is flair-only', () => {
+      const state = {
+        portfolio: { cash: 500 },
+        officeTierId: 'bedroom',
+        meta: { reputation: 0, megaGoalsClaimed: [] },
+        vaultOwned: [],
+        blackMarketOwned: [],
+        seatOwned: false,
+      };
+      const early = getActiveMegaGoal(state, { netWorth: 500 });
+      assert.equal(early.goal.id, 'nw1k');
+      assert.equal(early.claimable, false);
+      state.meta.megaGoalsClaimed = ['nw1k', 'nw10k', 'nw100k', 'nw1m', 'nw10m', 'nw100m', 'nw1b'];
+      const afterNw = getActiveMegaGoal(state, { netWorth: 2_000_000_000 });
+      assert.equal(afterNw.goal.id, 'officeEmpire');
+      const claimOffice = canClaimMegaGoal(
+        { ...state, officeTierId: 'empire' },
+        'officeEmpire',
+        { netWorth: 2_000_000_000 },
+      );
+      assert.equal(claimOffice.ok, true);
+      const claimed = claimMegaGoal(
+        { ...state, officeTierId: 'empire', meta: { ...state.meta, megaGoalsClaimed: [...state.meta.megaGoalsClaimed] } },
+        'officeEmpire',
+        { netWorth: 2_000_000_000 },
+      );
+      assert.equal(claimed.ok, true);
+      assert.equal(claimed.flair, 'Empire Seat');
+      assert.equal(claimed.goal.rep, undefined);
+      const nw = megaNw(400);
+      assert.equal(nw.id, 'nw1k');
+    });
+
+    test('sanitizeMegaGoalsClaimed drops forged incomplete claims', () => {
+      const cleaned = sanitizeMegaGoalsClaimed(['nw1b', 'nw1k'], {
+        portfolio: { cash: 500 },
+        meta: { reputation: 0 },
+        officeTierId: 'bedroom',
+        vaultOwned: [],
+        blackMarketOwned: [],
+      }, { netWorth: 1500 });
+      assert.deepEqual(cleaned, ['nw1k']);
+    });
+
+    test('luxury purchase is ordered cosmetic sink and does not mint net-worth book fields', () => {
+      assert.ok(LUXURY_ITEMS.length >= 6);
+      const state = {
+        portfolio: { cash: 150_000 },
+        luxuryOwned: [],
+        luxurySpentTotal: 0,
+        meta: {},
+      };
+      assert.equal(getNextLuxuryPurchase(state).id, 'cornerSuiteArt');
+      const skip = canPurchaseLuxury(state, 'dynastyWing');
+      assert.equal(skip.ok, false);
+      assert.equal(skip.code, 'order');
+      const buy = purchaseLuxury(state, 'cornerSuiteArt');
+      assert.equal(buy.ok, true);
+      assert.equal(state.portfolio.cash, 50_000);
+      assert.deepEqual(state.luxuryOwned, ['cornerSuiteArt']);
+      assert.equal(state.luxurySpentTotal, 100_000);
+      assert.equal(state.vaultSpentTotal, undefined);
+      const forged = sanitizeLuxuryProgress({
+        luxuryOwned: ['dynastyWing'],
+        luxurySpentTotal: 0,
+      });
+      assert.deepEqual(forged.luxuryOwned, []);
+    });
+  }
+
+  {
+    const flavorMod = await import(pathToFileURL(path.join(__dirname, '../js/collection-flavor.js')).href);
+    const metaMod = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
+    const {
+      COLLECTION_SETS, getSetProgress, canClaimSet, claimSetFlair, sanitizeSetClaims, getItemLore,
+    } = flavorMod;
+    const { getActiveFlair, createMetaState } = metaMod;
+
+    test('collection set progress, claim-once flair, and forge strip', () => {
+      assert.ok(COLLECTION_SETS.length >= 5);
+      const desk = COLLECTION_SETS.find((s) => s.id === 'deskInstruments');
+      assert.ok(desk);
+      const incomplete = {
+        meta: createMetaState(),
+        vaultOwned: desk.memberIds.slice(0, 2),
+        blackMarketOwned: [],
+        seatOwned: false,
+      };
+      const mid = getSetProgress(incomplete, 'deskInstruments');
+      assert.equal(mid.owned, 2);
+      assert.equal(mid.complete, false);
+      assert.equal(canClaimSet(incomplete, 'deskInstruments').ok, false);
+
+      const ready = {
+        meta: createMetaState(),
+        vaultOwned: desk.memberIds.slice(),
+        blackMarketOwned: [],
+        seatOwned: false,
+      };
+      assert.equal(getSetProgress(ready, 'deskInstruments').complete, true);
+      const claimed = claimSetFlair(ready, 'deskInstruments');
+      assert.equal(claimed.ok, true);
+      assert.equal(claimed.flair, 'Instrument Desk');
+      assert.deepEqual(ready.meta.setClaims, ['deskInstruments']);
+      assert.equal(ready.meta.setFlair, 'Instrument Desk');
+      assert.equal(claimSetFlair(ready, 'deskInstruments').ok, false);
+      assert.equal(claimSetFlair(ready, 'deskInstruments').code, 'claimed');
+
+      const forged = sanitizeSetClaims(['deskInstruments', 'fakeSet', 'deskInstruments'], {
+        vaultOwned: [],
+        blackMarketOwned: [],
+        seatOwned: false,
+      });
+      assert.deepEqual(forged, []);
+      const kept = sanitizeSetClaims(['deskInstruments'], {
+        vaultOwned: desk.memberIds.slice(),
+        blackMarketOwned: [],
+        seatOwned: false,
+      });
+      assert.deepEqual(kept, ['deskInstruments']);
+    });
+
+    test('log entries expose lore/set fields; flair cascade is mega → luxury → set → collection', () => {
+      const lore = getItemLore('goldTerminal');
+      assert.ok(typeof lore === 'string' && lore.length > 10);
+      const entries = getCollectionLogEntries({
+        vaultOwned: ['goldTerminal'],
+        blackMarketOwned: [],
+        seatOwned: false,
+      }, {
+        blackMarketPool: BLACKMARKET_ITEM_POOL,
+        seatItem: THE_SEAT,
+        salonPool: PRIVATE_SALON_POOL,
+      });
+      const gold = entries.find((e) => e.id === 'goldTerminal');
+      assert.ok(gold);
+      assert.equal(gold.setId, 'deskInstruments');
+      assert.equal(gold.setName, 'Desk Instruments');
+      assert.ok(gold.lore);
+
+      const meta = createMetaState();
+      meta.collectionFlair = 'Master Collector';
+      meta.setFlair = 'Instrument Desk';
+      meta.luxuryFlair = 'Harbor Slip';
+      meta.megaGoalFlair = 'Million Desk';
+      assert.equal(getActiveFlair(meta), 'Million Desk');
+      meta.megaGoalFlair = null;
+      assert.equal(getActiveFlair(meta), 'Harbor Slip');
+      meta.luxuryFlair = null;
+      assert.equal(getActiveFlair(meta), 'Instrument Desk');
+      meta.setFlair = null;
+      assert.equal(getActiveFlair(meta), 'Master Collector');
     });
   }
 
@@ -2476,6 +2746,63 @@ async function main() {
     assert.equal(legit.seatOwned, true);
     assert.equal(legit.seatPurchaseDay, 42);
     assert.equal(legit.seatSpentTotal, THE_SEAT.cost);
+  });
+
+  test('sanitizeRunData clamps forged officeTierId without matching spend ledger', () => {
+    const forged = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 900, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      perks: [],
+      officeTierId: 'empire',
+      officeSpentTotal: 0,
+    });
+    assert.equal(forged.officeTierId, 'bedroom');
+    assert.equal(forged.officeSpentTotal, 0);
+
+    const legit = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 900, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      perks: [],
+      officeTierId: 'studio',
+      officeSpentTotal: 2000,
+    });
+    assert.equal(legit.officeTierId, 'studio');
+    assert.equal(legit.officeSpentTotal, 2000);
+  });
+
+  test('sanitizeRunData strips forged luxury, mega goal, and set claims', () => {
+    const forged = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 900, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      perks: [],
+      luxuryOwned: ['dynastyWing'],
+      luxurySpentTotal: 0,
+      meta: {
+        reputation: 0,
+        megaGoalsClaimed: ['nw1b'],
+        megaGoalFlair: 'Billionaire Desk',
+        luxuryFlair: 'Dynasty Wing',
+        setClaims: ['deskInstruments', 'fakeSet'],
+        setFlair: 'Instrument Desk',
+      },
+    });
+    assert.deepEqual(forged.luxuryOwned, []);
+    assert.deepEqual(forged.meta.megaGoalsClaimed, []);
+    assert.equal(forged.meta.megaGoalFlair, null);
+    assert.equal(forged.meta.luxuryFlair, null);
+    assert.deepEqual(forged.meta.setClaims, []);
+    assert.equal(forged.meta.setFlair, null);
+
+    const legitLux = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 900, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      perks: [],
+      luxuryOwned: ['cornerSuiteArt'],
+      luxurySpentTotal: 100_000,
+      meta: { reputation: 0, megaGoalsClaimed: [], luxuryFlair: null },
+    });
+    assert.deepEqual(legitLux.luxuryOwned, ['cornerSuiteArt']);
+    assert.equal(legitLux.luxurySpentTotal, 100_000);
   });
 
   test('sanitizeRunData strips forged equipped relic IDs and enforces slot caps', () => {

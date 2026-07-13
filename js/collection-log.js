@@ -1,11 +1,22 @@
 // @ts-check
 import { VAULT_ITEMS, getVaultItem, VAULT_COST_BY_ID } from './vault.js';
 import { isRelicItem } from './relics.js';
+import { getItemLore, getSetForItemId } from './collection-flavor.js';
 
 function normalizeRarity(item, fallback = 'common') {
   const r = String(item?.rarity || '').toLowerCase();
   if (r === 'common' || r === 'rare' || r === 'legendary' || r === 'masterwork' || r === 'crown') return r;
   return fallback;
+}
+
+/** Display-only lore / set chips for Collection Log + Museum. */
+function flavorFields(id) {
+  const set = getSetForItemId(id);
+  return {
+    lore: getItemLore(id),
+    setId: set?.id || null,
+    setName: set?.name || null,
+  };
 }
 
 /** Claimable completion milestones — cash/REP only; no buying-power hooks. */
@@ -141,6 +152,7 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       rarity: normalizeRarity(item, 'common'),
       owned: vaultOwned.has(item.id),
       cost: Number(item.cost) || 0,
+      ...flavorFields(item.id),
     });
   });
 
@@ -155,6 +167,7 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       rarity: normalizeRarity(item, 'crown'),
       owned: vaultOwned.has(item.id),
       cost: Number(item.cost) || 0,
+      ...flavorFields(item.id),
     });
   });
 
@@ -169,6 +182,7 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       rarity: normalizeRarity(item, 'rare'),
       owned: blackOwned.has(item.id),
       cost: Number(item.cost) || 0,
+      ...flavorFields(item.id),
     });
   });
 
@@ -182,6 +196,7 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       rarity: normalizeRarity(seatItem, 'legendary'),
       owned: !!state.seatOwned,
       cost: Number(seatItem.cost) || 0,
+      ...flavorFields(seatItem.id),
     });
   }
 

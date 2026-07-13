@@ -1,21 +1,26 @@
 // @ts-check
 /** Clamp and validate run data on load / import — blocks save-edit god-mode exploits. */
 import { CONFIG, PERKS } from './config.js';
-import { createFinanceState } from './finance.js';
+import { createFinanceState, getTotalDebt } from './finance.js';
 import { createMetaState } from './meta.js';
 import { normalizePerkCalloutsShown } from './onboarding-walkthrough.js';
-import { KNOWN_VAULT_IDS, VAULT_COST_BY_ID } from './vault.js';
+import { KNOWN_VAULT_IDS, VAULT_COST_BY_ID, getVaultBookValue } from './vault.js';
 import {
   BLACKMARKET_COST_BY_ID, BLACKMARKET_ITEM_POOL, BLACKMARKET_SEEN_EXPIRED_MAX, KNOWN_BLACKMARKET_IDS,
 } from './blackmarket.js';
 import { PRIVATE_SALON_POOL, SALON_SEEN_EXPIRED_MAX } from './private-salon.js';
 import { sanitizeEquippedRelics } from './relics.js';
+import { sanitizeOfficeProgress } from './office.js';
+import { sanitizeLuxuryProgress, getLuxuryItem } from './luxury.js';
+import { sanitizeMegaGoalsClaimed, MEGA_GOALS } from './mega-goals.js';
+import { getEquity } from './portfolio.js';
 import { THE_SEAT } from './the-seat.js';
 import {
   getCollectionClaimedCashTotal,
   sanitizeCollectionClaims,
   COLLECTION_MILESTONE_BY_ID,
 } from './collection-log.js';
+import { sanitizeSetClaims, getSetById } from './collection-flavor.js';
 
 const MAX_CASH = 1e12;
 const MAX_SHARES = 1_000_000;
@@ -247,6 +252,20 @@ export function sanitizeRunData(run) {
     seatOwned: out.seatOwned,
   });
 
+  const office = sanitizeOfficeProgress({
+    officeTierId: out.officeTierId,
+    officeSpentTotal: out.officeSpentTotal,
+  });
+  out.officeTierId = office.officeTierId;
+  out.officeSpentTotal = office.officeSpentTotal;
+
+  const luxury = sanitizeLuxuryProgress({
+    luxuryOwned: out.luxuryOwned,
+    luxurySpentTotal: out.luxurySpentTotal,
+  });
+  out.luxuryOwned = luxury.luxuryOwned;
+  out.luxurySpentTotal = luxury.luxurySpentTotal;
+
   const collectionOpts = {
     blackMarketPool: BLACKMARKET_ITEM_POOL,
     seatItem: THE_SEAT,
@@ -272,6 +291,33 @@ export function sanitizeRunData(run) {
     );
     const flair = typeof m.collectionFlair === 'string' ? m.collectionFlair.trim().slice(0, 40) : '';
     m.collectionFlair = flair && claimedFlairs.has(flair) ? flair : null;
+
+    const debt = out.finance ? getTotalDebt(out.finance) : 0;
+    const netWorth = getEquity(out.portfolio) - debt + getVaultBookValue(out);
+    const megaCtx = { netWorth, ...collectionOpts };
+    m.megaGoalsClaimed = sanitizeMegaGoalsClaimed(m.megaGoalsClaimed, out, megaCtx);
+    const megaFlairSet = new Set(
+      m.megaGoalsClaimed
+        .map((id) => MEGA_GOALS.find((g) => g.id === id)?.flair)
+        .filter(Boolean),
+    );
+    const megaFlair = typeof m.megaGoalFlair === 'string' ? m.megaGoalFlair.trim().slice(0, 40) : '';
+    m.megaGoalFlair = megaFlair && megaFlairSet.has(megaFlair) ? megaFlair : null;
+
+    const luxFlairSet = new Set(
+      out.luxuryOwned.map((id) => getLuxuryItem(id)?.flair).filter(Boolean),
+    );
+    const luxFlair = typeof m.luxuryFlair === 'string' ? m.luxuryFlair.trim().slice(0, 40) : '';
+    m.luxuryFlair = luxFlair && luxFlairSet.has(luxFlair) ? luxFlair : null;
+
+    m.setClaims = sanitizeSetClaims(m.setClaims, out);
+    const setFlairSet = new Set(
+      m.setClaims
+        .map((id) => getSetById(id)?.flair)
+        .filter(Boolean),
+    );
+    const setFlair = typeof m.setFlair === 'string' ? m.setFlair.trim().slice(0, 40) : '';
+    m.setFlair = setFlair && setFlairSet.has(setFlair) ? setFlair : null;
     out.meta = m;
   }
 

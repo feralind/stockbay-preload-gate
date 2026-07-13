@@ -227,25 +227,32 @@
       <!-- Dashboard -->
       <section class="view-panel active" id="view-dashboard">
         <div class="dashboard-view">
-          <div class="dash-welcome">
-            <div>
-              <h2>Welcome to the desk.</h2>
-                  <p class="muted-text">Turn $500 into a trading empire — live starting prices, accelerated days, staff & leverage.</p>
+          <header class="dash-hero" id="dash-hero">
+            <div class="dash-hero-copy">
+              <p class="dash-hero-eyebrow" id="dash-hero-eyebrow">Your firm</p>
+              <h2 id="dash-hero-title">Welcome to the desk.</h2>
+              <p class="muted-text" id="dash-hero-blurb">Turn $500 into a trading empire — live starting prices, accelerated days, staff &amp; leverage.</p>
             </div>
             <div class="dash-quick">
               <button class="btn btn-accent" data-goto="trade">Open Trade Desk</button>
               <button class="btn" data-goto="listings">Browse Listings</button>
               <button class="btn" data-goto="finance">Financing</button>
             </div>
+          </header>
+          <div class="dash-standing" id="dash-standing" aria-label="Standing"></div>
+          <div class="dash-progress-row">
+            <div class="dash-card dash-office-card" id="dash-office-stage" aria-label="Office"></div>
+            <div class="dash-card dash-goal-card" id="dash-mega-goal" aria-label="Mega goal"></div>
           </div>
-          <div class="dash-challenge" id="dash-challenge"></div>
+          <div class="dash-challenge" id="dash-challenge" hidden aria-hidden="true"></div>
           <div class="dash-stats" id="dash-stats"></div>
           <div class="dash-charts">
             <div class="dash-card">
               <div class="dash-card-head">
-                <span>Net Worth Live</span>
+                <span>Trading equity history</span>
                 <span class="up" id="dash-equity-delta">+$0</span>
               </div>
+              <p class="dash-chart-note">Chart tracks trading equity (cash + positions − debt). Net Worth KPI also includes Vault book value.</p>
               <canvas id="equity-chart" width="600" height="160"></canvas>
             </div>
             <div class="dash-card">

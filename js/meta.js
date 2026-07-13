@@ -1,7 +1,9 @@
 // @ts-check
-/** Reputation, daily challenges, equity history */
+/** Reputation, daily challenges, equity history, player Standing DTO */
 
 import { getRepRank } from './config.js';
+import { getCollectionPrestigeScore } from './collection-log.js';
+import { getVaultDeskAura, getVaultItem } from './vault.js';
 
 export function createMetaState() {
   return {
@@ -29,7 +31,31 @@ export function createMetaState() {
     vaultAuraRepToday: 0,
     /** Prestige title from Collection Log full-catalog claim. */
     collectionFlair: null,
+    /** Flair from claimed mega goals (no REP). */
+    megaGoalFlair: null,
+    /** Claimed mega goal ids. */
+    megaGoalsClaimed: [],
+    /** Flair from luxury ownership (cosmetic sink). */
+    luxuryFlair: null,
+    /** Claimed collection-set ids (flair only). */
+    setClaims: [],
+    /** Flair from claimed collection sets (cosmetic only). */
+    setFlair: null,
   };
+}
+
+/**
+ * Active Standing flair. Priority: mega → luxury → set → collection.
+ * @param {object} [meta]
+ * @returns {string | null}
+ */
+export function getActiveFlair(meta = {}) {
+  const mega = typeof meta.megaGoalFlair === 'string' ? meta.megaGoalFlair.trim() : '';
+  const lux = typeof meta.luxuryFlair === 'string' ? meta.luxuryFlair.trim() : '';
+  const set = typeof meta.setFlair === 'string' ? meta.setFlair.trim() : '';
+  const collection = typeof meta.collectionFlair === 'string' ? meta.collectionFlair.trim() : '';
+  const raw = mega || lux || set || collection;
+  return raw ? raw.slice(0, 40) : null;
 }
 
 export function adjustReputation(meta, delta, reason) {
@@ -122,4 +148,47 @@ export function recordClosedTrade(meta, pnl) {
 
 export function repTitle(rep) {
   return getRepRank(rep).name;
+}
+
+/**
+ * Unified Standing DTO for sidebar / dashboard — labels existing systems only.
+ * No new currency. Collection score ≠ Desk Prestige ≠ flair.
+ *
+ * @param {object} [state]
+ * @param {{
+ *   cosmetics?: Record<string, string|null>,
+ *   blackMarketPool?: Array<any>,
+ *   seatItem?: any,
+ *   salonPool?: Array<any>,
+ * }} [opts]
+ */
+export function getPlayerStanding(state = {}, opts = {}) {
+  const meta = state.meta || {};
+  const rep = Math.max(0, Math.floor(Number(meta.reputation) || 0));
+  const rankName = getRepRank(rep).name;
+  const collectionScore = getCollectionPrestigeScore(state, {
+    blackMarketPool: opts.blackMarketPool || [],
+    seatItem: opts.seatItem || null,
+    salonPool: opts.salonPool || [],
+  });
+  const cosmetics = opts.cosmetics && typeof opts.cosmetics === 'object' ? opts.cosmetics : {};
+  const aura = getVaultDeskAura({
+    cosmetics,
+    vaultOwned: state.vaultOwned,
+    perks: state.perks,
+  });
+  const flair = getActiveFlair(meta);
+  const titleItem = cosmetics.title ? getVaultItem(cosmetics.title) : null;
+  const deskLabel = aura.tier > 0 ? (aura.label || `Desk Prestige ${aura.tier}`) : null;
+  return {
+    rankName,
+    rep,
+    collectionScore,
+    deskTier: aura.tier || 0,
+    deskLabel,
+    deskSummary: aura.summary || '',
+    flair,
+    titleName: titleItem?.name || null,
+    seatOwned: !!state.seatOwned,
+  };
 }

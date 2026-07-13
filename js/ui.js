@@ -68,7 +68,7 @@ import {
 } from './ui/shared.js';
 export { fmt, fmtPnL } from './ui/shared.js';
 import { getTotalDebt } from './finance.js';
-import { repTitle } from './meta.js';
+import { getPlayerStanding } from './meta.js';
 import { toast, showAlert } from './notify.js';
 import { sfxError } from './sfx.js';
 import { CONFIG, REP_RANKS, getRepRank, getNextRepRank } from './config.js';
@@ -76,11 +76,12 @@ import { trapFocus } from './overlays.js';
 import {
   loadProfile, getProfile, saveProfile, clearAvatar, profileInitials, fileToAvatarDataUrl,
 } from './profile.js';
-import { getCollectionPrestigeScore } from './collection-log.js';
 import { BLACKMARKET_ITEM_POOL } from './blackmarket.js';
 import { PRIVATE_SALON_POOL } from './private-salon.js';
 import { getVaultItem, getVaultBookValue } from './vault.js';
 import { THE_SEAT } from './the-seat.js';
+import { getEffectiveOfficeTier } from './office.js';
+import { getHighestOwnedLuxury } from './luxury.js';
 import { resyncGlossaryHover } from './glossary-tooltips.js';
 
 installLogoErrorHandler();
@@ -611,6 +612,24 @@ function applyProfileCosmetics(profile) {
   }
 }
 
+/** Apply purchased office tier to body for CSS ambient (sibling to vault cosmetics). */
+function applyOfficeTierAttribute(state) {
+  const body = document.body;
+  if (!body) return;
+  const tier = getEffectiveOfficeTier(state);
+  if (tier?.id) body.setAttribute('data-office-tier', tier.id);
+  else body.removeAttribute('data-office-tier');
+}
+
+/** Quiet luxury ambient — highest owned prestige sink (not Net Worth). */
+function applyLuxuryAttribute(state) {
+  const body = document.body;
+  if (!body) return;
+  const lux = getHighestOwnedLuxury(state);
+  if (lux?.id) body.setAttribute('data-luxury', lux.id);
+  else body.removeAttribute('data-luxury');
+}
+
 export function renderProfileUI(state) {
   const profile = getProfile();
   const nameEl = document.getElementById('user-name');
@@ -627,26 +646,31 @@ export function renderProfileUI(state) {
   }
 
   applyProfileCosmetics(profile);
+  applyOfficeTierAttribute(state);
+  applyLuxuryAttribute(state);
   updatePlayerTier(state, profile);
 }
 
 function updatePlayerTier(state, profile = getProfile()) {
   const el = document.getElementById('player-tier');
   if (!el) return;
-  const rep = state.meta?.reputation ?? 0;
-  const prestige = getCollectionPrestigeScore(state, {
+  const standing = getPlayerStanding(state, {
+    cosmetics: profile?.cosmetics || {},
     blackMarketPool: BLACKMARKET_ITEM_POOL,
     seatItem: THE_SEAT,
     salonPool: PRIVATE_SALON_POOL,
   });
-  const titleItem = getProfileCosmeticItem(profile, 'title');
-  const seatSuffix = state.seatOwned ? ` · ${THE_SEAT.name}` : '';
-  if (titleItem || state.seatOwned) {
-    const titleLine = titleItem ? `${titleItem.name}${seatSuffix}` : THE_SEAT.name;
-    el.innerHTML = `<span class="user-tier-main">${escapeHtml(`${repTitle(rep)} · REP ${rep} · Prestige ${prestige}`)}</span><span class="user-tier-title">${escapeHtml(titleLine)}</span>`;
-    return;
+  const main = `${standing.rankName} · REP ${standing.rep}`;
+  const secondary = [];
+  secondary.push(`Collection ${standing.collectionScore}`);
+  if (standing.deskLabel) secondary.push(standing.deskLabel);
+  if (standing.flair) secondary.push(standing.flair);
+  else if (standing.titleName) secondary.push(standing.titleName);
+  if (standing.seatOwned && !secondary.some((s) => s.includes('Seat'))) {
+    secondary.push(THE_SEAT.name);
   }
-  el.textContent = `${repTitle(rep)} · REP ${rep} · Prestige ${prestige}`;
+  el.innerHTML = `<span class="user-tier-main">${escapeHtml(main)}</span>`
+    + `<span class="user-tier-standing">${escapeHtml(secondary.join(' · '))}</span>`;
 }
 
 export function bindProfileSettings(state) {

@@ -121,6 +121,9 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - The Seat — $500K once-in-a-career listing
 - Private Salon — ultra-rare crown jewels ($2.5M–$5M)
 - Collection Log with completion % & 9 milestones
+- Museum mode — owned gallery with short lore + 5 immersion sets
+- Set completion claims cosmetic flair only (no REP / cash / Desk Prestige)
+- Standing flair cascade: mega → luxury → set → collection
 - Profile cosmetics applied across the desk
 
 ### Achievements

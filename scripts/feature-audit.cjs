@@ -65,6 +65,19 @@ const checks = [
   ['Vault masterwork aura caps', 'js/vault.js', [/MASTERWORK_ITEM_BONUS_CAPS/, /prestigeBonus/, /itemBonuses/]],
   ['Private Salon module', 'js/private-salon.js', [/PRIVATE_SALON_POOL/, /getActiveSalonListing/, /purchaseSalonItem/]],
   ['Vault masterworks UI', 'js/ui/vault.js', [/vault-salon-panel/, /masterworks/, /data-salon-buy/]],
+  ['Player Standing DTO', 'js/meta.js', [/export function getPlayerStanding/, /collectionScore/, /deskLabel/]],
+  ['Standing sidebar labels', 'js/ui.js', [/getPlayerStanding/, /user-tier-standing/, /Collection /]],
+  ['Challenge dedupe', 'js/ui/dashboard.js', [/chBox\.innerHTML = ''/, /getPlayerStanding/, /dash-challenge-detail/]],
+  ['Dashboard hub evolution', 'js/ui/dashboard.js', [/getSoftOfficeStage/, /getNextNetWorthMilestone/, /renderDashStanding/, /btn-office-upgrade/, /getActiveMegaGoal/, /btn-claim-mega/]],
+  ['Dashboard hub markup', 'index.html', [/dash-hero/, /dash-office-stage/, /dash-mega-goal/, /Trading equity history/]],
+  ['Office progression module', 'js/office.js', [/OFFICE_TIERS/, /purchaseOfficeUpgrade/, /sanitizeOfficeProgress/, /getEffectiveOfficeTier/]],
+  ['Office tier ambient CSS', 'css/styles.css', [/data-office-tier/, /empire/]],
+  ['Mega goals module', 'js/mega-goals.js', [/MEGA_GOALS/, /getActiveMegaGoal/, /claimMegaGoal/, /megaGoalFlair/]],
+  ['Luxury sinks module', 'js/luxury.js', [/LUXURY_ITEMS/, /purchaseLuxury/, /sanitizeLuxuryProgress/, /Dynasty Wing/]],
+  ['Collection flavor module', 'js/collection-flavor.js', [/LORE_BY_ID/, /COLLECTION_SETS/, /claimSetFlair/, /sanitizeSetClaims/, /getSetProgress/]],
+  ['Set flair cascade', 'js/meta.js', [/setClaims/, /setFlair/, /getActiveFlair/, /megaGoalFlair/, /luxuryFlair/]],
+  ['Museum mode Collection Log', 'js/ui/collection-log.js', [/collection-mode/, /museum/, /data-set-claim/, /onClaimCollectionSet/, /listSetProgress/]],
+  ['Set claim app wiring', 'js/app.js', [/onClaimCollectionSet/, /claimSetFlair/]],
 ];
 
 let failed = 0;

@@ -77,10 +77,14 @@ import {
   tryAutoEquipRelic,
 } from './relics.js';
 import { isSeatListingActive, purchaseSeat, THE_SEAT } from './the-seat.js';
+import { purchaseOfficeUpgrade, sanitizeOfficeProgress } from './office.js';
+import { purchaseLuxury, sanitizeLuxuryProgress } from './luxury.js';
+import { claimMegaGoal } from './mega-goals.js';
 import {
   getActiveSalonListing, purchaseSalonItem, PRIVATE_SALON_POOL, collectExpiredSalonIds,
 } from './private-salon.js';
 import { claimCollectionMilestone } from './collection-log.js';
+import { claimSetFlair } from './collection-flavor.js';
 import {
   renderAll, generateListings, closeModal, getModalShares,
   renderListingSearchResults, showMoreListings, resetListingsPage,
@@ -136,6 +140,10 @@ const state = {
   seatOwned: false,
   seatPurchaseDay: null,
   seatSpentTotal: 0,
+  officeTierId: 'bedroom',
+  officeSpentTotal: 0,
+  luxuryOwned: [],
+  luxurySpentTotal: 0,
   collectionClaims: [],
   collectionRewardCashTotal: 0,
   daySummaryPending: null,
@@ -196,6 +204,10 @@ function buildSaveData() {
     seatOwned: state.seatOwned,
     seatPurchaseDay: state.seatPurchaseDay,
     seatSpentTotal: state.seatSpentTotal,
+    officeTierId: state.officeTierId,
+    officeSpentTotal: state.officeSpentTotal,
+    luxuryOwned: state.luxuryOwned,
+    luxurySpentTotal: state.luxurySpentTotal,
     collectionClaims: state.collectionClaims,
     collectionRewardCashTotal: state.collectionRewardCashTotal,
     aiChat: getAiChatHistory(),
@@ -543,6 +555,22 @@ function loadGame() {
     state.seatOwned = !!data.seatOwned;
     state.seatPurchaseDay = data.seatPurchaseDay != null ? Math.max(1, Math.floor(Number(data.seatPurchaseDay) || 1)) : null;
     state.seatSpentTotal = Math.max(0, Number(data.seatSpentTotal) || 0);
+    {
+      const office = sanitizeOfficeProgress({
+        officeTierId: data.officeTierId,
+        officeSpentTotal: data.officeSpentTotal,
+      });
+      state.officeTierId = office.officeTierId;
+      state.officeSpentTotal = office.officeSpentTotal;
+    }
+    {
+      const luxury = sanitizeLuxuryProgress({
+        luxuryOwned: data.luxuryOwned,
+        luxurySpentTotal: data.luxurySpentTotal,
+      });
+      state.luxuryOwned = luxury.luxuryOwned;
+      state.luxurySpentTotal = luxury.luxurySpentTotal;
+    }
     state.collectionClaims = Array.isArray(data.collectionClaims) ? data.collectionClaims.slice() : [];
     state.collectionRewardCashTotal = Math.max(0, Number(data.collectionRewardCashTotal) || 0);
     state.blackMarketEquippedRelics = sanitizeEquippedRelics(state.blackMarketEquippedRelics, {
@@ -1053,6 +1081,66 @@ function bindState() {
       saveGame();
       renderAll(state);
       checkAndShowPerkCallouts(state, { saveGame });
+    }
+  };
+
+  state.onPurchaseOfficeUpgrade = () => {
+    const debt = getTotalDebt(state.finance);
+    const net = getNetEquity(state.portfolio, debt) + getVaultBookValue(state);
+    const r = purchaseOfficeUpgrade(state, {
+      netWorth: net,
+      reputation: state.meta?.reputation || 0,
+    });
+    if (r.ok) {
+      toast(`Office upgraded: ${r.tier.name}`, { type: 'success' });
+      state.apiStatus = { mode: 'online', label: `Office → ${r.tier.name}` };
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot upgrade office', { type: 'error' });
+    }
+  };
+
+  state.onClaimMegaGoal = (goalId) => {
+    const debt = getTotalDebt(state.finance);
+    const net = getNetEquity(state.portfolio, debt) + getVaultBookValue(state);
+    const r = claimMegaGoal(state, goalId, {
+      netWorth: net,
+      blackMarketPool: BLACKMARKET_ITEM_POOL,
+      seatItem: THE_SEAT,
+      salonPool: PRIVATE_SALON_POOL,
+    });
+    if (r.ok) {
+      const flairNote = r.flair ? ` · ${r.flair}` : '';
+      toast(`Mega goal claimed: ${r.goal.label}${flairNote}`, { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot claim goal', { type: 'error' });
+    }
+  };
+
+  state.onClaimCollectionSet = (setId) => {
+    const r = claimSetFlair(state, setId);
+    if (r.ok) {
+      const flairNote = r.flair ? ` · ${r.flair}` : '';
+      toast(`Set claimed: ${r.set.name}${flairNote}`, { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot claim set', { type: 'error' });
+    }
+  };
+
+  state.onPurchaseLuxury = (itemId) => {
+    const r = purchaseLuxury(state, itemId);
+    if (r.ok) {
+      toast(`Luxury acquired: ${r.item.name}`, { type: 'success' });
+      state.apiStatus = { mode: 'online', label: `Luxury → ${r.item.name}` };
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot buy luxury', { type: 'error' });
     }
   };
 
