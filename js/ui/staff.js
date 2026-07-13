@@ -4,16 +4,32 @@
  */
 
 import {
-  STAFF_ROLES, STAFF_TIERS, getDailySalary, canHire, getMaxStaff, getTier, canTrain, staffWinRate,
+  STAFF_ROLES, STAFF_TIERS, STAFF_DEFAULT_MAX_POSITION_PCT,
+  getDailySalary, canHire, getMaxStaff, getTier, canTrain, staffWinRate,
 } from '../staff.js';
 import { trapFocus } from '../overlays.js';
 import { escapeHtml } from './shared.js';
+
+const LANE_LABEL = {
+  ops: 'Ops',
+  insight: 'Insight',
+  buy: 'Buy',
+  sell: 'Sell',
+  short: 'Short',
+  lead: 'Lead',
+};
+
+function laneChip(lane) {
+  const label = LANE_LABEL[lane] || 'Desk';
+  return `<span class="hire-lane hire-lane-${escapeHtml(lane || 'ops')}">${escapeHtml(label)}</span>`;
+}
 
 export function renderStaff(state) {
   const maxSlots = getMaxStaff(state);
   const hasHr = state.perks.includes('hrDept');
   const salary = getDailySalary(state.staff || []);
   const count = (state.staff || []).length;
+  const sizePct = Math.round(STAFF_DEFAULT_MAX_POSITION_PCT * 100);
 
   const badge = document.getElementById('staff-badge');
   if (badge) badge.textContent = count ? String(count) : '';
@@ -24,7 +40,7 @@ export function renderStaff(state) {
     hrChip.innerHTML = `
       <span class="staff-hr-lbl">HR Department</span>
       <span class="staff-hr-val">${hasHr ? 'Unlocked' : 'Locked'}</span>
-      <span class="staff-kpi-hint">${hasHr ? `${count}/${maxSlots} seats filled` : 'Buy perk in Perks · $400 · Newcomer'}</span>`;
+      <span class="staff-kpi-hint">${hasHr ? `${count}/${maxSlots} seats filled` : 'Perks · $400 · Newcomer'}</span>`;
   }
 
   const statsEl = document.getElementById('staff-stats');
@@ -32,11 +48,15 @@ export function renderStaff(state) {
     const profit = (state.staff || []).reduce((s, m) => s + (m.profitGenerated || 0), 0);
     const mistakes = (state.staff || []).reduce((s, m) => s + (m.mistakes || 0), 0);
     const plCls = profit >= 0 ? 'up' : 'down';
+    const sellers = (state.staff || []).filter((s) => {
+      const lane = STAFF_ROLES[s.roleId]?.lane;
+      return s.active && (lane === 'sell' || s.roleId === 'risk' || s.roleId === 'exitSpec');
+    }).length;
     statsEl.className = 'staff-kpi-strip';
     statsEl.innerHTML = `
       <div class="staff-kpi">
         <span class="staff-kpi-lbl">Headcount</span>
-        <span class="staff-kpi-val">${count}<span style="font-size:13px;color:var(--muted);font-weight:600"> / ${maxSlots}</span></span>
+        <span class="staff-kpi-val">${count}<span class="staff-kpi-den"> / ${maxSlots}</span></span>
         <span class="staff-kpi-hint">${state.perks.includes('tradingFloor') ? 'Trading Floor cap' : 'Base cap · Floor → 8'}</span>
       </div>
       <div class="staff-kpi">
@@ -50,9 +70,9 @@ export function renderStaff(state) {
         <span class="staff-kpi-hint">Lifetime from desk actions</span>
       </div>
       <div class="staff-kpi">
-        <span class="staff-kpi-lbl">Mistakes</span>
-        <span class="staff-kpi-val">${mistakes}</span>
-        <span class="staff-kpi-hint">${(state.staff || []).some(s => s.roleId === 'compliance' && s.active) ? 'Compliance active' : 'Train or hire Compliance'}</span>
+        <span class="staff-kpi-lbl">Discipline</span>
+        <span class="staff-kpi-val">${sizePct}%</span>
+        <span class="staff-kpi-hint">${sellers ? `${sellers} exit seat${sellers === 1 ? '' : 's'} · ` : ''}max equity / name</span>
       </div>`;
   }
 
@@ -63,7 +83,7 @@ export function renderStaff(state) {
   if (roster) {
     if (!state.staff?.length) {
       const emptyHint = hasHr
-        ? 'Open roles below — start with an Intern or Listing Scout, then specialize.'
+        ? 'Hire a buyer (Scout / Trader) and a seller (Exit Specialist / Risk Manager) so the firm both enters and exits.'
         : 'Unlock <strong>HR Department</strong> in Perks ($400 · Newcomer, needs Pro Scanner), then hire your first seat.';
       roster.innerHTML = `
         <div class="roster-empty">
@@ -92,6 +112,7 @@ export function renderStaff(state) {
                 <strong class="roster-name">${escapeHtml(s.name)}</strong>
                 <button class="btn-icon-tiny rename-btn" data-rename="${s.id}" title="Rename">✎</button>
                 <span class="tier-badge tier-${s.tier || 'newbie'}">${escapeHtml(tier.name)}</span>
+                ${role?.lane ? laneChip(role.lane) : ''}
               </div>
               <div class="roster-role">${escapeHtml(role?.name || s.roleId)}${role?.automates ? ` · ${escapeHtml(role.automates)}` : ''}</div>
               <div class="roster-status">${escapeHtml(s.status || 'Ready')}</div>
@@ -137,29 +158,38 @@ export function renderStaff(state) {
     hireList.innerHTML = Object.values(STAFF_ROLES).map(role => {
       const check = canHire(role.id, { ...state, staff: state.staff || [] });
       const owned = (state.staff || []).filter(s => s.roleId === role.id).length;
-      const reqHint = !hasHr
-        ? 'Unlock HR Department perk first'
+      const lockReason = !hasHr
+        ? 'Requires HR Department'
         : (check.ok ? '' : check.msg);
       return `
-        <div class="hire-card ${check.ok ? 'available' : 'locked'}" style="--role-color:${role.color}">
-          <span class="role-mark" style="background:${role.color}">${role.mark}</span>
-          <div class="hire-body">
-            <div class="hire-name">${role.name}</div>
-            <div class="hire-title">${role.title}</div>
-            <div class="hire-desc">${role.desc}</div>
-            <div class="hire-automates">${role.automates || 'Desk support'}</div>
+        <article class="hire-card ${check.ok ? 'available' : 'locked'}" style="--role-color:${role.color}">
+          <header class="hire-card-head">
+            <span class="role-mark" style="background:${role.color}">${role.mark}</span>
+            <div class="hire-head-text">
+              <div class="hire-name-row">
+                <div class="hire-name">${escapeHtml(role.name)}</div>
+                ${laneChip(role.lane)}
+              </div>
+              <div class="hire-title">${escapeHtml(role.title)}</div>
+            </div>
+          </header>
+          <p class="hire-desc">${escapeHtml(role.desc)}</p>
+          <dl class="hire-brief">
+            <div><dt>Does</dt><dd>${escapeHtml(role.does || role.automates || '—')}</dd></div>
+            <div><dt>Never</dt><dd>${escapeHtml(role.never || '—')}</dd></div>
+            <div><dt>Rules</dt><dd>${escapeHtml(role.rules || '—')}</dd></div>
+          </dl>
+          <div class="hire-footer">
             <div class="hire-cost-row">
               <span class="hire-cost">$${role.hireCost.toLocaleString()} hire</span>
               <span class="hire-salary">$${role.salary}/day</span>
               ${owned ? `<span class="hire-owned">${owned} on roster</span>` : ''}
             </div>
-          </div>
-          <div class="hire-actions">
             ${check.ok
               ? `<button type="button" class="btn btn-accent btn-sm hire-btn" data-role="${role.id}">Hire</button>`
-              : `<span class="hire-lock">${reqHint}</span>`}
+              : `<span class="hire-lock-pill" title="${escapeHtml(lockReason)}">${escapeHtml(lockReason || 'Locked')}</span>`}
           </div>
-        </div>`;
+        </article>`;
     }).join('');
     hireList.querySelectorAll('.hire-btn').forEach(btn => {
       btn.onclick = () => state.onHireStaff?.(btn.dataset.role);

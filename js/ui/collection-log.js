@@ -8,6 +8,7 @@ import {
 } from '../collection-log.js';
 import {
   canClaimSet,
+  getCollectionSetSummary,
   listSetProgress,
 } from '../collection-flavor.js';
 import { getActiveFlair } from '../meta.js';
@@ -96,11 +97,12 @@ function rewardBlurb(milestone) {
 function renderSetsStrip(state) {
   const rows = listSetProgress(state);
   if (!rows.length) return '';
+  const summary = getCollectionSetSummary(state);
   return `
     <section class="museum-sets" aria-label="Collection sets">
       <div class="museum-sets-head">
         <strong>Sets</strong>
-        <span>Complete a set, claim flair only</span>
+        <span>${summary.complete}/${summary.total} complete · flair only</span>
       </div>
       <div class="museum-sets-row">
         ${rows.map((row) => {
@@ -131,13 +133,25 @@ function renderSetsStrip(state) {
   `;
 }
 
-function renderMuseumGallery(ownedEntries) {
+const RARITY_RANK = { crown: 5, masterwork: 4, legendary: 3, rare: 2, common: 1 };
+
+function renderMuseumGallery(ownedEntries, completion) {
   if (!ownedEntries.length) {
     return `<p class="museum-empty">No pieces owned yet. Acquire vault, salon, or Black Market works — then return here to read their lore.</p>`;
   }
+  const sorted = ownedEntries.slice().sort((a, b) => {
+    const ra = RARITY_RANK[a.rarity] || 0;
+    const rb = RARITY_RANK[b.rarity] || 0;
+    if (rb !== ra) return rb - ra;
+    return a.name.localeCompare(b.name);
+  });
+  const completeBanner = completion.pct >= 100
+    ? `<div class="museum-complete-banner">Catalog complete — every registered piece is on the wall.</div>`
+    : '';
   return `
+    ${completeBanner}
     <div class="museum-gallery">
-      ${ownedEntries.map((entry) => {
+      ${sorted.map((entry) => {
         const tierClass = RARITY_TIER_CLASS[entry.rarity] || 'tier-silver';
         const rarityLabel = RARITY_LABEL[entry.rarity] || entry.rarity;
         return `
@@ -240,7 +254,9 @@ function renderLogBody(state, entries, milestones, hunt) {
               <span class="collection-chip">${escapeHtml(SOURCE_LABEL[entry.source] || entry.source)}</span>
               <span class="collection-chip">${escapeHtml(getCategoryDisplayLabel(entry.category))}</span>
               <span class="collection-chip">${escapeHtml(rarityLabel)}</span>
+              ${entry.setName ? `<span class="collection-chip museum-set-chip">${escapeHtml(entry.setName)}</span>` : ''}
             </div>
+            ${entry.owned && entry.lore ? `<p class="collection-card-lore">${escapeHtml(entry.lore)}</p>` : ''}
           </article>
         `;
       }).join('')}
@@ -261,29 +277,35 @@ export function renderCollectionLog(state) {
   const flair = getActiveFlair(state.meta || {}) || '';
   const ownedEntries = entries.filter((entry) => entry.owned);
   const isMuseum = collectionViewMode === 'museum';
+  const setSummary = getCollectionSetSummary(state);
+  const setReady = setSummary.claimable
+    ? `<span class="collection-claim-ready">${setSummary.claimable} set flair ready</span>`
+    : '';
 
   root.innerHTML = `
     <div class="collection-shell ${isMuseum ? 'is-museum' : 'is-log'}">
       <header class="collection-hero">
         <div>
-          <p class="collection-eyebrow">${isMuseum ? 'Immersion gallery' : 'Completion track'}</p>
+          <p class="collection-eyebrow">${isMuseum ? 'Private museum' : 'Completion track'}</p>
           <h2>Collection Log</h2>
           <p class="collection-sub">${isMuseum
-            ? 'Owned plates with short lore. Finish a set for cosmetic flair — nothing that changes how you trade.'
-            : 'Chase missing pieces, clear milestones, claim REP and cash. Owned plates keep their foil art.'}</p>
+            ? 'Owned plates with short lore. Finish Vault, Black Market, Salon, or immersion sets for cosmetic flair only.'
+            : 'Chase missing pieces, clear milestones, claim REP and cash. Owned plates keep their foil art and dossier.'}</p>
           ${modeToggleHtml()}
         </div>
         <div class="collection-progress-pill">
           <strong>${completion.owned} / ${completion.total}</strong>
           <span>${completion.pct}% complete</span>
           <span>Collection ${prestige}</span>
+          <span>Sets ${setSummary.complete}/${setSummary.total}</span>
           ${flair ? `<span class="collection-flair-pill">${escapeHtml(flair)}</span>` : ''}
           ${!isMuseum && claimableCount ? `<span class="collection-claim-ready">${claimableCount} ready to claim</span>` : ''}
+          ${isMuseum ? setReady : ''}
         </div>
       </header>
 
       ${isMuseum
-        ? `${renderSetsStrip(state)}${renderMuseumGallery(ownedEntries)}`
+        ? `${renderSetsStrip(state)}${renderMuseumGallery(ownedEntries, completion)}`
         : renderLogBody(state, entries, milestones, hunt)}
     </div>
   `;

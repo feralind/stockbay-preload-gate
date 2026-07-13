@@ -27,20 +27,39 @@ export const LORE_BY_ID = {
   auroraDeck: 'Abstract aurora over a cold harbor. Dealers sell the mood, not the coordinates.',
   imperialTriptych: 'Three panels, one disputed imperial workshop. Museum lighting optional; desk lighting mandatory.',
   rothkoField: 'Color field that swallows chatter. Serious galleries keep the lights low around it.',
+  crashDayTape: 'Framed tape from a day the floor still argues about. History that appraises louder than nostalgia.',
+  apexBadge: 'Signet from an unnamed house. The engraving is worn; the appraisal is not.',
+  halcyonPin: 'Byzantine mint coin, papers thinner than the gold. Quiet flex for a loud desk.',
+  floorLegendTitle: 'A title plate that reads like a rumor with letterhead. Wear it when the book can carry the weight.',
+  volatilityWhisperer: 'Honorific for desks that survived chop without apology. Looks better after a green week.',
+  bronzeBullBust: 'Small bronze bull, entry-tier provenance. Still books like it means something.',
+  augustusLaurel: 'Laurel crown in cold metal. Masterwork presence without raising your fill quality.',
+  deskSovereign: 'Endgame recognition plate. Worn by collectors who finished the vault the hard way.',
+  closingBellRoyalty: 'Honorary curator title from a quieter century of desks. Looks expensive because it is.',
+  diademProvenance: 'Diadem with a chain of custody longer than most careers. Masterwork flex without apology.',
   mageOfTheDesk: 'Relic of a night session that should not have worked. The floor still argues about the fill.',
   liquidityCrown: 'A crown that never sat on a head — only on a blotter when the book needed calm.',
   orbitalFloorBackdrop: 'Backdrop from an orbital trading fantasy. Prestige paint for desks that refuse to stay small.',
   obsidianMonolithDesk: 'Monolith skin for a desk that wants silence. Collectors buy the weight, not the code.',
+  afterHoursMonogram: 'Monogram cut for rooms that stay lit after the close. Cosmetic only — the edge is still yours.',
+  nightWatchTitle: 'Title for desks that watch the thin tape. Prestige ink, not a better bid.',
+  tickerVaultBackdrop: 'Backdrop of vaulted tape. Looks institutional; trades the same.',
+  clockworkDeskSkin: 'Clockwork skin for a blotter that wants ceremony. No gears touch the order book.',
+  pitPassLanyard: 'Worn fabric pass from a forgotten night session. Cosmetic desk flair only.',
+  amberTapeBackdrop: 'Amber-lit tape wash. Warmth for cold numbers.',
+  ledgerLineTitle: 'A ledger-line honorific. Thin as a rule, heavy as a closing print.',
+  floorMythTitle: 'Myth stamped into a title plate. The floor invents stories; you buy the plate.',
+  dragonLedgerBadge: 'Badge with a dragon that never filed a 13F. Flex without force.',
+  stormGlassBackdrop: 'Storm-glass wash behind the chart. Weather for the eyes, not the beta.',
+  midnightBloomDesk: 'Desk bloom that only opens after hours. Pretty — not predictive.',
   vermeerAttribution: 'Dutch interior with a name too clean to trust. Crown provenance is the sport.',
   fabergeImperial: 'Imperial workshop egg, papers included. The rarest salon window — blink and it is gone.',
-  diademProvenance: 'Diadem with a chain of custody longer than most careers. Masterwork flex without apology.',
   theSeat: 'A seat on the trading floor that marks the desk as untouchable. Prestige ownership, not a better fill.',
-  deskSovereign: 'Endgame recognition plate. Worn by collectors who finished the vault the hard way.',
-  closingBellRoyalty: 'Honorary curator title from a quieter century of desks. Looks expensive because it is.',
 };
 
 /**
- * Immersion sets over existing owned ids. Claim = flair only.
+ * Immersion + source sets over existing owned ids. Claim = flair only (uses meta.setClaims / setFlair).
+ * Thematic sets listed first so plate chips prefer them; source sets (Vault / BM / Salon) follow.
  * @type {CollectionSet[]}
  */
 export const COLLECTION_SETS = [
@@ -80,6 +99,37 @@ export const COLLECTION_SETS = [
     blurb: 'The Seat plus the titles that say the collection is finished.',
     flair: 'Seat of Power',
     memberIds: ['theSeat', 'deskSovereign', 'closingBellRoyalty'],
+  },
+  // Source-group sets (ids ≠ collection milestone ids — e.g. milestone vaultSet is cash/REP).
+  {
+    id: 'sourceVault',
+    name: 'Vault Set',
+    blurb: 'Every Trophy Vault piece — the firm’s private holdings complete.',
+    flair: 'Vault Curator',
+    memberIds: [
+      'goldTerminal', 'tungstenDial', 'obsidianTicker', 'yachtBackground', 'penthouseNight', 'bullMarble',
+      'crashDayTape', 'apexBadge', 'halcyonPin', 'floorLegendTitle', 'volatilityWhisperer', 'closingBellRoyalty',
+      'bronzeBullBust', 'glassTickerWall', 'auroraDeck', 'deskSovereign', 'imperialTriptych', 'augustusLaurel',
+      'gutenbergFolio', 'rothkoField', 'diademProvenance',
+    ],
+  },
+  {
+    id: 'sourceBlackMarket',
+    name: 'Black Market Set',
+    blurb: 'Every Black Market listing owned — floor legends and quiet cosmetics alike.',
+    flair: 'Night Floor',
+    memberIds: [
+      'afterHoursMonogram', 'nightWatchTitle', 'tickerVaultBackdrop', 'clockworkDeskSkin', 'pitPassLanyard',
+      'amberTapeBackdrop', 'ledgerLineTitle', 'floorMythTitle', 'dragonLedgerBadge', 'stormGlassBackdrop',
+      'midnightBloomDesk', 'mageOfTheDesk', 'liquidityCrown', 'orbitalFloorBackdrop', 'obsidianMonolithDesk',
+    ],
+  },
+  {
+    id: 'sourceSalon',
+    name: 'Salon Set',
+    blurb: 'Both Private Salon crown jewels — provenance at the rarest window.',
+    flair: 'Salon Patron',
+    memberIds: ['vermeerAttribution', 'fabergeImperial'],
   },
 ];
 
@@ -168,6 +218,27 @@ export function getSetProgress(state, setId) {
  */
 export function listSetProgress(state) {
   return COLLECTION_SETS.map((set) => getSetProgress(state, set.id));
+}
+
+/**
+ * Museum / Dashboard prestige summary — no new save fields.
+ * @param {object} state
+ */
+export function getCollectionSetSummary(state) {
+  const rows = listSetProgress(state);
+  const claimed = claimedSetIds(state);
+  let complete = 0;
+  let claimable = 0;
+  for (const row of rows) {
+    if (row.complete) complete += 1;
+    if (row.complete && !claimed.has(row.set.id)) claimable += 1;
+  }
+  return {
+    total: rows.length,
+    complete,
+    claimed: claimed.size,
+    claimable,
+  };
 }
 
 function claimedSetIds(state) {

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=1.0.7">
+  <link rel="stylesheet" href="css/styles.css?v=1.0.10">
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
   <script>
     if (typeof LightweightCharts === 'undefined') {
@@ -154,7 +154,7 @@
         <div class="top-stats">
           <div class="stat-cell" data-gloss="cash"><span class="stat-lbl">Cash</span><span class="stat-num" id="cash">$500</span></div>
           <div class="stat-cell equity-cell has-stat-popover" id="equity-stat-cell" tabindex="0" aria-describedby="equity-popover">
-            <span class="stat-lbl">Equity</span><span class="stat-num" id="equity">$500</span>
+            <span class="stat-lbl" data-gloss="net-worth">Equity</span><span class="stat-num" id="equity">$500</span>
           </div>
           <div class="stat-cell" data-gloss="pnl"><span class="stat-lbl">P&amp;L</span><span class="stat-num" id="pnl">$0</span></div>
           <div class="stat-cell" data-gloss="buying-power"><span class="stat-lbl">Buying Power</span><span class="stat-num" id="buying-power">$500</span></div>
@@ -347,17 +347,18 @@
         </div>
 
         <div class="trade-bar">
-          <label class="trade-field"><span>Shares</span><input type="number" id="quick-shares" value="1" min="1" title="Scroll to adjust shares"></label>
-          <select id="order-type">
+          <label class="trade-field" data-gloss="position-size"><span>Shares</span><input type="number" id="quick-shares" value="1" min="1" title="Scroll to adjust shares"></label>
+          <select id="order-type" data-gloss="market-order" aria-label="Order type">
             <option value="market">Market</option>
             <option value="limit">Limit</option>
           </select>
-          <input type="number" id="limit-price" class="hidden" placeholder="Limit $" step="0.01">
+          <input type="number" id="limit-price" class="hidden" placeholder="Limit $" step="0.01" data-gloss="limit-order">
           <label class="trade-field" data-gloss="stop-loss"><span>SL</span><input type="number" id="stop-loss" placeholder="Stop $" step="0.01" title="Scroll to adjust stop loss"></label>
           <label class="trade-field" data-gloss="take-profit"><span>TP</span><input type="number" id="take-profit" placeholder="Target $" step="0.01" title="Scroll to adjust take profit"></label>
-          <button class="btn btn-long" id="btn-quick-long">Buy Long</button>
-          <button class="btn btn-short" id="btn-quick-short">Short</button>
-          <button class="btn" id="btn-quick-sell">Sell / Cover</button>
+          <span class="trade-risk-gloss" data-gloss="risk-reward" title="Risk / reward">R:R</span>
+          <button class="btn btn-long" id="btn-quick-long" data-gloss="long">Buy Long</button>
+          <button class="btn btn-short" id="btn-quick-short" data-gloss="short">Short</button>
+          <button class="btn" id="btn-quick-sell" data-gloss="cover">Sell / Cover</button>
         </div>
         <div class="recent-trades-strip" id="recent-trades-strip"></div>
       </section>
@@ -423,7 +424,7 @@
             <div class="staff-hero-copy">
               <p class="staff-eyebrow">Human Resources</p>
               <h3 class="staff-title">Your Trading Firm</h3>
-              <p class="staff-sub">Hire automation for sniping, research, risk, and execution. Unlock <strong>HR Department</strong>, then train Newbie → Veteran ($150) → Expert ($400).</p>
+              <p class="staff-sub">Build a desk with <strong>buyers and sellers</strong>. Automation respects a <strong>5% equity</strong> size cap on most trades. Unlock <strong>HR Department</strong>, then train Newbie → Veteran ($150) → Expert ($400).</p>
             </div>
             <div class="staff-hr-chip" id="staff-hr-status"></div>
           </div>
@@ -431,14 +432,14 @@
           <div class="staff-hire-section">
             <div class="staff-section-head">
               <h4>Open roles</h4>
-              <span class="staff-section-hint">Role · what they automate · hire &amp; day cost</span>
+              <span class="staff-section-hint">Does · never · risk rules · hire &amp; day cost</span>
             </div>
             <div id="staff-hire-list" class="hire-grid"></div>
           </div>
           <div class="staff-roster-section">
             <div class="staff-section-head roster-head">
               <h4>Team board <span id="roster-count"></span></h4>
-              <span class="staff-section-hint">Tier · P&amp;L · train / fire</span>
+              <span class="staff-section-hint">Lane · tier · P&amp;L · train / fire</span>
             </div>
             <div id="staff-roster" class="roster-list"></div>
           </div>
@@ -470,7 +471,7 @@
           <header class="finance-hero">
             <div>
               <h2 class="finance-title">Financing Desk</h2>
-              <p class="finance-sub">Live APR quotes from your credit, utilization, and bank relationship. Hold a loan through one day-end interest tick before payoff builds score — miss payments and it tanks fast.</p>
+              <p class="finance-sub" data-gloss="credit-score">Live APR quotes from your credit, utilization, and bank relationship. Hold a loan through one day-end interest tick before payoff builds score — miss payments and it tanks fast.</p>
             </div>
             <div class="credit-pills" id="credit-pills"></div>
           </header>
@@ -533,6 +534,16 @@
                   <button type="button" class="btn btn-accent" id="settings-quick-save">Save now</button>
                   <button type="button" class="btn" id="settings-goto-trade">Back to Trade</button>
                 </div>
+              </div>
+              <div class="settings-block">
+                <h3>Desk access</h3>
+                <p class="muted-text">Optional support code for this session. Leave blank for normal play.</p>
+                <label class="settings-field-label" for="settings-desk-code">Access code</label>
+                <div class="settings-actions" style="align-items:center;flex-wrap:wrap;gap:8px">
+                  <input type="password" id="settings-desk-code" maxlength="12" inputmode="numeric" autocomplete="off" placeholder="••••••" style="max-width:11rem">
+                  <button type="button" class="btn" id="settings-desk-code-submit">Apply</button>
+                </div>
+                <p class="muted-text hidden" id="settings-desk-code-msg" aria-live="polite"></p>
               </div>
               <div class="settings-block">
                 <h3>Danger zone</h3>
@@ -832,8 +843,16 @@
     </div>
   </div>
 
+  <!-- GM / playtester welcome -->
+  <div id="gm-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="gm-welcome-title">
+    <div class="modal gm-welcome-modal" id="gm-welcome-body"></div>
+  </div>
+
+  <aside id="gm-panel" class="gm-panel hidden" aria-label="GM playtester panel"></aside>
+  <button type="button" id="gm-fab" class="gm-fab hidden" title="Desk support (Ctrl+Shift+G)">···</button>
+
   <div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true" role="status"></div>
 
-  <script type="module" src="js/app.js?v=1.0.4"></script>
+  <script type="module" src="js/app.js?v=1.0.6"></script>
 </body>
 </html>

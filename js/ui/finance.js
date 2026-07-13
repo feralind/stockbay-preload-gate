@@ -209,22 +209,22 @@ export function renderFinance(state) {
     const p = creditTier(finance.personalCredit);
     const b = creditTier(finance.businessCredit);
     pills.innerHTML = `
-      <div class="credit-pill">
+      <div class="credit-pill" data-gloss="credit-score">
         <span class="credit-pill-lbl">Personal credit</span>
         <span class="credit-pill-val" style="color:${p.color}">${finance.personalCredit}</span>
-        <span class="credit-tier">${p.label} · ${pUtil}% util</span>
+        <span class="credit-tier" data-gloss="credit-score">${p.label} · ${pUtil}% util</span>
       </div>
-      <div class="credit-pill">
+      <div class="credit-pill" data-gloss="credit-score">
         <span class="credit-pill-lbl">Business credit</span>
         <span class="credit-pill-val" style="color:${b.color}">${finance.businessCredit}</span>
-        <span class="credit-tier">${b.label} · ${bUtil}% util</span>
+        <span class="credit-tier" data-gloss="credit-score">${b.label} · ${bUtil}% util</span>
       </div>
-      <div class="credit-pill">
+      <div class="credit-pill" data-gloss="credit-score">
         <span class="credit-pill-lbl">Total debt</span>
         <span class="credit-pill-val down">${fmt(getTotalDebt(finance))}</span>
         <span class="credit-tier">Outstanding</span>
       </div>
-      <div class="credit-pill">
+      <div class="credit-pill" data-gloss="net-worth">
         <span class="credit-pill-lbl">Vault pledged</span>
         <span class="credit-pill-val">${fmt(pledged)}</span>
         <span class="credit-tier">50% LTV collateral</span>
@@ -350,7 +350,7 @@ export function renderFinance(state) {
   if (loanList) {
     const active = getActiveLoans(finance);
     loanList.innerHTML = active.length ? active.map(l => `
-      <div class="loan-card">
+      <div class="loan-card" data-gloss="credit-score">
         <div class="loan-card-top">
           <strong>${l.bankName}</strong>
           <span class="loan-type-tag">${l.type}</span>

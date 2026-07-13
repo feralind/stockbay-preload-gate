@@ -899,7 +899,10 @@ async function main() {
 
   {
     const staffMod = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
-    const { getMaxStaff, payDailySalaries, MAX_STAFF } = staffMod;
+    const {
+      getMaxStaff, payDailySalaries, MAX_STAFF, STAFF_ROLES,
+      staffMaxBuyShares, listingConviction, STAFF_DEFAULT_MAX_POSITION_PCT, STAFF_AI_MIN_CONFIDENCE,
+    } = staffMod;
     test('staff caps: 6 → 8 Trading Floor → 10 Legend Desk', () => {
       assert.equal(getMaxStaff({ perks: [] }), MAX_STAFF);
       assert.equal(getMaxStaff({ perks: ['tradingFloor'] }), 8);
@@ -912,14 +915,33 @@ async function main() {
         portfolio: { cash: 1000 },
         staffLog: [],
       };
-      // intern salary 8; HF 50% + Legend 10% = 60% subsidy → pay 4? floor(8*0.5)=4, +floor(8*0.1)=0 → subsidy 4, cost 4
-      // Wait: floor(8*0.1)=0 so effectively still 50%. Use a higher salary role.
       state.staff = [{ roleId: 'partner', tier: 'newbie', active: true }];
-      // partner 90: HF 45 + Legend 9 = 54 subsidy, cost 36
       const before = state.portfolio.cash;
       const paid = payDailySalaries(state);
       assert.equal(paid, 36);
       assert.equal(state.portfolio.cash, before - 36);
+    });
+    test('staff roles include Exit Specialist with sell lane and 5% size helpers', () => {
+      assert.ok(STAFF_ROLES.exitSpec);
+      assert.equal(STAFF_ROLES.exitSpec.lane, 'sell');
+      assert.ok(STAFF_ROLES.exitSpec.never.toLowerCase().includes('never buy'));
+      assert.equal(STAFF_DEFAULT_MAX_POSITION_PCT, 0.05);
+      assert.equal(STAFF_AI_MIN_CONFIDENCE, 70);
+      assert.ok(STAFF_ROLES.scout.rules.includes('5%'));
+      assert.ok(STAFF_ROLES.trader.does.includes('70'));
+      const pf = { cash: 10_000, longs: {}, shorts: {}, options: [] };
+      // Equity ≈ 10k → 5% = 500 → at $50 → 10 shares
+      const shares = staffMaxBuyShares(pf, 'AAA', 50, { maxPct: 0.05 });
+      assert.equal(shares, 10);
+      const oversize = staffMaxBuyShares(
+        { cash: 10_000, longs: { AAA: { shares: 10, avgPrice: 50 } }, shorts: {}, options: [] },
+        'AAA',
+        50,
+        { maxPct: 0.05 },
+      );
+      assert.equal(oversize, 0);
+      assert.ok(listingConviction({ price: 80, trueValue: 100, isDeal: true }) >= 70);
+      assert.ok(listingConviction({ price: 99, trueValue: 100 }) < 70);
     });
   }
 
@@ -1660,6 +1682,10 @@ async function main() {
       assert.ok(first.pct < 100);
       const mid = getNextNetWorthMilestone(50_000);
       assert.equal(mid.id, 'nw100k');
+      const quarter = getNextNetWorthMilestone(200_000);
+      assert.equal(quarter.id, 'nw250k');
+      const half = getNextNetWorthMilestone(400_000);
+      assert.equal(half.id, 'nw500k');
       const done = getNextNetWorthMilestone(2_000_000_000);
       assert.equal(done.complete, true);
       assert.equal(done.pct, 100);
@@ -1773,7 +1799,7 @@ async function main() {
       const early = getActiveMegaGoal(state, { netWorth: 500 });
       assert.equal(early.goal.id, 'nw1k');
       assert.equal(early.claimable, false);
-      state.meta.megaGoalsClaimed = ['nw1k', 'nw10k', 'nw100k', 'nw1m', 'nw10m', 'nw100m', 'nw1b'];
+      state.meta.megaGoalsClaimed = ['nw1k', 'nw10k', 'nw100k', 'nw250k', 'nw500k', 'nw1m', 'nw10m', 'nw100m', 'nw1b'];
       const afterNw = getActiveMegaGoal(state, { netWorth: 2_000_000_000 });
       assert.equal(afterNw.goal.id, 'officeEmpire');
       const claimOffice = canClaimMegaGoal(
@@ -1790,6 +1816,18 @@ async function main() {
       assert.equal(claimed.ok, true);
       assert.equal(claimed.flair, 'Empire Seat');
       assert.equal(claimed.goal.rep, undefined);
+      const midNw = getActiveMegaGoal(
+        { ...state, meta: { reputation: 0, megaGoalsClaimed: ['nw1k', 'nw10k', 'nw100k'] } },
+        { netWorth: 300_000 },
+      );
+      assert.equal(midNw.goal.id, 'nw250k');
+      assert.equal(midNw.claimable, true);
+      const half = getActiveMegaGoal(
+        { ...state, meta: { reputation: 0, megaGoalsClaimed: ['nw1k', 'nw10k', 'nw100k', 'nw250k'] } },
+        { netWorth: 400_000 },
+      );
+      assert.equal(half.goal.id, 'nw500k');
+      assert.equal(half.claimable, false);
       const nw = megaNw(400);
       assert.equal(nw.id, 'nw1k');
     });
@@ -1836,11 +1874,17 @@ async function main() {
     const metaMod = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const {
       COLLECTION_SETS, getSetProgress, canClaimSet, claimSetFlair, sanitizeSetClaims, getItemLore,
+      getCollectionSetSummary,
     } = flavorMod;
     const { getActiveFlair, createMetaState } = metaMod;
 
     test('collection set progress, claim-once flair, and forge strip', () => {
-      assert.ok(COLLECTION_SETS.length >= 5);
+      assert.ok(COLLECTION_SETS.length >= 8);
+      assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceVault'));
+      assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceBlackMarket'));
+      assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceSalon'));
+      // Source set ids must not collide with cash/REP collection milestones.
+      assert.equal(COLLECTION_SETS.some((s) => s.id === 'vaultSet'), false);
       const desk = COLLECTION_SETS.find((s) => s.id === 'deskInstruments');
       assert.ok(desk);
       const incomplete = {
@@ -1881,11 +1925,32 @@ async function main() {
         seatOwned: false,
       });
       assert.deepEqual(kept, ['deskInstruments']);
+
+      const salon = COLLECTION_SETS.find((s) => s.id === 'sourceSalon');
+      const salonReady = {
+        meta: createMetaState(),
+        vaultOwned: salon.memberIds.slice(),
+        blackMarketOwned: [],
+        seatOwned: false,
+      };
+      assert.equal(getSetProgress(salonReady, 'sourceSalon').complete, true);
+      const salonClaim = claimSetFlair(salonReady, 'sourceSalon');
+      assert.equal(salonClaim.ok, true);
+      assert.equal(salonClaim.flair, 'Salon Patron');
+      assert.equal(getCollectionSetSummary(salonReady).complete >= 1, true);
     });
 
-    test('log entries expose lore/set fields; flair cascade is mega → luxury → set → collection', () => {
-      const lore = getItemLore('goldTerminal');
-      assert.ok(typeof lore === 'string' && lore.length > 10);
+    test('every catalog collectible has lore; flair cascade is mega → luxury → set → collection', () => {
+      const catalogIds = [
+        ...Object.keys(VAULT_ITEMS),
+        ...BLACKMARKET_ITEM_POOL.map((i) => i.id),
+        ...PRIVATE_SALON_POOL.map((i) => i.id),
+        THE_SEAT.id,
+      ];
+      for (const id of catalogIds) {
+        const lore = getItemLore(id);
+        assert.ok(typeof lore === 'string' && lore.length > 10, `missing lore for ${id}`);
+      }
       const entries = getCollectionLogEntries({
         vaultOwned: ['goldTerminal'],
         blackMarketOwned: [],
@@ -1913,6 +1978,66 @@ async function main() {
       assert.equal(getActiveFlair(meta), 'Instrument Desk');
       meta.setFlair = null;
       assert.equal(getActiveFlair(meta), 'Master Collector');
+    });
+  }
+
+  {
+    const gmMod = await import(pathToFileURL(path.join(__dirname, '../js/gm-mode.js')).href);
+    const metaGm = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
+    const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
+    const { applyFullGmLoadout, applyGmAction, verifyAccessCode, GM_CASH, GM_REP } = gmMod;
+    const { createMetaState: createGmMeta } = metaGm;
+    test('desk support loadout survives sanitize; access code is not plaintext', async () => {
+      assert.equal(await verifyAccessCode('000000'), false);
+      assert.equal(await verifyAccessCode('030700'), true);
+      const src = require('fs').readFileSync(path.join(__dirname, '../js/gm-mode.js'), 'utf8');
+      assert.equal(src.includes('030700'), false, 'passcode digits must not appear in source');
+      const state = {
+        v: 2,
+        portfolio: createPortfolio(500),
+        perks: [],
+        meta: createGmMeta(),
+        finance: { personalCredit: 680, businessCredit: 700, loans: [] },
+        vaultOwned: [],
+        vaultSpentTotal: 0,
+        blackMarketOwned: [],
+        blackMarketSpentTotal: 0,
+        seatOwned: false,
+        seatPurchaseDay: null,
+        seatSpentTotal: 0,
+        officeTierId: 'bedroom',
+        officeSpentTotal: 0,
+        luxuryOwned: [],
+        luxurySpentTotal: 0,
+        collectionClaims: [],
+        salonSpentTotal: 0,
+      };
+      applyFullGmLoadout(state);
+      assert.equal(state.portfolio.cash, GM_CASH);
+      assert.equal(state.meta.reputation, GM_REP);
+      assert.ok(state.perks.length >= 5);
+      assert.ok(state.vaultOwned.length >= Object.keys(VAULT_ITEMS).length);
+      assert.equal(state.seatOwned, true);
+      assert.equal(state.officeTierId, 'empire');
+      const cleaned = sanitizeRunData(state);
+      assert.ok(cleaned);
+      assert.equal(cleaned.portfolio.cash, GM_CASH);
+      assert.equal(cleaned.meta.reputation, GM_REP);
+      assert.equal(cleaned.vaultOwned.length, state.vaultOwned.length);
+      assert.equal(cleaned.blackMarketOwned.length, state.blackMarketOwned.length);
+      assert.equal(cleaned.seatOwned, true);
+      assert.equal(cleaned.officeTierId, 'empire');
+      assert.equal(cleaned.luxuryOwned.length, state.luxuryOwned.length);
+      assert.ok((cleaned.collectionClaims || []).length >= 4);
+      const partial = {
+        v: 2,
+        portfolio: createPortfolio(500),
+        perks: [],
+        meta: createGmMeta(),
+        finance: { personalCredit: 680, businessCredit: 700, loans: [] },
+      };
+      assert.equal(applyGmAction(partial, 'cashRep').ok, true);
+      assert.equal(partial.portfolio.cash, GM_CASH);
     });
   }
 
@@ -2101,8 +2226,9 @@ async function main() {
   const beforeGlossary = JSON.stringify(GLOSSARY);
 
   test('HELP_SECTIONS and GLOSSARY stay intact (reference layer unchanged)', () => {
-    assert.equal(HELP_SECTIONS.length, 12);
+    assert.equal(HELP_SECTIONS.length, 13);
     assert.ok(HELP_SECTIONS.some((s) => s.id === 'start'));
+    assert.ok(HELP_SECTIONS.some((s) => s.id === 'risk-options'));
     assert.ok(GLOSSARY.length > 20);
     assert.equal(JSON.stringify(HELP_SECTIONS), beforeHelpSections);
     assert.equal(JSON.stringify(GLOSSARY), beforeGlossary);

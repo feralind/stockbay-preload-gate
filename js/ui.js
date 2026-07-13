@@ -224,7 +224,7 @@ function fillEquityPopover(el, state) {
     <div class="stat-popover-row"><span>Loans / debt</span><span class="${debtCls}">${b.debt ? fmtSignedMoney(-b.debt) : '$0'}</span></div>
     <div class="stat-popover-sep"></div>
     <div class="stat-popover-row stat-popover-total"><span>Total</span><span class="${totalCls}">${fmt(displayTotal)}</span></div>
-    <div class="stat-popover-note">Vault book value is appraisal wealth — not buying power. Unrealized P&amp;L <span class="${uCls}">${fmtPnL(b.unrealized)}</span></div>
+    <div class="stat-popover-note">Trading equity = cash + positions − debt. Total includes Vault book (appraisal — not buying power). Unrealized P&amp;L <span class="${uCls}">${fmtPnL(b.unrealized)}</span></div>
   `;
 }
 

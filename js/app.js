@@ -111,6 +111,14 @@ import { bindHotkeys } from './hotkeys.js';
 import { installUiSounds, sfxBuy, sfxSell, sfxSuccess, sfxError, sfxToggle } from './sfx.js';
 import { resolveTickerInput, searchSymbols } from './symbols.js';
 import { getProfile, setProfileCosmetic } from './profile.js';
+import {
+  detectAndArmGmMode,
+  isGmMode,
+  tryUnlockWithCode,
+  applyGmAction,
+  buildGmWelcomeHtml,
+  buildGmPanelHtml,
+} from './gm-mode.js';
 
 const state = {
   portfolio: createPortfolio(),
@@ -156,6 +164,140 @@ function achievementContext() {
     equity: getNetEquity(state.portfolio, debt),
     dayCount: getDayCount(),
   };
+}
+
+function setGmPanelOpen(open) {
+  const panel = document.getElementById('gm-panel');
+  if (!panel || !isGmMode()) return;
+  panel.classList.toggle('hidden', !open);
+}
+
+function toggleGmPanel() {
+  const panel = document.getElementById('gm-panel');
+  if (!panel || !isGmMode()) return;
+  setGmPanelOpen(panel.classList.contains('hidden'));
+}
+
+function runGmAction(actionId) {
+  if (!isGmMode()) return;
+  const r = applyGmAction(state, actionId);
+  if (r.ok) {
+    saveGame({ immediate: true });
+    renderAll(state);
+    checkAchievements(false);
+    toast(r.msg, { type: 'success' });
+  } else {
+    toast(r.msg || 'GM action failed', { type: 'error' });
+  }
+}
+
+function bindGmPlaytesterUi() {
+  if (!isGmMode()) return;
+  document.body.classList.add('gm-mode');
+  document.body.dataset.gm = '1';
+  document.documentElement.dataset.gm = '1';
+
+  const welcome = document.getElementById('gm-welcome-body');
+  if (welcome) welcome.innerHTML = buildGmWelcomeHtml();
+  const panel = document.getElementById('gm-panel');
+  if (panel) panel.innerHTML = buildGmPanelHtml();
+
+  const fab = document.getElementById('gm-fab');
+  if (fab) {
+    fab.classList.remove('hidden');
+    fab.onclick = () => {
+      const overlay = document.getElementById('gm-overlay');
+      if (overlay && overlay.classList.contains('hidden')) toggleGmPanel();
+      else toggleGmPanel();
+    };
+  }
+
+  panel?.querySelector('#gm-panel-close')?.addEventListener('click', () => setGmPanelOpen(false));
+  panel?.querySelectorAll('[data-gm-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-gm-action');
+      if (id) runGmAction(id);
+    });
+  });
+  panel?.querySelectorAll('[data-gm-goto]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const view = btn.getAttribute('data-gm-goto');
+      if (view) switchView(view);
+    });
+  });
+
+  if (!window.__stockwayGmKeysBound) {
+    window.__stockwayGmKeysBound = true;
+    document.addEventListener('keydown', (e) => {
+      if (!isGmMode()) return;
+      const tag = document.activeElement?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
+      const chord = (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'g' || e.key === 'G');
+      const tick = e.key === '`' || e.code === 'Backquote';
+      if (chord || tick) {
+        e.preventDefault();
+        toggleGmPanel();
+      }
+    });
+  }
+
+  toast('Desk support unlocked — click ··· (bottom-right) or Ctrl+Shift+G', { type: 'success' });
+}
+
+/**
+ * @returns {Promise<'applied' | 'plain' | 'skip'>}
+ */
+function showGmWelcomeModal() {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById('gm-overlay');
+    const body = document.getElementById('gm-welcome-body');
+    if (!overlay || !isGmMode()) {
+      resolve('skip');
+      return;
+    }
+    if (body && !body.innerHTML.trim()) body.innerHTML = buildGmWelcomeHtml();
+
+    const finish = (mode) => {
+      overlay.classList.add('hidden');
+      resolve(mode);
+    };
+    overlay.classList.remove('hidden');
+
+    const applyBtn = document.getElementById('gm-apply-enter');
+    const plainBtn = document.getElementById('gm-enter-plain');
+    if (!applyBtn || !plainBtn) {
+      setGmPanelOpen(true);
+      finish('plain');
+      return;
+    }
+    applyBtn.addEventListener('click', () => {
+      runGmAction('fullLoadout');
+      setGmPanelOpen(true);
+      finish('applied');
+    }, { once: true });
+    plainBtn.addEventListener('click', () => {
+      setGmPanelOpen(true);
+      finish('plain');
+    }, { once: true });
+  });
+}
+
+async function submitDeskAccessCode() {
+  const input = document.getElementById('settings-desk-code');
+  const msg = document.getElementById('settings-desk-code-msg');
+  const raw = input instanceof HTMLInputElement ? input.value : '';
+  const result = await tryUnlockWithCode(raw);
+  if (msg) {
+    msg.classList.remove('hidden');
+    msg.textContent = result.msg;
+  }
+  if (!result.ok) {
+    toast(result.msg, { type: 'error' });
+    return;
+  }
+  if (input instanceof HTMLInputElement) input.value = '';
+  bindGmPlaytesterUi();
+  await showGmWelcomeModal();
 }
 
 function checkAchievements(shouldNotify = true) {
@@ -1111,10 +1253,31 @@ function bindState() {
       salonPool: PRIVATE_SALON_POOL,
     });
     if (r.ok) {
-      const flairNote = r.flair ? ` · ${r.flair}` : '';
-      toast(`Mega goal claimed: ${r.goal.label}${flairNote}`, { type: 'success' });
+      if (r.flair) toast(`Flair unlocked: ${r.flair}`, { type: 'success' });
+      else toast(`Mega goal claimed: ${r.goal.label}`, { type: 'success' });
       saveGame();
       renderAll(state);
+      // Subtle card + standing pulse after Standing chips refresh via renderAll.
+      requestAnimationFrame(() => {
+        const card = document.getElementById('dash-mega-goal');
+        if (card) {
+          card.classList.remove('dash-mega-claim-flash');
+          void card.offsetWidth;
+          card.classList.add('dash-mega-claim-flash');
+        }
+        const standing = document.getElementById('dash-standing');
+        if (standing) {
+          standing.classList.remove('dash-standing-claim-flash');
+          void standing.offsetWidth;
+          standing.classList.add('dash-standing-claim-flash');
+        }
+        const tier = document.getElementById('player-tier');
+        if (tier && r.flair) {
+          tier.classList.remove('dash-standing-claim-flash');
+          void tier.offsetWidth;
+          tier.classList.add('dash-standing-claim-flash');
+        }
+      });
     } else {
       toast(r.msg || 'Cannot claim goal', { type: 'error' });
     }
@@ -1123,8 +1286,8 @@ function bindState() {
   state.onClaimCollectionSet = (setId) => {
     const r = claimSetFlair(state, setId);
     if (r.ok) {
-      const flairNote = r.flair ? ` · ${r.flair}` : '';
-      toast(`Set claimed: ${r.set.name}${flairNote}`, { type: 'success' });
+      if (r.flair) toast(`Flair unlocked: ${r.flair}`, { type: 'success' });
+      else toast(`Set claimed: ${r.set.name}`, { type: 'success' });
       saveGame();
       renderAll(state);
     } else {
@@ -1135,7 +1298,8 @@ function bindState() {
   state.onPurchaseLuxury = (itemId) => {
     const r = purchaseLuxury(state, itemId);
     if (r.ok) {
-      toast(`Luxury acquired: ${r.item.name}`, { type: 'success' });
+      const flairNote = r.item.flair ? ` · flair “${r.item.flair}”` : '';
+      toast(`Luxury acquired: ${r.item.name}${flairNote}`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Luxury → ${r.item.name}` };
       saveGame();
       renderAll(state);
@@ -1390,6 +1554,7 @@ function continueNextDay() {
 
 async function init() {
   window.__STOCKWAY_INIT = true;
+  detectAndArmGmMode();
   if (/Electron/i.test(navigator.userAgent)) {
     document.documentElement.classList.add('electron');
     document.body?.classList.add('electron');
@@ -1420,6 +1585,7 @@ async function init() {
       staffHistory: () => document.getElementById('staff-history-overlay')?.classList.add('hidden'),
       coachmark: () => document.getElementById('coachmark-skip')?.click(),
       onboard: () => document.getElementById('onboard-overlay')?.classList.add('hidden'),
+      gmWelcome: () => document.getElementById('gm-overlay')?.classList.add('hidden'),
       daySummary: () => document.getElementById('day-summary-continue')?.click(),
       mobileNav: closeMobileNav,
     });
@@ -1781,6 +1947,15 @@ async function init() {
       sfxSuccess();
       toast('Game saved', { type: 'success' });
     });
+    document.getElementById('settings-desk-code-submit')?.addEventListener('click', () => {
+      void submitDeskAccessCode();
+    });
+    document.getElementById('settings-desk-code')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void submitDeskAccessCode();
+      }
+    });
     document.getElementById('settings-goto-trade')?.addEventListener('click', () => switchView('trade'));
     document.getElementById('settings-reset-desk')?.addEventListener('click', () => {
       document.getElementById('btn-reset')?.click();
@@ -1844,7 +2019,9 @@ async function init() {
     document.getElementById('chart-zoom-reset')?.addEventListener('click', () => resetChartZoom());
 
     document.getElementById('order-type').onchange = (e) => {
-      document.getElementById('limit-price').classList.toggle('hidden', e.target.value !== 'limit');
+      const type = e.target.value;
+      document.getElementById('limit-price').classList.toggle('hidden', type !== 'limit');
+      e.target.setAttribute('data-gloss', type === 'limit' ? 'limit-order' : 'market-order');
     };
 
     document.getElementById('btn-quick-long').onclick = () => {
@@ -2058,8 +2235,12 @@ async function init() {
     // Default to dashboard
     switchView('dashboard');
 
-    // After preload gate has already cleared — never stack onboarding in front of quotes.
-    if (!hadSave && needsOnboarding()) {
+    bindGmPlaytesterUi();
+    if (isGmMode()) {
+      // Already unlocked this session — tools only; no forced modal on every boot
+      checkAndShowPerkCallouts(state, { saveGame });
+      maybeShowSimStatusCoach(state, { saveGame });
+    } else if (!hadSave && needsOnboarding()) {
       const finishFresh = () => completeWalkthroughReset({
         clearAllSaveData,
         markOnboarded,
@@ -2107,7 +2288,12 @@ async function init() {
     regenerateListingsFeed();
     state.apiStatus = { mode: 'offline', label: 'Recovered · simulated data' };
     renderAll(state);
+    try {
+      if (isGmMode()) bindGmPlaytesterUi();
+    } catch (_) { /* ignore */ }
   }
+
+  window.__stockwayIsGm = () => isGmMode();
 
   // Smoke / QA hooks (read-only-ish helpers + forced day advance)
   window.__stockwayTest = {

@@ -33,6 +33,8 @@ export const MEGA_GOALS = [
   { id: 'nw1k', label: 'First $1,000', kind: 'netWorth', target: 1000, blurb: 'Prove the desk can compound.', flair: null },
   { id: 'nw10k', label: 'First $10,000', kind: 'netWorth', target: 10000, blurb: 'Five figures. Keep the edge.', flair: null },
   { id: 'nw100k', label: 'First $100,000', kind: 'netWorth', target: 100000, blurb: 'Six figures. The room notices.', flair: null },
+  { id: 'nw250k', label: 'First $250,000', kind: 'netWorth', target: 250000, blurb: 'A quarter million. Serious compounding.', flair: 'Quarter Desk' },
+  { id: 'nw500k', label: 'First $500,000', kind: 'netWorth', target: 500000, blurb: 'Half a million. The desk has weight.', flair: 'Half Million' },
   { id: 'nw1m', label: 'First Million', kind: 'netWorth', target: 1000000, blurb: 'Seven figures. Real weight.', flair: 'Million Desk' },
   { id: 'nw10m', label: 'First Ten Million', kind: 'netWorth', target: 10000000, blurb: 'Institutional scale.', flair: 'Ten Million Club' },
   { id: 'nw100m', label: 'First Hundred Million', kind: 'netWorth', target: 100000000, blurb: 'Empire money.', flair: 'Hundred Million' },

@@ -24,11 +24,13 @@ Use the <strong>?</strong> button anytime. Autosave runs in the background.`,
 <br><br>
 Example: Buy 1 AAPL @ $180 → sell @ $200 = <strong>+$20</strong>.
 <br><br>
-<strong>Short sell</strong> — bet price goes <strong>down</strong>. You borrow shares, sell now, buy back later (cover). Requires the <strong>Margin Account</strong> perk. Losses grow if price rises.
+<strong>Short sell</strong> — bet price goes <strong>down</strong>. You borrow shares, sell now, buy back later (cover). Requires the <strong>Margin Account</strong> perk. Losses grow if price rises — shorts can lose more than the cash you posted.
 <br><br>
 Example: Short 1 TSLA @ $250 → cover @ $220 = <strong>+$30</strong>.
 <br><br>
-<strong>Sell / Cover</strong> on the trade bar closes your long or short in the selected symbol. Equity = cash + open position value (shorts include margin held ± unrealized).`,
+<strong>Sell / Cover</strong> on the trade bar closes your long or short in the selected symbol. Equity = cash + open position value (shorts include margin held ± unrealized).
+<br><br>
+<strong>Position size &amp; risk:</strong> start with <strong>1 share</strong> until the loop feels natural. Size decides how hard a wrong trade hits equity — not just whether you were right. Optional <strong>Stop Loss (SL)</strong> and <strong>Take Profit (TP)</strong> write your risk/reward before the click. Hover labels marked with Desk Lore tips for deeper “why.”`,
   },
   {
     id: 'listings',
@@ -53,7 +55,7 @@ Example: Short 1 TSLA @ $250 → cover @ $220 = <strong>+$30</strong>.
 • <strong>Limit</strong> — rests until price is marketable (buy/cover ≤ limit; sell/short ≥ limit)<br>
 • Working limits show in the portfolio / orders area until filled or cancelled
 <br><br>
-Large notional trades may ask for confirmation.`,
+Large notional trades may ask for confirmation. Thin sessions and larger size add <strong>slippage</strong> — the quiet tax of liquidity.`,
   },
   {
     id: 'news-events',
@@ -169,41 +171,71 @@ Theme, sound, sidebar width, and hotkeys live under Settings.`,
 <br><br>
 <strong>REP</strong> starts at 0 and unlocks named ranks (Newcomer → Desk Hand → Trusted Trader → Market Veteran → Elite Desk → Market Legend). It rises with profits, on-time loan payments, and challenges; it falls on losses, late debt, and firings. Daily challenges pay cash + REP when completed. Higher ranks gate stronger Perks.`,
   },
+  {
+    id: 'risk-options',
+    title: 'Risk, Psychology &amp; Options',
+    body: `<strong>Desk lore:</strong> legends survive first, then compound. Ask “how much can I lose?” before “how much can I make?”
+<br><br>
+<strong>Core risk habits</strong>
+<ul>
+<li><strong>Position size</strong> — smaller tickets teach the loop; concentration raises path risk.</li>
+<li><strong>Risk / reward</strong> — stops and targets make the downside explicit. A high win rate with terrible payoff ratios can still shrink equity.</li>
+<li><strong>Diversification</strong> — names in the same sector often crash together; cash left free is dry powder.</li>
+<li><strong>Drawdown</strong> — the scar chart. Size so one scar never ends the career.</li>
+<li><strong>Psychology</strong> — FOMO chases heat; revenge sizing after a loss is how books die. Wait for the next clean idea.</li>
+</ul>
+<strong>Options (Options Desk perk)</strong> — a <em>call</em> is the right (not obligation) to buy at a strike; a <em>put</em> is the right to sell. You pay <strong>premium</strong> for that choice.
+<br><br>
+• <strong>Delta</strong> — how much of a $1 underlying move the option tends to feel<br>
+• <strong>Implied volatility (IV)</strong> — how expensive uncertainty is today; after events, IV can “crush” even if you were directionally right<br>
+<br><br>
+Hover Desk Lore tips on the floor for short definitions (beta, liquidity, IV, delta). Paper money is the safe gym — treat it like real risk so the habits transfer.`,
+  },
 ];
 
 export const GLOSSARY = [
-  { cat: 'TRADING', term: 'Long', def: 'Own shares betting price goes up.' },
-  { cat: 'TRADING', term: 'Short', def: 'Bet price goes down; buy back later to close.' },
-  { cat: 'TRADING', term: 'Cover', def: 'Buy back shares to close a short position.' },
-  { cat: 'TRADING', term: 'Market order', def: 'Buy/sell immediately at current price.' },
-  { cat: 'TRADING', term: 'Limit order', def: 'Rests until price is at your limit or better; then fills.' },
-  { cat: 'TRADING', term: 'Stop loss (SL)', def: 'Auto-exit level if price moves against you.' },
-  { cat: 'TRADING', term: 'Take profit (TP)', def: 'Auto-exit level when price hits your target.' },
-  { cat: 'TRADING', term: 'Equity', def: 'Cash + value of all open positions (net of debt on Finance views).' },
-  { cat: 'TRADING', term: 'Buying power', def: 'How much you can still deploy (2× with Margin perk). Vault appraisal is not buying power.' },
-  { cat: 'TRADING', term: 'P&L', def: 'Profit and loss — unrealized until you close.' },
+  { cat: 'TRADING', term: 'Long', def: 'Own shares betting price goes up.', glossId: 'long' },
+  { cat: 'TRADING', term: 'Short', def: 'Bet price goes down; buy back later to close.', glossId: 'short' },
+  { cat: 'TRADING', term: 'Cover', def: 'Buy back shares to close a short position.', glossId: 'cover' },
+  { cat: 'TRADING', term: 'Market order', def: 'Buy/sell immediately at current price.', glossId: 'market-order' },
+  { cat: 'TRADING', term: 'Limit order', def: 'Rests until price is at your limit or better; then fills.', glossId: 'limit-order' },
+  { cat: 'TRADING', term: 'Stop loss (SL)', def: 'Auto-exit level if price moves against you.', glossId: 'stop-loss' },
+  { cat: 'TRADING', term: 'Take profit (TP)', def: 'Auto-exit level when price hits your target.', glossId: 'take-profit' },
+  { cat: 'TRADING', term: 'Equity', def: 'Cash + value of all open positions (net of debt on Finance views).', glossId: 'total-equity' },
+  { cat: 'TRADING', term: 'Buying power', def: 'How much you can still deploy (2× with Margin perk). Vault appraisal is not buying power.', glossId: 'buying-power' },
+  { cat: 'TRADING', term: 'P&L', def: 'Profit and loss — unrealized until you close.', glossId: 'pnl' },
+  { cat: 'TRADING', term: 'Position size', def: 'How much capital sits in one idea — decides how hard a miss hits equity.', glossId: 'position-size' },
+  { cat: 'TRADING', term: 'Risk / reward', def: 'Downside if wrong vs upside if right; stops and targets make it explicit.', glossId: 'risk-reward' },
+  { cat: 'TRADING', term: 'Diversification', def: 'Spreading capital so one bad print cannot end the book.', glossId: 'diversification' },
+  { cat: 'TRADING', term: 'Delta', def: 'Option sensitivity to a $1 move in the underlying.', glossId: 'delta' },
   { cat: 'MARKET', term: 'World Events', def: 'Feed of simulated desk briefs and live headlines that can shock prices. Expand a card for the full write-up.' },
   { cat: 'MARKET', term: 'News Wire', def: 'Perk that unlocks in-depth simulated stories and shows live headlines ~2 min before price impact.' },
   { cat: 'MARKET', term: 'Desk lean', def: 'Bullish / bearish / mixed chip on an event card — quick read on how the desk might position.' },
   { cat: 'MARKET', term: 'Listing', def: 'A seller offer that may be above/below market.' },
-  { cat: 'MARKET', term: 'GREAT DEAL', def: 'Listing priced meaningfully under true value.' },
+  { cat: 'MARKET', term: 'GREAT DEAL', def: 'Listing priced meaningfully under true value.', glossId: 'great-deal' },
   { cat: 'MARKET', term: 'Watchlist', def: 'Pinned symbols in the right rail for quick charts.' },
   { cat: 'MARKET', term: 'Price alert', def: 'Toast when a watchlist symbol crosses your above/below level.' },
-  { cat: 'MARKET', term: 'Trading halt', def: 'Symbol paused for new buys/shorts after a ~7% move from session open (~15 game minutes). Sell/cover still allowed.' },
+  { cat: 'MARKET', term: 'Trading halt', def: 'Symbol paused for new buys/shorts after a ~7% move from session open (~15 game minutes). Sell/cover still allowed.', glossId: 'trading-halted' },
   { cat: 'MARKET', term: 'Simulation', def: 'Live Yahoo prices seed the open and charts; once the accelerated clock runs, drift, sector betas, events, and circuit breakers drive the tape — not the real market.' },
   { cat: 'MARKET', term: 'Offline', def: 'Desk keeps running from last fetched baselines (or seeds). No quote/news API calls until you Refresh or reconnect. Paper money only — nothing leaves the browser except quote lookups.' },
   { cat: 'MARKET', term: 'Live / Connected', def: 'Online means the desk can fetch base quotes through the StockWay proxy — not tick-by-tick streaming, and not a brokerage.' },
-  { cat: 'MARKET', term: 'Slippage', def: 'Fill can differ from mid — larger size and thin sessions slip more. Smart Routing reduces it.' },
-  { cat: 'MARKET', term: 'Margin call', def: 'Equity cushion below maintenance. Cover or sell to restore it, or the desk liquidates after grace.' },
-  { cat: 'MARKET', term: 'Fed funds (sim)', def: 'Simulated policy rate — nudges loan APRs and Fed hike/cut event impact. Not a live Fed quote.' },
+  { cat: 'MARKET', term: 'Slippage', def: 'Fill can differ from mid — larger size and thin sessions slip more. Smart Routing reduces it.', glossId: 'slippage' },
+  { cat: 'MARKET', term: 'Liquidity', def: 'How easily you enter/exit near a fair price; thin tape widens fills.', glossId: 'liquidity' },
+  { cat: 'MARKET', term: 'Beta', def: 'How loudly a name tends to move with the broader market.', glossId: 'beta' },
+  { cat: 'MARKET', term: 'Implied volatility', def: 'Priced-in expectation of how wild moves might be; higher IV usually means richer option premiums.', glossId: 'implied-volatility' },
+  { cat: 'MARKET', term: 'Margin call', def: 'Equity cushion below maintenance. Cover or sell to restore it, or the desk liquidates after grace.', glossId: 'margin-stress' },
+  { cat: 'MARKET', term: 'Fed funds (sim)', def: 'Simulated policy rate — nudges loan APRs and Fed hike/cut event impact. Not a live Fed quote.', glossId: 'fed-rate' },
   { cat: 'STAFF', term: 'HR Department', def: 'Perk required before any hire ($400 · Newcomer, needs Scanner).' },
   { cat: 'STAFF', term: 'Newbie', def: 'Entry tier — more mistakes, slower actions.' },
   { cat: 'STAFF', term: 'Veteran', def: 'Trained staff — fewer mistakes ($150 upgrade).' },
   { cat: 'STAFF', term: 'Expert', def: 'Top tier — rare mistakes ($400 upgrade).' },
-  { cat: 'STAFF', term: 'Payroll', def: 'Daily salary deducted at the start of each new day (Hedge Fund pays half).' },
-  { cat: 'STAFF', term: 'Compliance', def: 'Officer role that suppresses firm-wide mistake rate and flags risk.' },
-  { cat: 'STAFF', term: 'Research Analyst', def: 'Promotes near-deals and boosts Scout / Junior Trader hit rate.' },
-  { cat: 'STAFF', term: 'Managing Partner', def: 'Late-game lead hire — efficiency boost + firm cash bonuses.' },
+  { cat: 'STAFF', term: 'Payroll', def: 'Daily salary deducted at the start of each new day (Hedge Fund pays half).', glossId: 'payroll' },
+  { cat: 'STAFF', term: 'Size cap', def: 'Most buy automation respects max ~5% of total portfolio equity per name.' },
+  { cat: 'STAFF', term: 'Compliance', def: 'Officer role that suppresses firm-wide mistake rate and flags risk — never trades.' },
+  { cat: 'STAFF', term: 'Research Analyst', def: 'Promotes near-deals and boosts Scout / Junior Trader hit quality — never executes.' },
+  { cat: 'STAFF', term: 'Exit Specialist', def: 'Seller role — trims winners (+8%) and cuts early losers (−5%); never opens risk.' },
+  { cat: 'STAFF', term: 'Risk Manager', def: 'Hard exit desk — flats longs at +12% take-profit or −7% stop; never buys.' },
+  { cat: 'STAFF', term: 'Managing Partner', def: 'Late-game lead hire — efficiency boost + firm cash bonuses; no personal snipes.' },
   { cat: 'FINANCE', term: 'Personal loan', def: 'Borrow against personal credit; usually higher APR.' },
   { cat: 'FINANCE', term: 'Company loan', def: 'Business credit line — often lower APR, larger limits.' },
   { cat: 'FINANCE', term: 'APR', def: 'Annual percentage rate. Accrues daily (APR/365). Quote = bank base ± credit tier, relationship, utilization, inquiries.' },
@@ -211,9 +243,9 @@ export const GLOSSARY = [
   { cat: 'FINANCE', term: 'Credit utilization', def: 'Open debt ÷ available bank limits. High util raises APR and can pressure the score.' },
   { cat: 'PROGRESS', term: 'REP', def: 'Reputation starts at 0. Named ranks gate perk tiers. Rises with profits, on-time payments, challenges. Falls on losses, late debt, firings.' },
   { cat: 'PROGRESS', term: 'REP rank', def: 'Newcomer (0) → Desk Hand (40) → Trusted Trader (120) → Market Veteran (250) → Elite Desk (500) → Market Legend (1800).' },
-  { cat: 'PROGRESS', term: 'Challenge', def: 'Daily goal with cash + REP reward if completed.' },
+  { cat: 'PROGRESS', term: 'Challenge', def: 'Daily goal with cash + REP reward if completed.', glossId: 'challenge' },
   { cat: 'PROGRESS', term: 'Perk', def: 'Permanent unlock bought with cash + REP rank (Scanner, Margin, HR, AI, etc.).' },
-  { cat: 'PROGRESS', term: 'Speed', def: '1x/2x/5x/10x — at 1x, ~30 real minutes = one game day.' },
+  { cat: 'PROGRESS', term: 'Speed', def: '1x/2x/5x/10x — at 1x, ~30 real minutes = one game day.', glossId: 'game-speed' },
 ];
 
 const ONBOARD_KEY = 'stockway_onboarded_v1';
@@ -278,12 +310,12 @@ export function renderHelpContent() {
     const cats = [...new Set(GLOSSARY.map(g => g.cat))];
     gloss.innerHTML = `
       <div class="help-section-label">WORDS YOU'LL SEE A LOT</div>
-      <p class="help-sub">Quick definitions for trading & firm terms.</p>
+      <p class="help-sub">Quick definitions for trading & firm terms. Hover linked terms for Desk Lore tips.</p>
       ${cats.map(cat => `
         <div class="gloss-cat">
           <div class="gloss-cat-title">${cat}</div>
           ${GLOSSARY.filter(g => g.cat === cat).map(g => `
-            <div class="gloss-row"><span class="gloss-term">${g.term}</span><span class="gloss-def">${g.def}</span></div>
+            <div class="gloss-row"><span class="gloss-term"${g.glossId ? ` data-gloss="${g.glossId}"` : ''}>${g.term}</span><span class="gloss-def">${g.def}</span></div>
           `).join('')}
         </div>`).join('')}`;
   }

@@ -26,47 +26,47 @@ export const CALLOUT_PERK_IDS = [
 /** Plain-language hooks on top of PERKS[*].desc — do not duplicate the desc itself. */
 export const PERK_CALLOUT_HOOKS = {
   scanner: {
-    why: 'A scanner finds mispriced inventory before the crowd — better deal tags mean underpriced offers surface sooner.',
+    why: 'A scanner finds mispriced inventory before the crowd — better deal tags mean underpriced offers surface sooner. Desk lore: edge is paying less than worth.',
     helpSec: 'listings',
   },
   hrDept: {
-    why: 'Desks scale with people: scouts, traders, compliance. HR unlocks hiring so the firm can act while you focus.',
+    why: 'Desks scale with people: scouts, traders, compliance. HR unlocks hiring so the firm can act while you focus on judgment calls.',
     helpSec: 'staff',
   },
   newsWire: {
-    why: 'News moves prices. Early headlines are an information edge — live items arrive about two minutes before the tape reacts.',
+    why: 'News moves prices. Early headlines are an information edge — live items arrive about two minutes before the tape reacts. Read the lean before you size.',
     helpSec: 'news-events',
   },
   analyst: {
-    why: 'Support and resistance are levels buyers and sellers historically defended — chart overlays show those zones clearly.',
+    why: 'Support and resistance are levels buyers and sellers historically defended — chart overlays show those zones clearly so you plan risk, not chase noise.',
     helpSec: 'perks',
   },
   margin: {
-    why: 'Shorts can lose more than you deposit; longs risk what you paid. Margin also doubles long buying power.',
+    why: 'Shorts can lose more than you deposit; longs risk what you paid. Margin also doubles long buying power — rented courage needs a thicker cushion.',
     helpSec: 'trading',
   },
   complianceSuite: {
-    why: 'Automation still errs. Firm controls stack with a Compliance Officer so fewer bad fills hit the book.',
+    why: 'Automation still errs. Firm controls stack with a Compliance Officer so fewer bad fills hit the book — process is how legends stay solvent.',
     helpSec: 'staff',
   },
   tradingFloor: {
-    why: 'A larger floor means more concurrent capacity — extra seats and faster automation.',
+    why: 'A larger floor means more concurrent capacity — extra seats and faster automation without you clicking every ticket.',
     helpSec: 'staff',
   },
   options: {
-    why: 'A call is the right, not the obligation, to buy at a strike; a put is the right to sell. You pay premium for that choice.',
-    helpSec: 'perks',
+    why: 'A call is the right, not the obligation, to buy at a strike; a put is the right to sell. You pay premium for that choice — delta is how much of the stock’s move the option feels.',
+    helpSec: 'risk-options',
   },
   smartRouting: {
-    why: 'Desks route orders to reduce adverse fill. Here it shrinks slippage so market and staff trades stay closer to mid.',
+    why: 'Desks route orders to reduce adverse fill. Here it shrinks slippage so market and staff trades stay closer to mid — liquidity’s quiet tax.',
     helpSec: 'trading',
   },
   insider: {
-    why: 'An informational edge on listings and events: helpful more often than not, never a certainty.',
+    why: 'An informational edge on listings and events: helpful more often than not, never a certainty. Treat hints as clues, not gospel.',
     helpSec: 'listings',
   },
   aiAdvisor: {
-    why: 'Desk signals and chat so you are not staring at a blank chart — you still decide whether to trade.',
+    why: 'Desk signals and chat so you are not staring at a blank chart — you still decide whether to trade and how much to size.',
     helpSec: 'perks',
   },
   auraAmp: {
@@ -78,7 +78,7 @@ export const PERK_CALLOUT_HOOKS = {
     helpSec: 'staff',
   },
   primeBroker: {
-    why: 'Prime relationships buy time in a margin call — eight extra grace minutes before forced liquidation.',
+    why: 'Prime relationships buy time in a margin call — eight extra grace minutes before forced liquidation. Time is oxygen when the cushion thins.',
     helpSec: 'trading',
   },
   legendDesk: {
@@ -92,37 +92,37 @@ export const PORTFOLIO_TOUR_STEPS = [
   {
     id: 'equity',
     target: '[data-tour="equity"]',
-    text: 'Total Equity — cash plus the current value of everything you hold. Your net worth right now.',
+    text: 'Total Equity — cash plus the current value of everything you hold. Your net worth right now; size risk from this, not from one green tick.',
   },
   {
     id: 'cash',
     target: '[data-tour="cash"]',
-    text: 'Cash — money not tied up in a position. Free to spend on the next trade.',
+    text: 'Cash — money not tied up in a position. Free to spend on the next trade. Leaving dry powder is also a position.',
   },
   {
     id: 'openPnl',
     target: '[data-tour="openPnl"]',
-    text: 'Open P&L — profit or loss on positions you still hold. It moves with the market and is not locked in yet.',
+    text: 'Open P&L — profit or loss on positions you still hold. It moves with the market and is not locked in yet (still paper).',
   },
   {
     id: 'realized',
     target: '[data-tour="realized"]',
-    text: 'Realized — profit or loss already banked from closed trades. Final — it will not change again. (Open P&L is still paper; Realized is done.)',
+    text: 'Realized — profit or loss already banked from closed trades. Final — it will not change again. Open P&L is rumor; Realized is ledger.',
   },
   {
     id: 'winRate',
     target: '[data-tour="winRate"]',
-    text: 'Win Rate — percent of closed trades that were profitable.',
+    text: 'Win Rate — percent of closed trades that were profitable. High win rate with bad risk/reward can still shrink the book.',
   },
   {
     id: 'positions',
     target: '[data-tour="positions"]',
-    text: 'Positions — how many distinct holdings you have open right now.',
+    text: 'Positions — how many distinct holdings you have open. More names can diversify; too many without a plan is noise.',
   },
   {
     id: 'drawdown',
     target: '[data-tour="drawdown"]',
-    text: 'Max Drawdown — biggest drop from a peak in equity. Measures the worst stretch, not where you are today.',
+    text: 'Max Drawdown — biggest drop from a peak in equity. Measures the worst scar, not where you sit today. Size so one scar never ends the run.',
   },
 ];
 
@@ -604,8 +604,8 @@ export async function startFirstTradeWalkthrough({
     showCoachmark({
       target: sel,
       text: reason
-        ? `Suggested first trade: ${reason}`
-        : 'Pick a listing to trade — Deal Desk asks can sit below fair value.',
+        ? `Suggested first trade: ${reason}. Start with 1 share — size small until you feel the risk.`
+        : 'Pick a listing to trade — Deal Desk asks can sit below fair value. Start small (1 share).',
       showNext: true,
       onNext: resolve,
       onSkip: () => { finish(); resolve(); },
@@ -623,7 +623,7 @@ export async function startFirstTradeWalkthrough({
     if (done) { resolve(); return; }
     showCoachmark({
       target: '#chart-price',
-      text: 'This is the live price. It ticks as the market clock runs.',
+      text: 'This is the live price. It ticks as the market clock runs — know the quote before you size the ticket.',
       showNext: true,
       onNext: resolve,
       onSkip: () => { finish(); resolve(); },
@@ -688,7 +688,7 @@ export async function startFirstTradeWalkthrough({
     if (done) { resolve(); return; }
     showCoachmark({
       target: '#btn-quick-long',
-      text: 'Buy Long — purchase 1 share, then confirm the ticket. Use the real controls.',
+      text: 'Buy Long — purchase 1 share, then confirm the ticket. Small size teaches the loop without blowing the book.',
       showNext: false,
       onSkip: () => { finish(); resolve(); },
     });
@@ -727,7 +727,7 @@ export async function startFirstTradeWalkthrough({
     const target = posEl && posEl.textContent?.trim() ? '#position-summary' : '#pnl';
     showCoachmark({
       target,
-      text: 'Filled. Watch your position and Open P&L update live as the price moves.',
+      text: 'Filled. Watch your position and Open P&L update live — still paper until you close. That is why size matters.',
       showNext: true,
       onNext: resolve,
       onSkip: () => { finish(); resolve(); },
@@ -741,7 +741,7 @@ export async function startFirstTradeWalkthrough({
     if (done) { resolve(); return; }
     showCoachmark({
       target: '#btn-quick-sell',
-      text: 'Sell / Cover to close the position — bank Realized P&L and finish the loop.',
+      text: 'Sell / Cover to close — bank Realized P&L. Closing ends the risk; waiting keeps it open.',
       showNext: false,
       onSkip: () => { finish(); resolve(); },
     });

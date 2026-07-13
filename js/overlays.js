@@ -27,6 +27,7 @@ export function closeTopOverlay() {
     { id: 'help-overlay', close: () => closeHelp() },
     { id: 'coachmark-root', close: () => closers.coachmark?.() },
     { id: 'onboard-overlay', close: () => closers.onboard?.() },
+    { id: 'gm-overlay', close: () => closers.gmWelcome?.() },
     { id: 'day-summary-overlay', close: () => closers.daySummary?.() },
     { id: 'staff-history-overlay', close: () => closers.staffHistory?.() },
   ];

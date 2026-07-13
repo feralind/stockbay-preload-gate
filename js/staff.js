@@ -1,7 +1,6 @@
 // @ts-check
-import { CONFIG } from './config.js';
 import { getCachedQuote } from './api.js';
-import { buyLong, sellLong, openShort, coverShort } from './portfolio.js';
+import { buyLong, sellLong, openShort, coverShort, getEquity, getSpendableCash } from './portfolio.js';
 import { applySlippage } from './slippage.js';
 
 function staffFill(sym, side, shares, mid, perks = []) {
@@ -18,12 +17,69 @@ function staffFill(sym, side, shares, mid, perks = []) {
   return fill;
 }
 
+/** Default desk risk rule — most buy/sell automation respects this. */
+export const STAFF_DEFAULT_MAX_POSITION_PCT = 0.05;
+/** AI trader minimum confidence before buying. */
+export const STAFF_AI_MIN_CONFIDENCE = 70;
+
+/**
+ * Max notional for a new/add buy under the desk sizing rule.
+ * @param {object} portfolio
+ * @param {number} [maxPct]
+ */
+export function staffPositionBudget(portfolio, maxPct = STAFF_DEFAULT_MAX_POSITION_PCT) {
+  const equity = Math.max(0, Number(getEquity(portfolio)) || 0);
+  const pct = Number(maxPct);
+  const use = Number.isFinite(pct) && pct > 0 ? Math.min(0.25, pct) : STAFF_DEFAULT_MAX_POSITION_PCT;
+  return equity * use;
+}
+
+/**
+ * Shares that keep (existing + new) notional under maxPct of equity, and within cash.
+ * @param {object} portfolio
+ * @param {string} sym
+ * @param {number} price
+ * @param {{ maxPct?: number, hardCapShares?: number }} [opts]
+ */
+export function staffMaxBuyShares(portfolio, sym, price, opts = {}) {
+  const px = Number(price);
+  if (!(px > 0) || !portfolio) return 0;
+  const maxPct = opts.maxPct ?? STAFF_DEFAULT_MAX_POSITION_PCT;
+  const existing = Number(portfolio.longs?.[sym]?.shares) || 0;
+  const existingNotional = existing * px;
+  const room = Math.max(0, staffPositionBudget(portfolio, maxPct) - existingNotional);
+  let shares = Math.floor(room / px);
+  const cash = getSpendableCash(portfolio);
+  shares = Math.min(shares, Math.floor(cash / px));
+  if (opts.hardCapShares != null) shares = Math.min(shares, Math.floor(Number(opts.hardCapShares) || 0));
+  return Math.max(0, shares);
+}
+
+/**
+ * Listing conviction 0–100 from discount to insider true value (deals score higher).
+ * @param {{ price?: number, trueValue?: number, isDeal?: boolean, researchFlag?: boolean }} listing
+ */
+export function listingConviction(listing) {
+  const price = Number(listing?.price);
+  const tv = Number(listing?.trueValue);
+  if (!(price > 0) || !(tv > 0)) return listing?.isDeal ? 72 : 40;
+  const edge = (tv - price) / tv;
+  let score = 45 + edge * 220;
+  if (listing.isDeal) score += 12;
+  if (listing.researchFlag) score += 8;
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
 export const STAFF_TIERS = {
   newbie: { id: 'newbie', name: 'Newbie', efficiency: 0.7, mistakeRate: 0.22, next: 'veteran', trainCost: 150 },
   veteran: { id: 'veteran', name: 'Veteran', efficiency: 1.0, mistakeRate: 0.10, next: 'expert', trainCost: 400 },
   expert: { id: 'expert', name: 'Expert', efficiency: 1.35, mistakeRate: 0.03, next: null, trainCost: 0 },
 };
 
+/**
+ * Role catalog — save key is `roleId`. New fields are display/logic only.
+ * lane: ops | insight | buy | sell | short | lead
+ */
 export const STAFF_ROLES = {
   intern: {
     id: 'intern',
@@ -31,10 +87,15 @@ export const STAFF_ROLES = {
     title: 'Operations Intern',
     mark: 'IN',
     color: '#8b949e',
+    lane: 'ops',
     salary: 8,
     hireCost: 120,
-    desc: 'Auto-refreshes listings & keeps the desk organized',
+    desc: 'Keeps listings fresh and the desk organized — no trading authority.',
+    does: 'Refreshes market listings and files routine desk work.',
+    never: 'Never buys, sells, shorts, or sizes positions.',
+    rules: 'No portfolio risk · ops only',
     automates: 'Listing refresh',
+    maxPositionPct: null,
     requires: [],
   },
   scout: {
@@ -43,10 +104,15 @@ export const STAFF_ROLES = {
     title: 'Deal Hunter',
     mark: 'SC',
     color: '#58a6ff',
+    lane: 'buy',
     salary: 18,
     hireCost: 350,
-    desc: 'Auto-snipes GREAT DEAL listings when you have cash',
+    desc: 'Snipes GREAT DEAL listings only when conviction and size rules clear.',
+    does: 'Buys GREAT DEAL names when conviction ≥ 70 and cash is free.',
+    never: 'Never chases non-deals, never adds past the size cap, never shorts.',
+    rules: `Max ${(STAFF_DEFAULT_MAX_POSITION_PCT * 100).toFixed(0)}% equity per name · conviction ≥ 70`,
     automates: 'Deal sniping',
+    maxPositionPct: STAFF_DEFAULT_MAX_POSITION_PCT,
     requires: ['scanner'],
   },
   compliance: {
@@ -55,10 +121,15 @@ export const STAFF_ROLES = {
     title: 'Risk Auditor',
     mark: 'CO',
     color: '#79c0ff',
+    lane: 'ops',
     salary: 22,
     hireCost: 450,
-    desc: 'Cuts firm-wide mistake rate and flags stretched positions',
+    desc: 'Suppresses firm mistake rate and flags underwater longs for review.',
+    does: 'Audits the book and flags longs ≤ −5% vs cost.',
+    never: 'Never places trades or changes position size.',
+    rules: 'Advisory only · lowers desk mistake rate while active',
     automates: 'Mistake control',
+    maxPositionPct: null,
     requires: [],
   },
   research: {
@@ -67,10 +138,15 @@ export const STAFF_ROLES = {
     title: 'Equity Research',
     mark: 'RA',
     color: '#56d4dd',
+    lane: 'insight',
     salary: 32,
     hireCost: 600,
-    desc: 'Surfaces near-deals and boosts scout / AI trader hit rate',
+    desc: 'Promotes near-deals and lifts Scout / Junior Trader hit quality.',
+    does: 'Marks undervalued listings as GREAT DEAL and writes AI pick notes.',
+    never: 'Never executes orders or overrides the size rule for others.',
+    rules: 'Insight only · boosts buy-role efficiency',
     automates: 'Deal insight',
+    maxPositionPct: null,
     requires: ['analyst'],
   },
   trader: {
@@ -79,10 +155,15 @@ export const STAFF_ROLES = {
     title: 'Execution Desk',
     mark: 'TR',
     color: '#3fb950',
+    lane: 'buy',
     salary: 28,
     hireCost: 550,
-    desc: 'Auto-buys top AI picks (needs AI Advisor perk)',
+    desc: 'Buys AI BUY picks only when confidence clears the desk bar.',
+    does: `Buys AI BUY signals with confidence ≥ ${STAFF_AI_MIN_CONFIDENCE}.`,
+    never: 'Never buys HOLD/SHORT, never averages into losers, never shorts.',
+    rules: `Max ${(STAFF_DEFAULT_MAX_POSITION_PCT * 100).toFixed(0)}% equity · AI confidence ≥ ${STAFF_AI_MIN_CONFIDENCE}`,
     automates: 'AI pick buys',
+    maxPositionPct: STAFF_DEFAULT_MAX_POSITION_PCT,
     requires: ['aiAdvisor'],
   },
   risk: {
@@ -91,11 +172,33 @@ export const STAFF_ROLES = {
     title: 'Risk Desk',
     mark: 'RK',
     color: '#f0883e',
+    lane: 'sell',
     salary: 35,
     hireCost: 700,
-    desc: 'Auto-sells longs at +12% profit or -7% stop loss',
+    desc: 'Hard exits on longs — full take-profit or stop, never opens risk.',
+    does: 'Fully exits longs at +12% take-profit or −7% stop.',
+    never: 'Never buys, never shorts, never adds size.',
+    rules: 'Exit-only · full flat on trigger · no new risk',
     automates: 'TP / stop exits',
+    maxPositionPct: STAFF_DEFAULT_MAX_POSITION_PCT,
     requires: ['margin'],
+  },
+  exitSpec: {
+    id: 'exitSpec',
+    name: 'Exit Specialist',
+    title: 'Position Manager',
+    mark: 'EX',
+    color: '#d2a8ff',
+    lane: 'sell',
+    salary: 30,
+    hireCost: 620,
+    desc: 'Trims winners and cuts early losers — the firm’s dedicated seller.',
+    does: 'Sells ~half of a long at +8% trim or −5% early cut.',
+    never: 'Never buys, never shorts, never opens new names.',
+    rules: 'Sell-only · partial exits · respects book discipline',
+    automates: 'Trim / early cut',
+    maxPositionPct: STAFF_DEFAULT_MAX_POSITION_PCT,
+    requires: ['scanner'],
   },
   shortSpec: {
     id: 'shortSpec',
@@ -103,10 +206,15 @@ export const STAFF_ROLES = {
     title: 'Short Desk',
     mark: 'SH',
     color: '#f85149',
+    lane: 'short',
     salary: 40,
     hireCost: 850,
-    desc: 'Auto-shorts overbought stocks',
+    desc: 'Opens small shorts only on extended upside prints.',
+    does: 'Shorts overbought names (day change > +3%) with tight size.',
+    never: 'Never longs, never stacks into existing shorts, never ignores margin.',
+    rules: 'Max 3% equity per short · margin required',
     automates: 'Overbought shorts',
+    maxPositionPct: 0.03,
     requires: ['margin'],
   },
   quant: {
@@ -115,10 +223,15 @@ export const STAFF_ROLES = {
     title: 'Algorithmic Trading',
     mark: 'QT',
     color: '#a371f7',
+    lane: 'buy',
     salary: 55,
     hireCost: 1200,
-    desc: 'Runs momentum algo — buys breakouts, covers losing shorts',
+    desc: 'Momentum buys with size caps; covers shorts that blow through stops.',
+    does: 'Buys mild breakouts; covers shorts ≤ −6% vs entry.',
+    never: 'Never ignores the size cap, never averages losers, never chase >5%.',
+    rules: `Max ${(STAFF_DEFAULT_MAX_POSITION_PCT * 100).toFixed(0)}% equity on buys · cover losing shorts first`,
     automates: 'Momentum algo',
+    maxPositionPct: STAFF_DEFAULT_MAX_POSITION_PCT,
     requires: ['analyst', 'margin'],
   },
   partner: {
@@ -127,10 +240,15 @@ export const STAFF_ROLES = {
     title: 'Firm Leadership',
     mark: 'MP',
     color: '#e3b341',
+    lane: 'lead',
     salary: 90,
     hireCost: 2500,
-    desc: 'Boosts all staff efficiency + daily firm bonus',
+    desc: 'Raises floor efficiency and occasional firm cash bonuses.',
+    does: 'Boosts all staff efficiency; small periodic firm bonuses.',
+    never: 'Never personally snipes or overrides buy/sell risk rules.',
+    rules: 'Leadership only · no direct position authority',
     automates: 'Floor boost + bonus',
+    maxPositionPct: null,
     requires: ['hrDept', 'hedgeFund'],
   },
 };
@@ -356,17 +474,28 @@ export function tickStaff(state) {
     switch (member.roleId) {
       case 'scout':
         if (Math.random() < 0.55 * eff * researchBoost) {
-          const deal = state.listings?.find(l => l.isDeal && !pf.longs[l.sym]);
-          if (deal && pf.cash > deal.price * 10) {
-            const shares = Math.min(10, Math.floor(pf.cash * 0.05 / deal.price));
+          const deal = state.listings?.find((l) => {
+            if (!l?.isDeal || pf.longs[l.sym]) return false;
+            return listingConviction(l) >= 70;
+          });
+          if (deal) {
+            const shares = staffMaxBuyShares(pf, deal.sym, deal.price, {
+              maxPct: role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
+              hardCapShares: 12,
+            });
             if (shares >= 1) {
+              const conv = listingConviction(deal);
               const r = buyLong(pf, deal.sym, shares, staffFill(deal.sym, 'buy', shares, deal.price, perks));
               if (r.ok) {
-                member.profitGenerated = (member.profitGenerated || 0); // tracked on sell
                 member.status = `Sniping ${deal.sym}`;
-                actions.push({ staff: member.name, action: `Sniped ${shares} ${deal.sym} @ $${deal.price.toFixed(2)}` });
+                actions.push({
+                  staff: member.name,
+                  action: `Sniped ${shares} ${deal.sym} @ $${deal.price.toFixed(2)} (conviction ${conv})`,
+                });
                 member.actionsToday++;
               }
+            } else {
+              member.status = 'Sized out — waiting';
             }
           } else {
             member.status = 'Scouting listings';
@@ -436,25 +565,43 @@ export function tickStaff(state) {
         }
         break;
 
-      case 'trader':
-        if (hasAi && Math.random() < 0.4 * eff * researchBoost && state.aiTopPick?.signal === 'BUY') {
-          const sym = state.aiTopPick.sym;
+      case 'trader': {
+        const pick = state.aiTopPick;
+        const conf = Number(pick?.confidence) || 0;
+        if (
+          hasAi
+          && Math.random() < 0.4 * eff * researchBoost
+          && pick?.signal === 'BUY'
+          && conf >= STAFF_AI_MIN_CONFIDENCE
+        ) {
+          const sym = pick.sym;
           const q = getCachedQuote(sym);
-          if (q && pf.cash > q.price * 5 && !pf.longs[sym]) {
-            const shares = Math.min(5, Math.floor(pf.cash * 0.03 / q.price));
+          if (q && !pf.longs[sym]) {
+            const shares = staffMaxBuyShares(pf, sym, q.price, {
+              maxPct: role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
+              hardCapShares: 8,
+            });
             if (shares >= 1) {
               const r = buyLong(pf, sym, shares, staffFill(sym, 'buy', shares, q.price, perks));
               if (r.ok) {
                 member.status = `Buying ${sym}`;
-                actions.push({ staff: member.name, action: `Bought ${shares} ${sym} (AI signal)` });
+                actions.push({
+                  staff: member.name,
+                  action: `Bought ${shares} ${sym} (AI ${conf}% · under size cap)`,
+                });
                 member.actionsToday++;
               }
+            } else {
+              member.status = 'Sized out on AI pick';
             }
           }
+        } else if (hasAi && pick?.signal === 'BUY' && conf < STAFF_AI_MIN_CONFIDENCE) {
+          member.status = `Waiting — AI ${conf}% < ${STAFF_AI_MIN_CONFIDENCE}`;
         } else {
           member.status = hasAi ? 'Watching AI signals' : 'Idle — needs AI Advisor';
         }
         break;
+      }
 
       case 'risk': {
         let acted = false;
@@ -479,6 +626,33 @@ export function tickStaff(state) {
         break;
       }
 
+      case 'exitSpec': {
+        let acted = false;
+        Object.entries(pf.longs).forEach(([sym, pos]) => {
+          if (acted) return;
+          const q = getCachedQuote(sym);
+          if (!q || !(pos.shares >= 2)) return;
+          const pct = (q.price - pos.avgPrice) / pos.avgPrice;
+          const trim = pct >= 0.08 || pct <= -0.05;
+          if (!trim) return;
+          const sellShares = Math.max(1, Math.floor(pos.shares / 2));
+          const r = sellLong(pf, sym, sellShares, staffFill(sym, 'sell', sellShares, q.price, perks));
+          if (r.ok) {
+            const pl = r.pnl ?? (q.price - pos.avgPrice) * sellShares;
+            recordStaffPnl(member, pl);
+            member.status = pct >= 0 ? `Trim ${sym}` : `Cut ${sym}`;
+            actions.push({
+              staff: member.name,
+              action: `${pct >= 0 ? 'Trimmed' : 'Cut'} ${sellShares} ${sym} @ ${(pct * 100).toFixed(1)}% (exit desk)`,
+            });
+            member.actionsToday++;
+            acted = true;
+          }
+        });
+        if (!acted) member.status = 'Managing exits';
+        break;
+      }
+
       case 'shortSpec':
         if (hasMargin && Math.random() < 0.45 * eff) {
           const candidates = ['TSLA', 'NVDA', 'AMD', 'COIN', 'PLTR', 'SOFI'].filter(s => {
@@ -488,17 +662,20 @@ export function tickStaff(state) {
           if (candidates.length) {
             const sym = candidates[Math.floor(Math.random() * candidates.length)];
             const q = getCachedQuote(sym);
-            const shares = Math.min(5, Math.floor(pf.cash * 0.02 / q.price));
+            const shares = staffMaxBuyShares(pf, sym, q.price, {
+              maxPct: role.maxPositionPct ?? 0.03,
+              hardCapShares: 5,
+            });
             if (shares >= 1) {
               const r = openShort(pf, sym, shares, staffFill(sym, 'short', shares, q.price, perks), true);
               if (r.ok) {
                 state.stats = state.stats || {};
                 state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
                 member.status = `Shorting ${sym}`;
-                actions.push({ staff: member.name, action: `Shorted ${shares} ${sym} (overbought)` });
+                actions.push({ staff: member.name, action: `Shorted ${shares} ${sym} (overbought · 3% size)` });
                 member.actionsToday++;
               }
-            }
+            } else member.status = 'Sized out on shorts';
           } else member.status = 'Hunting shorts';
         } else member.status = hasMargin ? 'On short desk' : 'Idle — needs Margin';
         break;
@@ -525,16 +702,19 @@ export function tickStaff(state) {
           if (!acted) {
             const breakout = ['NVDA', 'AAPL', 'MSFT', 'META'].find(s => {
               const q = getCachedQuote(s);
-              return q && q.changePct > 1.5 && !pf.longs[s] && pf.cash > q.price * 3;
+              return q && q.changePct > 1.5 && q.changePct <= 5 && !pf.longs[s] && pf.cash > q.price * 3;
             });
             if (breakout) {
               const q = getCachedQuote(breakout);
-              const shares = Math.min(3, Math.floor(pf.cash * 0.02 / q.price));
+              const shares = staffMaxBuyShares(pf, breakout, q.price, {
+                maxPct: role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
+                hardCapShares: 4,
+              });
               if (shares >= 1) {
                 const r = buyLong(pf, breakout, shares, staffFill(breakout, 'buy', shares, q.price, perks));
                 if (r.ok) {
                   member.status = `Momentum ${breakout}`;
-                  actions.push({ staff: member.name, action: `Momentum buy ${shares} ${breakout}` });
+                  actions.push({ staff: member.name, action: `Momentum buy ${shares} ${breakout} (size-capped)` });
                   member.actionsToday++;
                   acted = true;
                 }

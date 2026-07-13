@@ -25,7 +25,8 @@ const checks = [
   ['Left resize markup', 'index.html', [/id="sidebar-left-resize"/]],
   ['Achievements render', 'js/ui/achievements.js', [/export function renderAchievements/, /achievements-grid/]],
   ['Achievements wired from ui barrel', 'js/ui.js', [/from '\.\/ui\/achievements\.js'/, /renderAchievements\(state\)/]],
-  ['Staff render', 'js/ui/staff.js', [/export function renderStaff/, /staff-hire-list/, /export function showStaffHistory/]],
+  ['Staff render', 'js/ui/staff.js', [/export function renderStaff/, /staff-hire-list/, /hire-brief/, /exitSpec|Exit Specialist|hire-lane-sell/]],
+  ['Staff risk discipline', 'js/staff.js', [/STAFF_DEFAULT_MAX_POSITION_PCT/, /staffMaxBuyShares/, /exitSpec/, /listingConviction/, /STAFF_AI_MIN_CONFIDENCE/]],
   ['Staff wired from ui barrel', 'js/ui.js', [/from '\.\/ui\/staff\.js'/, /renderStaff\(state\)/]],
   ['Finance render', 'js/ui/finance.js', [/export function renderFinance/, /bank-list/, /export function setLoanDraftAmount/]],
   ['Finance wired from ui barrel', 'js/ui.js', [/from '\.\/ui\/finance\.js'/, /renderFinance\(state\)/, /setLoanDraftAmount/]],
@@ -74,10 +75,12 @@ const checks = [
   ['Office tier ambient CSS', 'css/styles.css', [/data-office-tier/, /empire/]],
   ['Mega goals module', 'js/mega-goals.js', [/MEGA_GOALS/, /getActiveMegaGoal/, /claimMegaGoal/, /megaGoalFlair/]],
   ['Luxury sinks module', 'js/luxury.js', [/LUXURY_ITEMS/, /purchaseLuxury/, /sanitizeLuxuryProgress/, /Dynasty Wing/]],
-  ['Collection flavor module', 'js/collection-flavor.js', [/LORE_BY_ID/, /COLLECTION_SETS/, /claimSetFlair/, /sanitizeSetClaims/, /getSetProgress/]],
+  ['Museum mode Collection Log', 'js/ui/collection-log.js', [/collection-mode/, /museum/, /data-set-claim/, /onClaimCollectionSet/, /listSetProgress/, /getCollectionSetSummary/]],
+  ['Collection flavor module', 'js/collection-flavor.js', [/LORE_BY_ID/, /COLLECTION_SETS/, /claimSetFlair/, /sanitizeSetClaims/, /getSetProgress/, /sourceVault/, /getCollectionSetSummary/]],
   ['Set flair cascade', 'js/meta.js', [/setClaims/, /setFlair/, /getActiveFlair/, /megaGoalFlair/, /luxuryFlair/]],
-  ['Museum mode Collection Log', 'js/ui/collection-log.js', [/collection-mode/, /museum/, /data-set-claim/, /onClaimCollectionSet/, /listSetProgress/]],
   ['Set claim app wiring', 'js/app.js', [/onClaimCollectionSet/, /claimSetFlair/]],
+  ['Desk support toolkit', 'js/gm-mode.js', [/verifyAccessCode/, /tryUnlockWithCode/, /applyFullGmLoadout/, /GM_PANEL_ACTIONS/]],
+  ['Desk access settings', 'index.html', [/settings-desk-code/, /id="gm-panel"/, /id="gm-fab"/]],
 ];
 
 let failed = 0;

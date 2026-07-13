@@ -4,4 +4,5 @@ dist/
 .DS_Store
 finnhub.key
 stockway.pid
+.stockway-gm
 .smoke-shots/

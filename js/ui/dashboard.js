@@ -2,10 +2,12 @@
 /**
  * Dashboard view render — extracted from ui.js (Stage C1).
  * Section 2–4: Standing, office ladder, mega goals, luxury sinks.
+ * Perf: fingerprint sections and skip identical DOM writes.
  */
 
 import { getBlackMarketItem, BLACKMARKET_ITEM_POOL } from '../blackmarket.js';
 import { getFlagshipEquippedVaultItem } from '../collection-log.js';
+import { getCollectionSetSummary } from '../collection-flavor.js';
 import {
   canPurchaseOfficeUpgrade,
   getEffectiveOfficeTier,
@@ -40,9 +42,59 @@ export const getSoftOfficeStage = getEligibleOfficeTier;
 /** Re-export for existing quality tests. */
 export { getNextNetWorthMilestone };
 
+/** Last-written fingerprints — skip unchanged section HTML/text. */
+/** @type {Record<string, string>} */
+const dashSnap = {};
+
+let dashGotoBound = false;
+
+/**
+ * @param {HTMLElement | null} el
+ * @param {string} key
+ * @param {string} html
+ * @returns {boolean} true when DOM was written
+ */
+function setHtmlIfChanged(el, key, html) {
+  if (!el) return false;
+  if (dashSnap[key] === html) return false;
+  dashSnap[key] = html;
+  el.innerHTML = html;
+  return true;
+}
+
+/**
+ * @param {HTMLElement | null} el
+ * @param {string} key
+ * @param {string} text
+ * @returns {boolean}
+ */
+function setTextIfChanged(el, key, text) {
+  if (!el) return false;
+  if (dashSnap[key] === text) return false;
+  dashSnap[key] = text;
+  el.textContent = text;
+  return true;
+}
+
+function ensureDashGotoDelegation() {
+  if (dashGotoBound) return;
+  if (typeof document === 'undefined') return;
+  const root = document.getElementById('view-dashboard');
+  if (!root) return;
+  dashGotoBound = true;
+  root.addEventListener('click', (e) => {
+    const t = /** @type {HTMLElement} */ (e.target);
+    const btn = t?.closest?.('[data-goto]');
+    if (!(btn instanceof HTMLElement)) return;
+    const viewId = btn.getAttribute('data-goto') || btn.dataset?.goto;
+    if (viewId) switchView(viewId);
+  });
+}
+
 /** @param {{ switchView?: (viewId: string) => void }} [opts] */
 export function configureDashboardUi({ switchView: nextSwitchView } = {}) {
   if (typeof nextSwitchView === 'function') switchView = nextSwitchView;
+  ensureDashGotoDelegation();
 }
 
 /**
@@ -79,8 +131,8 @@ function renderDashHero(profile, standing, office, net) {
   const blurbEl = document.getElementById('dash-hero-blurb');
   const eyeEl = document.getElementById('dash-hero-eyebrow');
   const name = profile?.name || 'Paper Trader';
-  if (eyeEl) eyeEl.textContent = office.current.name;
-  if (titleEl) titleEl.textContent = name;
+  setTextIfChanged(eyeEl, 'heroEye', office.current.name);
+  setTextIfChanged(titleEl, 'heroTitle', name);
   if (blurbEl) {
     const bits = [
       standing.rankName,
@@ -88,16 +140,18 @@ function renderDashHero(profile, standing, office, net) {
       `Net Worth ${fmt(net)}`,
     ];
     if (standing.deskLabel) bits.push(standing.deskLabel);
-    blurbEl.textContent = `${bits.join(' · ')}. ${office.current.blurb}`;
+    setTextIfChanged(blurbEl, 'heroBlurb', `${bits.join(' · ')}. ${office.current.blurb}`);
   }
 }
 
-function renderDashStanding(standing) {
+function renderDashStanding(standing, state) {
   const el = document.getElementById('dash-standing');
   if (!el) return;
+  const setSummary = getCollectionSetSummary(state || {});
   const chips = [
     `<span class="dash-standing-chip"><em>Rank</em> ${escapeHtml(standing.rankName)} · REP ${standing.rep}</span>`,
-    `<span class="dash-standing-chip"><em>Collection</em> ${standing.collectionScore}</span>`,
+    `<span class="dash-standing-chip" data-gloss="diversification"><em>Collection</em> ${standing.collectionScore}</span>`,
+    `<span class="dash-standing-chip" title="Immersion sets — flair only"><em>Sets</em> ${setSummary.complete}/${setSummary.total}</span>`,
   ];
   if (standing.deskLabel) {
     chips.push(`<span class="dash-standing-chip"><em>Desk</em> ${escapeHtml(standing.deskLabel)}</span>`);
@@ -110,7 +164,10 @@ function renderDashStanding(standing) {
   if (standing.seatOwned) {
     chips.push(`<span class="dash-standing-chip"><em>Seat</em> Secured</span>`);
   }
-  el.innerHTML = chips.join('');
+  if (setSummary.claimable > 0) {
+    chips.push(`<span class="dash-standing-chip dash-standing-ready"><em>Set flair</em> ${setSummary.claimable} ready</span>`);
+  }
+  setHtmlIfChanged(el, 'standing', chips.join(''));
 }
 
 /**
@@ -123,11 +180,11 @@ function renderOfficeStageCard(state, office, net, rep) {
   const el = document.getElementById('dash-office-stage');
   if (!el) return;
   const next = getNextOfficeUpgrade(state);
-  const gate = canPurchaseOfficeUpgrade(state, { netWorth: net, reputation: rep });
   let tag = 'Owned';
-  let nextLine = 'Peak office secured.';
+  let nextLine = 'Peak office secured — Investment Empire owned.';
   let ctaHtml = '';
   if (next) {
+    const gate = canPurchaseOfficeUpgrade(state, { netWorth: net, reputation: rep });
     const gateBits = `${fmt(next.minNet)} NW · ${next.minRep} REP · ${fmt(next.price)}`;
     if (gate.ok) {
       tag = 'Ready';
@@ -144,18 +201,48 @@ function renderOfficeStageCard(state, office, net, rep) {
   } else {
     tag = 'Max';
   }
-  el.innerHTML = `
-    <div class="dash-card-head"><span>Office</span><span class="dash-soft-tag">${tag}</span></div>
-    <div class="dash-office-name">${escapeHtml(office.name)}</div>
+  const luxHtml = buildLuxuryCtaHtml(state);
+  const html = `
+    <div class="dash-card-head" data-gloss="office-progress"><span>Office</span><span class="dash-soft-tag">${tag}</span></div>
+    <div class="dash-office-name" data-gloss="office-progress">${escapeHtml(office.name)}</div>
     <p class="dash-office-blurb">${escapeHtml(office.blurb)}</p>
     <div class="dash-office-next">${nextLine}</div>
     ${ctaHtml}
+    ${luxHtml}
   `;
-  const btn = el.querySelector('.btn-office-upgrade');
-  if (btn && !btn.disabled) {
-    btn.onclick = () => state.onPurchaseOfficeUpgrade?.();
+  if (setHtmlIfChanged(el, 'office', html)) {
+    const btn = el.querySelector('.btn-office-upgrade');
+    if (btn && !btn.disabled) {
+      btn.onclick = () => state.onPurchaseOfficeUpgrade?.();
+    }
+    const luxBtn = el.querySelector('.btn-luxury-buy');
+    if (luxBtn && !luxBtn.disabled) {
+      const id = luxBtn.getAttribute('data-luxury-id');
+      luxBtn.onclick = () => { if (id) state.onPurchaseLuxury?.(id); };
+    }
   }
-  renderLuxuryCta(state, el);
+}
+
+/**
+ * @param {object} state
+ * @returns {string}
+ */
+function buildLuxuryCtaHtml(state) {
+  const next = getNextLuxuryPurchase(state);
+  if (!next) {
+    return `<div class="dash-luxury-line dash-luxury-done">`
+      + `<div class="dash-office-next">Dynasty complete — every luxury owned.</div>`
+      + `<p class="dash-empty-hint">Prestige sinks only. No trading edge, no Net Worth book.</p>`
+      + `</div>`;
+  }
+  const gate = canPurchaseLuxury(state, next.id);
+  const disabled = gate.ok ? '' : ' disabled';
+  const title = gate.ok ? '' : ` title="${escapeAttr(gate.reason || '')}"`;
+  const label = gate.ok ? `Acquire — ${fmt(next.price)}` : `Luxury — ${fmt(next.price)}`;
+  return `<div class="dash-luxury-line">`
+    + `<div class="dash-office-next">Luxury: ${escapeHtml(next.name)} · ${fmt(next.price)}</div>`
+    + `<button type="button" class="btn btn-sm btn-luxury-buy${gate.ok ? ' btn-accent' : ''}" data-luxury-id="${escapeAttr(next.id)}"${disabled}${title}>${label}</button>`
+    + `</div>`;
 }
 
 function formatMegaProgressMeta(goal, progress) {
@@ -175,68 +262,84 @@ function formatMegaProgressMeta(goal, progress) {
 function renderMegaGoalCard(state, active) {
   const el = document.getElementById('dash-mega-goal');
   if (!el) return;
+  let html;
   if (active.allDone || !active.goal) {
-    el.innerHTML = `
+    html = `
       <div class="dash-card-head"><span>Mega goal</span><span class="dash-soft-tag">Cleared</span></div>
-      <div class="dash-goal-label">All dreams claimed</div>
-      <p class="dash-office-blurb">Late cash still has luxury sinks below.</p>
+      <div class="dash-goal-label">Empire ledger clear</div>
+      <p class="dash-office-blurb">Every mega goal claimed. Flair is yours — late cash still has luxury sinks on the office card.</p>
+      <p class="dash-empty-hint">No more claim buttons here. Keep compounding Net Worth and Standing.</p>
     `;
-    return;
+  } else {
+    const { goal, progress, claimable } = active;
+    const pct = progress?.pct ?? 0;
+    const tag = claimable ? 'Ready' : `${pct}%`;
+    const claimBtn = claimable
+      ? `<button type="button" class="btn btn-sm btn-accent btn-claim-mega" data-mega-id="${escapeAttr(goal.id)}">Claim flair — ${escapeHtml(goal.flair || goal.label)}</button>`
+      : '';
+    html = `
+      <div class="dash-card-head"><span>Mega goal</span><span class="dash-soft-tag">${escapeHtml(tag)}</span></div>
+      <div class="dash-goal-label">${escapeHtml(goal.label)}</div>
+      <p class="dash-office-blurb">${escapeHtml(goal.blurb)}</p>
+      <div class="dash-goal-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${escapeAttr(goal.label)}">
+        <div class="dash-goal-bar-fill" style="width:${pct}%"></div>
+      </div>
+      <div class="dash-goal-meta">${escapeHtml(formatMegaProgressMeta(goal, progress))}</div>
+      ${claimBtn}
+    `;
   }
-  const { goal, progress, claimable } = active;
-  const pct = progress?.pct ?? 0;
-  const tag = claimable ? 'Ready' : `${pct}%`;
-  const claimBtn = claimable
-    ? `<button type="button" class="btn btn-sm btn-claim-mega" data-mega-id="${escapeAttr(goal.id)}">Claim flair</button>`
-    : '';
-  el.innerHTML = `
-    <div class="dash-card-head"><span>Mega goal</span><span class="dash-soft-tag">${escapeHtml(tag)}</span></div>
-    <div class="dash-goal-label">${escapeHtml(goal.label)}</div>
-    <p class="dash-office-blurb">${escapeHtml(goal.blurb)}</p>
-    <div class="dash-goal-bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${escapeAttr(goal.label)}">
-      <div class="dash-goal-bar-fill" style="width:${pct}%"></div>
-    </div>
-    <div class="dash-goal-meta">${escapeHtml(formatMegaProgressMeta(goal, progress))}</div>
-    ${claimBtn}
-  `;
-  const btn = el.querySelector('.btn-claim-mega');
-  if (btn) btn.onclick = () => state.onClaimMegaGoal?.(btn.getAttribute('data-mega-id'));
+  if (setHtmlIfChanged(el, 'mega', html)) {
+    const btn = el.querySelector('.btn-claim-mega');
+    if (btn) {
+      btn.onclick = () => {
+        state.onClaimMegaGoal?.(btn.getAttribute('data-mega-id'));
+      };
+    }
+  }
 }
 
-/**
- * Compact next-luxury CTA under the office card (prestige sink only).
- * @param {object} state
- * @param {HTMLElement | null} officeEl
- */
-function renderLuxuryCta(state, officeEl) {
-  if (!officeEl) return;
-  const next = getNextLuxuryPurchase(state);
-  if (!next) {
-    const done = document.createElement('div');
-    done.className = 'dash-luxury-line';
-    done.textContent = 'All luxuries owned.';
-    officeEl.appendChild(done);
-    return;
+function ensureDashStatsShell(stats) {
+  if (!stats) return false;
+  const nums = stats.querySelectorAll('.dash-stat-card .stat-num');
+  const wired = stats.querySelector('[data-gloss="net-worth"]') && stats.querySelector('[data-gloss="credit-score"]');
+  if (nums.length === 4 && wired) return true;
+  stats.innerHTML = `
+    <div class="dash-stat-card interactive-card" data-gloss="cash"><span class="stat-lbl">Cash</span><span class="stat-num"></span></div>
+    <div class="dash-stat-card interactive-card" data-gloss="net-worth"><span class="stat-lbl">Net Worth</span><span class="stat-num"></span></div>
+    <div class="dash-stat-card interactive-card" data-gloss="credit-score"><span class="stat-lbl">Debt</span><span class="stat-num"></span></div>
+    <div class="dash-stat-card interactive-card"><span class="stat-lbl">REP</span><span class="stat-num"></span></div>
+  `;
+  dashSnap.statsShell = '2';
+  dashSnap.statCash = '';
+  dashSnap.statNw = '';
+  dashSnap.statDebt = '';
+  dashSnap.statRep = '';
+  return true;
+}
+
+function renderDashStats(state, net, debt, meta) {
+  const stats = document.getElementById('dash-stats');
+  if (!stats) return;
+  ensureDashStatsShell(stats);
+  const nums = stats.querySelectorAll('.dash-stat-card .stat-num');
+  if (nums.length !== 4) return;
+  const cash = fmt(state.portfolio.cash);
+  const nw = fmt(net);
+  const debtTxt = fmt(debt);
+  const rep = String(meta.reputation ?? 0);
+  if (dashSnap.statCash !== cash) { dashSnap.statCash = cash; nums[0].textContent = cash; }
+  if (dashSnap.statNw !== nw) { dashSnap.statNw = nw; nums[1].textContent = nw; }
+  if (dashSnap.statDebt !== debtTxt) {
+    dashSnap.statDebt = debtTxt;
+    nums[2].textContent = debtTxt;
+    nums[2].classList.toggle('down', !!debt);
   }
-  const gate = canPurchaseLuxury(state, next.id);
-  const wrap = document.createElement('div');
-  wrap.className = 'dash-luxury-line';
-  const label = document.createElement('div');
-  label.className = 'dash-office-next';
-  label.textContent = `Luxury: ${next.name} · ${fmt(next.price)}`;
-  wrap.appendChild(label);
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'btn btn-sm btn-luxury-buy';
-  btn.textContent = gate.ok ? `Buy — ${fmt(next.price)}` : `Luxury — ${fmt(next.price)}`;
-  btn.disabled = !gate.ok;
-  if (!gate.ok) btn.title = gate.reason || '';
-  else btn.onclick = () => state.onPurchaseLuxury?.(next.id);
-  wrap.appendChild(btn);
-  officeEl.appendChild(wrap);
+  if (dashSnap.statRep !== rep) { dashSnap.statRep = rep; nums[3].textContent = rep; }
 }
 
 export function renderDashboard(state) {
+  ensureDashGotoDelegation();
+
   const meta = state.meta || {};
   const equity = getEquity(state.portfolio);
   const debt = state.finance ? getTotalDebt(state.finance) : 0;
@@ -270,33 +373,22 @@ export function renderDashboard(state) {
   });
 
   renderDashHero(profile, standing, officeView, net);
-  renderDashStanding(standing);
+  renderDashStanding(standing, state);
   renderOfficeStageCard(state, office, net, standing.rep);
   renderMegaGoalCard(state, activeMega);
+  renderDashStats(state, net, debt, meta);
 
   const deltaEl = document.getElementById('dash-equity-delta');
   if (deltaEl) {
-    deltaEl.textContent = `${delta >= 0 ? '+' : ''}$${Math.round(delta).toLocaleString()}`;
-    deltaEl.className = delta >= 0 ? 'up' : 'down';
+    const deltaTxt = `${delta >= 0 ? '+' : ''}$${Math.round(delta).toLocaleString()}`;
+    if (setTextIfChanged(deltaEl, 'deltaTxt', deltaTxt)) {
+      deltaEl.className = delta >= 0 ? 'up' : 'down';
+    }
   }
 
-  const stats = document.getElementById('dash-stats');
-  if (stats) {
-    const nums = stats.querySelectorAll('.dash-stat-card .stat-num');
-    if (nums.length === 4) {
-      nums[0].textContent = fmt(state.portfolio.cash);
-      nums[1].textContent = fmt(net);
-      nums[2].textContent = fmt(debt);
-      nums[2].classList.toggle('down', !!debt);
-      nums[3].textContent = String(meta.reputation ?? 0);
-    } else {
-      stats.innerHTML = `
-      <div class="dash-stat-card interactive-card"><span class="stat-lbl">Cash</span><span class="stat-num">${fmt(state.portfolio.cash)}</span></div>
-      <div class="dash-stat-card interactive-card"><span class="stat-lbl">Net Worth</span><span class="stat-num">${fmt(net)}</span></div>
-      <div class="dash-stat-card interactive-card"><span class="stat-lbl">Debt</span><span class="stat-num ${debt ? 'down' : ''}">${fmt(debt)}</span></div>
-      <div class="dash-stat-card interactive-card"><span class="stat-lbl">REP</span><span class="stat-num">${meta.reputation ?? 0}</span></div>
-    `;
-    }
+  const chartNote = document.querySelector('.dash-chart-note');
+  if (chartNote instanceof HTMLElement && !chartNote.hasAttribute('data-gloss')) {
+    chartNote.setAttribute('data-gloss', 'net-worth');
   }
 
   const ch = meta.challenge;
@@ -315,19 +407,21 @@ export function renderDashboard(state) {
       ${ch.completed && !ch.claimed ? '<button type="button" class="btn btn-accent btn-claim-challenge">Claim reward</button>' : ''}
       ${ch.claimed ? '<span class="ach-claimed">CLAIMED</span>' : ''}
     </div>` : '<div class="empty">Challenge loads at day start — keep trading until then.</div>';
-  if (chDetail) chDetail.innerHTML = chHtml;
-  document.querySelectorAll('.btn-claim-challenge').forEach((btn) => {
-    btn.onclick = () => state.onClaimChallenge?.();
-  });
+  if (setHtmlIfChanged(chDetail, 'challenge', chHtml)) {
+    chDetail?.querySelectorAll('.btn-claim-challenge').forEach((btn) => {
+      btn.onclick = () => state.onClaimChallenge?.();
+    });
+  }
 
   drawEquityChart(hist, tradingEquity);
 
   const recent = document.getElementById('dash-recent');
   if (recent) {
     const trades = (state.portfolio.history || []).slice(0, 6);
-    recent.innerHTML = trades.length
-      ? trades.map(t => `<div class="dash-row"><span>${t.action} ${t.sym}</span><span>×${t.shares} @ $${Number(t.price).toFixed(2)}</span></div>`).join('')
+    const recentHtml = trades.length
+      ? trades.map((t) => `<div class="dash-row"><span>${escapeHtml(t.action)} ${escapeHtml(t.sym)}</span><span>×${t.shares} @ $${Number(t.price).toFixed(2)}</span></div>`).join('')
       : '<div class="empty">No flips yet — open the Trade Desk and make your first move.</div>';
+    setHtmlIfChanged(recent, 'recent', recentHtml);
   }
 
   const firm = document.getElementById('dash-firm');
@@ -335,18 +429,21 @@ export function renderDashboard(state) {
     const staffN = state.staff?.length || 0;
     const perksN = state.perks?.length || 0;
     const flagship = getFlagshipEquippedVaultItem(profile?.cosmetics, state.vaultOwned);
-    firm.innerHTML = `
+    const pCredit = state.finance?.personalCredit ?? 680;
+    const bCredit = state.finance?.businessCredit ?? 700;
+    const firmHtml = `
       <div class="dash-row"><span>Office</span><span>${escapeHtml(office.name)}</span></div>
       <div class="dash-row"><span>Staff</span><span>${staffN}</span></div>
       <div class="dash-row"><span>Perks</span><span>${perksN}</span></div>
       ${buildFirmRelicRowHtml(state)}
       ${flagship ? `<div class="dash-row" title="Highest-appraisal equipped collectible"><span>Flagship</span><span>${escapeHtml(flagship.name)} · ${fmt(flagship.cost)}</span></div>` : ''}
-      <div class="dash-row"><span>Personal credit</span><span>${state.finance?.personalCredit ?? 680}</span></div>
-      <div class="dash-row"><span>Business credit</span><span>${state.finance?.businessCredit ?? 700}</span></div>
+      <div class="dash-row" data-gloss="credit-score"><span>Personal credit</span><span>${pCredit}</span></div>
+      <div class="dash-row" data-gloss="credit-score"><span>Business credit</span><span>${bCredit}</span></div>
       <div class="dash-row"><span>Rank</span><span>${escapeHtml(standing.rankName)}</span></div>
       ${standing.deskLabel ? `<div class="dash-row" title="${escapeAttr(aura.summary || '')}"><span>Desk</span><span>${escapeHtml(standing.deskLabel)}</span></div>` : ''}
       ${standing.flair ? `<div class="dash-row"><span>Flair</span><span>${escapeHtml(standing.flair)}</span></div>` : ''}
     `;
+    setHtmlIfChanged(firm, 'firm', firmHtml);
   }
 
   const lb = document.getElementById('dash-leaderboard');
@@ -358,18 +455,15 @@ export function renderDashboard(state) {
     if (standing.seatOwned) flairBits.push(THE_SEAT.name);
     flairBits.push(`Collection ${standing.collectionScore}`);
     const identity = `<div class="dash-player-identity"><strong>${escapeHtml(profile.name)}</strong>${flairBits.length ? `<span>${escapeHtml(flairBits.join(' · '))}</span>` : ''}</div>`;
-    lb.innerHTML = runs.length
+    const lbHtml = runs.length
       ? identity + runs.slice(0, 5).map((r, i) => `
         <div class="dash-row ${i === 0 ? 'lb-best' : ''}">
           <span>#${i + 1} Day ${r.day} · REP ${r.rep ?? 0}</span>
           <span>$${r.equity.toLocaleString()}</span>
         </div>`).join('')
       : identity + '<div class="empty">Your best runs appear here — grow equity to set a record.</div>';
+    setHtmlIfChanged(lb, 'leaderboard', lbHtml);
   }
-
-  document.querySelectorAll('[data-goto]').forEach((btn) => {
-    btn.onclick = () => switchView(btn.dataset.goto);
-  });
 }
 
 export function drawEquityChart(hist, current) {
@@ -378,9 +472,12 @@ export function drawEquityChart(hist, current) {
   const ctx = canvas.getContext('2d');
   const w = canvas.width;
   const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
   const pts = hist.length ? hist.map((p) => p.equity) : [current];
   if (pts.length === 1) pts.push(pts[0]);
+  const sig = `${pts.length}:${pts[0]}:${pts[pts.length - 1]}:${Math.round(pts.reduce((a, b) => a + b, 0))}`;
+  if (dashSnap.chartSig === sig) return;
+  dashSnap.chartSig = sig;
+  ctx.clearRect(0, 0, w, h);
   const min = Math.min(...pts) * 0.998;
   const max = Math.max(...pts) * 1.002 || min + 1;
   ctx.strokeStyle = pts[pts.length - 1] >= pts[0] ? '#3fb950' : '#f85149';
