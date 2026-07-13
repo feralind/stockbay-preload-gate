@@ -30,7 +30,7 @@ import { getPlayerStanding } from '../meta.js';
 import { getEquity } from '../portfolio.js';
 import { getProfile } from '../profile.js';
 import { getRelicEffect, getRelicSlotLimit } from '../relics.js';
-import { getSymbolName } from '../symbols.js';
+import { getSymbolName, getSymbolSector } from '../symbols.js';
 import { THE_SEAT } from '../the-seat.js';
 import { getVaultBookValue, getVaultDeskAura } from '../vault.js';
 import { setSelectedSym } from './selection.js';
@@ -66,6 +66,43 @@ const DASH_TEAL = '#2dd4bf';
 const DASH_GOLD = '#eab308';
 const INDEX_SYMS = ['SPY', 'QQQ', 'DIA', 'IWM', 'GLD'];
 const RIBBON_FALLBACK = ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'AMZN', 'META', 'AMD', 'SLV', 'USO', 'TLT'];
+
+/** Fine-grained category overrides for the Discover grid's ambient theming — sits on top of getSymbolSector(). */
+const DISCOVER_CATEGORY_OVERRIDES = {
+  SPY: 'index', QQQ: 'index', DIA: 'index', IWM: 'index', VTI: 'index', VOO: 'index', VEA: 'index', VWO: 'index', EFA: 'index', EEM: 'index',
+  GLD: 'metals', SLV: 'metals',
+  USO: 'energy', UNG: 'energy',
+  TLT: 'bonds', HYG: 'bonds', LQD: 'bonds',
+  NVDA: 'ai', AMD: 'ai', AVGO: 'ai', SMCI: 'ai', MU: 'ai', ARM: 'ai', MRVL: 'ai', ON: 'ai', LRCX: 'ai', KLAC: 'ai', AMAT: 'ai', PLTR: 'ai',
+  COIN: 'crypto', MSTR: 'crypto', MARA: 'crypto', RIOT: 'crypto', CAN: 'crypto', HOOD: 'crypto',
+};
+
+/** Ambient corner-glow theme per category — color reflects the category's real-world "vibe", corner keeps the grid varied. */
+const DISCOVER_THEMES = {
+  index: { color: '#38bdf8', corner: 'tr' },
+  metals: { color: '#facc15', corner: 'tl' },
+  bonds: { color: '#a1a1aa', corner: 'br' },
+  ai: { color: '#a855f7', corner: 'br' },
+  crypto: { color: '#22d3ee', corner: 'bl' },
+  tech: { color: '#3b82f6', corner: 'tr' },
+  finance: { color: '#10b981', corner: 'tl' },
+  healthcare: { color: '#f43f5e', corner: 'br' },
+  consumer: { color: '#f97316', corner: 'bl' },
+  energy: { color: '#fb923c', corner: 'tr' },
+  industrial: { color: '#94a3b8', corner: 'tl' },
+  materials: { color: '#84cc16', corner: 'br' },
+  telecom: { color: '#ec4899', corner: 'bl' },
+  reit: { color: '#14b8a6', corner: 'tr' },
+  growth: { color: '#facc15', corner: 'bl' },
+  midcap: { color: '#8b5cf6', corner: 'tl' },
+  sp500extra: { color: '#3b82f6', corner: 'tr' },
+  etf: { color: '#38bdf8', corner: 'tr' },
+};
+
+function discoverTheme(sym) {
+  const cat = DISCOVER_CATEGORY_OVERRIDES[sym] || getSymbolSector(sym) || 'tech';
+  return DISCOVER_THEMES[cat] || DISCOVER_THEMES.tech;
+}
 
 /**
  * @param {HTMLElement | null} el
@@ -463,18 +500,39 @@ function collectMovers(state) {
   return [...map.values()].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
 }
 
+/** Catmull-Rom -> cubic-bezier smoothing so mini-charts read as a fluid line instead of jagged segments. */
+export function smoothSparkPath(coords) {
+  if (coords.length < 3) {
+    return coords.map((c, i) => `${i ? 'L' : 'M'}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' ');
+  }
+  let d = `M${coords[0][0].toFixed(1)},${coords[0][1].toFixed(1)}`;
+  for (let i = 0; i < coords.length - 1; i++) {
+    const p0 = coords[i === 0 ? 0 : i - 1];
+    const p1 = coords[i];
+    const p2 = coords[i + 1];
+    const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C${c1x.toFixed(1)},${c1y.toFixed(1)} ${c2x.toFixed(1)},${c2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
 function sparkSvg(sym, price, changePct) {
   const up = (changePct ?? 0) >= 0;
-  const n = 12;
-  const w = 72;
-  const h = 28;
+  const n = 14;
+  const w = 100;
+  const h = 34;
+  const pad = 3;
   const seed = [...String(sym)].reduce((a, c) => a + c.charCodeAt(0), 0);
   const pts = [];
-  let v = price > 0 ? price * (1 - (changePct || 0) / 200) : 100;
+  let v = price > 0 ? price * (1 - (changePct || 0) / 180) : 100;
   for (let i = 0; i < n; i++) {
     const t = i / (n - 1);
-    const wobble = Math.sin((seed + i * 17) * 0.37) * 0.008 + Math.cos((seed + i) * 0.21) * 0.005;
-    v = Math.max(0.01, v * (1 + wobble + ((changePct || 0) / 100) * 0.02 * t));
+    const wobble = Math.sin((seed + i * 17) * 0.37) * 0.011 + Math.cos((seed + i * 5) * 0.21) * 0.007;
+    v = Math.max(0.01, v * (1 + wobble + ((changePct || 0) / 100) * 0.018 * t));
     pts.push(v);
   }
   pts[pts.length - 1] = price > 0 ? price : pts[pts.length - 1];
@@ -482,15 +540,29 @@ function sparkSvg(sym, price, changePct) {
   const max = Math.max(...pts);
   const span = max - min || 1;
   const coords = pts.map((p, i) => {
-    const x = (i / (n - 1)) * (w - 2) + 1;
-    const y = h - 2 - ((p - min) / span) * (h - 4);
+    const x = (i / (n - 1)) * (w - pad * 2) + pad;
+    const y = h - pad - ((p - min) / span) * (h - pad * 2);
     return [x, y];
   });
-  const line = coords.map((c, i) => `${i ? 'L' : 'M'}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' ');
+  const linePath = smoothSparkPath(coords);
+  const first = coords[0];
   const last = coords[coords.length - 1];
+  const areaPath = `${linePath} L${last[0].toFixed(1)},${h} L${first[0].toFixed(1)},${h} Z`;
+  const uid = `spk${seed.toString(36)}${n}`;
   return `<svg class="dash-mini-spark ${up ? 'up' : 'down'}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
-    <path class="spark-line" d="${line}"></path>
-    <circle class="dash-spark-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.2"></circle>
+    <defs>
+      <linearGradient id="${uid}f" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="currentColor" stop-opacity="0.4"></stop>
+        <stop offset="100%" stop-color="currentColor" stop-opacity="0"></stop>
+      </linearGradient>
+      <linearGradient id="${uid}l" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="currentColor" stop-opacity="0.5"></stop>
+        <stop offset="100%" stop-color="currentColor" stop-opacity="1"></stop>
+      </linearGradient>
+    </defs>
+    <path class="spark-area" d="${areaPath}" fill="url(#${uid}f)"></path>
+    <path class="spark-line" d="${linePath}" stroke="url(#${uid}l)"></path>
+    <circle class="dash-spark-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.4"></circle>
   </svg>`;
 }
 
@@ -528,7 +600,8 @@ function renderDiscover(state) {
     const pct = q?.changePct || 0;
     const name = getSymbolName(sym) || sym;
     if (!(price > 0)) return '';
-    return `<button type="button" class="dash-discover-card" data-dash-sym="${escapeAttr(sym)}">
+    const theme = discoverTheme(sym);
+    return `<button type="button" class="dash-discover-card dash-glow-${theme.corner}" style="--cat-glow:${theme.color}" data-dash-sym="${escapeAttr(sym)}">
       <div class="dash-discover-top">
         <span class="dash-discover-name">${escapeHtml(name)}</span>
         <span class="dash-discover-ticker">${escapeHtml(sym)}</span>

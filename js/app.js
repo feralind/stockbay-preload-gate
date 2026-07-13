@@ -41,7 +41,7 @@ import { applyRelicAwareSlippage, getDeskMarginGraceMinutes } from './desk-rules
 import { getMacroState } from './macro.js';
 import { isTaxDay, settleTaxDay } from './tax.js';
 import { startEventEngine, onEvent } from './events.js';
-import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote, setChartStyle, getChartStyle } from './chart.js';
+import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote, setChartStyle, getChartStyle, scheduleFitChart } from './chart.js';
 import { initThemePanel } from './theme.js';
 import {
   tickStaff, hireStaff, fireStaff, trainStaff, renameStaff, STAFF_ROLES,
@@ -618,7 +618,7 @@ function bindListingsViewportRefresh() {
       const key = activeTab?.dataset?.tradeTab
         || (activeTab?.id === 'tab-news' ? 'news' : activeTab?.id === 'tab-stats' ? 'stats' : 'chart');
       showChartTab(key);
-      requestAnimationFrame(() => resizeChart());
+      scheduleFitChart();
     }
     maybeStartPortfolioTour(viewId, {
       state,
@@ -1710,7 +1710,7 @@ async function init() {
 
     await initChart(document.getElementById('chart-container'));
     await loadChart(getSelectedSym(), state.perks.includes('analyst'));
-    setTimeout(() => resizeChart(), 400);
+    setTimeout(() => scheduleFitChart(), 400);
 
     if (state.meta.speed && state.meta.speed !== 1) setMarketSpeed(state.meta.speed);
     startMarket();
@@ -1875,7 +1875,7 @@ async function init() {
     document.querySelectorAll('.nav-item').forEach(btn => {
       btn.onclick = () => {
         switchView(btn.dataset.view);
-        if (btn.dataset.view === 'trade') setTimeout(() => resizeChart(), 100);
+        if (btn.dataset.view === 'trade') setTimeout(() => scheduleFitChart(), 100);
       };
     });
 
@@ -1893,7 +1893,7 @@ async function init() {
         const key = tab.dataset.tradeTab
           || (tab.id === 'tab-news' ? 'news' : tab.id === 'tab-stats' ? 'stats' : 'chart');
         showChartTab(key);
-        if (key === 'chart') setTimeout(() => resizeChart(), 100);
+        if (key === 'chart') setTimeout(() => scheduleFitChart(), 100);
       };
     });
 
@@ -1920,7 +1920,7 @@ async function init() {
       const key = activeTab?.dataset?.tradeTab
         || (activeTab?.id === 'tab-news' ? 'news' : activeTab?.id === 'tab-stats' ? 'stats' : 'chart');
       showChartTab(key);
-      requestAnimationFrame(() => resizeChart());
+      requestAnimationFrame(() => scheduleFitChart());
     });
 
     document.getElementById('btn-refresh').onclick = async () => {
@@ -2149,7 +2149,7 @@ async function init() {
       if (e.key === 'Enter') runListingSearch();
     });
     document.getElementById('listing-search')?.addEventListener('input', (e) => {
-      if (!e.target.value.trim()) renderListingSearchResults('', state);
+      renderListingSearchResults(e.target.value, state);
     });
     document.getElementById('listings-show-more')?.addEventListener('click', () => {
       showMoreListings(getFullListingsTotal(state));

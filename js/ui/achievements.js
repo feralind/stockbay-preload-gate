@@ -8,6 +8,50 @@ import {
   ACHIEVEMENTS, ACHIEVEMENT_TIERS, getAchievementProgress, getUnclaimedTotal,
   achievementBadgeSvg, achievementCategory,
 } from '../achievements.js';
+import { getRepRank } from '../config.js';
+import { escapeHtml } from './shared.js';
+
+const RING_R = 52;
+const RING_C = 2 * Math.PI * RING_R;
+
+const TIER_ROMAN = {
+  bronze: 'I',
+  silver: 'II',
+  gold: 'III',
+  platinum: 'IV',
+  diamond: 'V',
+  master: 'VI',
+};
+
+function setText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function updateProgressPanel(state, prog, unclaimed) {
+  const pct = prog.total > 0 ? Math.round((prog.unlocked / prog.total) * 100) : 0;
+  const rank = getRepRank(state.meta?.reputation || 0);
+  const nextClaim = ACHIEVEMENTS.find((a) => {
+    const ach = state.achievements || { unlocked: {}, claimed: {} };
+    return ach.unlocked?.[a.id] && !ach.claimed?.[a.id];
+  });
+  const nextReward = unclaimed > 0
+    ? (nextClaim ? `$${nextClaim.reward.toLocaleString()}` : `$${unclaimed.toLocaleString()}`)
+    : '—';
+
+  setText('ach-progress-pct', `${pct}%`);
+  setText('ach-kpi-unlocked', String(prog.unlocked));
+  setText('ach-kpi-reward', nextReward);
+  setText('ach-kpi-tier', rank.name);
+  setText('ach-progress', `${prog.unlocked} / ${prog.total} unlocked${unclaimed ? ` · $${unclaimed.toLocaleString()} unclaimed` : ''}`);
+
+  const arc = document.getElementById('ach-progress-arc');
+  if (arc) {
+    const offset = RING_C * (1 - Math.max(0, Math.min(1, pct / 100)));
+    arc.style.strokeDasharray = `${RING_C}`;
+    arc.style.strokeDashoffset = `${offset}`;
+  }
+}
 
 export function renderAchievements(state) {
   const ach = state.achievements || { unlocked: {}, claimed: {} };
@@ -16,14 +60,11 @@ export function renderAchievements(state) {
 
   const badge = document.getElementById('ach-badge');
   if (badge) {
-    const n = ACHIEVEMENTS.filter(a => ach.unlocked[a.id] && !ach.claimed[a.id]).length;
+    const n = ACHIEVEMENTS.filter((a) => ach.unlocked[a.id] && !ach.claimed[a.id]).length;
     badge.textContent = n ? String(n) : '';
   }
 
-  const progEl = document.getElementById('ach-progress');
-  if (progEl) {
-    progEl.textContent = `${prog.unlocked} / ${prog.total} unlocked${unclaimed ? ` · $${unclaimed.toLocaleString()} unclaimed` : ''}`;
-  }
+  updateProgressPanel(state, prog, unclaimed);
 
   const claimAll = document.getElementById('btn-claim-all');
   if (claimAll) {
@@ -40,45 +81,44 @@ export function renderAchievements(state) {
 
   grid.innerHTML = emptyBanner + ACHIEVEMENT_TIERS.map((tierMeta) => {
     const tier = tierMeta.id;
-    const list = ACHIEVEMENTS.filter(a => a.tier === tier);
+    const list = ACHIEVEMENTS.filter((a) => a.tier === tier);
     if (!list.length) return '';
-    const unlockedCount = list.filter(a => ach.unlocked[a.id]).length;
+    const unlockedCount = list.filter((a) => ach.unlocked[a.id]).length;
+    const roman = TIER_ROMAN[tier] || '';
     return `
-      <div class="ach-tier-block tier-${tier}">
+      <section class="ach-tier-block tier-${tier}">
         <div class="ach-tier-head">
-          <div class="ach-tier-badge" aria-hidden="true">${achievementBadgeSvg(tier, { unlocked: true, category: 'trade' })}</div>
-          <div>
-            <div class="ach-tier-title">${tierMeta.label}</div>
-            <div class="ach-tier-blurb">${tierMeta.blurb} · ${unlockedCount} / ${list.length}</div>
+          <div class="ach-tier-rule" aria-hidden="true"></div>
+          <div class="ach-tier-label-wrap">
+            <span class="ach-tier-roman">Tier ${roman}</span>
+            <div class="ach-tier-title">${escapeHtml(tierMeta.label)}</div>
+            <div class="ach-tier-blurb">${escapeHtml(tierMeta.blurb)} · ${unlockedCount} / ${list.length}</div>
           </div>
+          <div class="ach-tier-rule" aria-hidden="true"></div>
         </div>
         <div class="ach-cards">
-          ${list.map(a => {
+          ${list.map((a) => {
             const unlocked = !!ach.unlocked[a.id];
             const claimed = !!ach.claimed[a.id];
             const prestige = ['gold', 'platinum', 'diamond', 'master'].includes(tier) ? ' prestige' : '';
             const category = achievementCategory(a);
             return `
-              <div class="ach-card ${unlocked ? 'unlocked' : 'locked'} ${claimed ? 'claimed' : ''} tier-${tier}${prestige}">
+              <article class="ach-card ${unlocked ? 'unlocked' : 'locked'} ${claimed ? 'claimed' : ''} tier-${tier}${prestige}" title="${escapeHtml(a.desc)}">
                 <div class="ach-icon">${achievementBadgeSvg(tier, { unlocked, category })}</div>
-                <div class="ach-body">
-                  <div class="ach-name">${a.name}</div>
-                  <div class="ach-desc">${a.desc}</div>
-                  <div class="ach-reward">Reward: $${a.reward.toLocaleString()}</div>
+                <div class="ach-name">${escapeHtml(a.name)}</div>
+                <div class="ach-card-foot">
+                  <span class="ach-reward">$${a.reward.toLocaleString()}</span>
+                  ${claimed ? '<span class="ach-claimed">Claimed</span>'
+                    : unlocked ? `<button type="button" class="btn btn-accent btn-sm claim-btn" data-ach="${a.id}">Claim</button>`
+                    : '<span class="ach-locked">Locked</span>'}
                 </div>
-                <div class="ach-status">
-                  <span class="ach-tier-label">${tierMeta.label}${unlocked ? '' : ' LOCKED'}</span>
-                  ${claimed ? '<span class="ach-claimed">✓ CLAIMED</span>'
-                    : unlocked ? `<button type="button" class="btn btn-accent btn-sm claim-btn" data-ach="${a.id}">Claim $${a.reward.toLocaleString()}</button>`
-                    : '<span class="ach-locked">LOCKED</span>'}
-                </div>
-              </div>`;
+              </article>`;
           }).join('')}
         </div>
-      </div>`;
+      </section>`;
   }).join('');
 
-  grid.querySelectorAll('.claim-btn').forEach(btn => {
+  grid.querySelectorAll('.claim-btn').forEach((btn) => {
     btn.onclick = () => state.onClaimAchievement?.(btn.dataset.ach);
   });
 }

@@ -12,15 +12,19 @@ import { logoMarkHtml } from '../logos.js';
 import { toast } from '../notify.js';
 import { trapFocus } from '../overlays.js';
 import {
-  getSymbolName, getSymbolSector, getRandomSymbols, searchSymbols, getSymbolMeta, ALL_SYMBOLS, getSymbolCount,
+  getSymbolName, getSymbolSector, getRandomSymbols, getSymbolMeta, ALL_SYMBOLS, getSymbolCount,
 } from '../symbols.js';
 import { getWalkthroughSuggestMeta } from '../onboarding-walkthrough.js';
 import { getSelectedSym, setSelectedSym } from './selection.js';
-import { escapeHtml, quoteForDisplay } from './shared.js';
+import { escapeAttr, escapeHtml, quoteForDisplay } from './shared.js';
+import {
+  computeListingEdgePct, computeEdgeGlowScale, edgeVisualTokens, dealWaveSvg, truncate1,
+} from './deal-desk.js';
 
 let watchlist = ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'AMD'];
 let listingsVisibleCount = CONFIG.LISTING_PAGE_SIZE;
 let listingsSort = 'deals';
+let listingsQuery = '';
 
 /** Hot listings sliding-window rotation */
 let hotRotationOffset = 0;
@@ -360,7 +364,7 @@ export function syncListingsFromQuotes(state, symbols = null, { rescaleAsks = fa
 
 /** Symbols currently shown on the Deal desk (visible page of deals or directory). */
 export function getVisibleListingSymbols(state) {
-  const sorted = sortListingRows(getFullListingRows(state), listingsSort);
+  const sorted = sortListingRows(getFullListingRows(state).filter((l) => listingMatchesQuery(l, listingsQuery)), listingsSort);
   return [...new Set(sorted.slice(0, listingsVisibleCount).map(l => l.sym))];
 }
 
@@ -642,12 +646,12 @@ function sortListingRows(rows, sort) {
   switch (sort) {
     case 'az': sorted = copy.sort((a, b) => a.sym.localeCompare(b.sym)); break;
     case 'za': sorted = copy.sort((a, b) => b.sym.localeCompare(a.sym)); break;
-    case 'price-desc': sorted = copy.sort((a, b) => (b.marketPrice || b.price) - (a.marketPrice || a.price)); break;
-    case 'price-asc': sorted = copy.sort((a, b) => (a.marketPrice || a.price) - (b.marketPrice || b.price)); break;
+    case 'price-desc': sorted = copy.sort((a, b) => (b.price || b.marketPrice) - (a.price || a.marketPrice)); break;
+    case 'price-asc': sorted = copy.sort((a, b) => (a.price || a.marketPrice) - (b.price || b.marketPrice)); break;
     case 'change-desc': sorted = copy.sort((a, b) => (b.changePct || 0) - (a.changePct || 0)); break;
     case 'change-asc': sorted = copy.sort((a, b) => (a.changePct || 0) - (b.changePct || 0)); break;
     case 'sector': sorted = copy.sort((a, b) => (a.sector || '').localeCompare(b.sector || '') || a.sym.localeCompare(b.sym)); break;
-    default: sorted = copy.sort((a, b) => (b.isDeal ? 1 : 0) - (a.isDeal ? 1 : 0)); break;
+    default: sorted = copy.sort((a, b) => computeListingEdgePct(b) - computeListingEdgePct(a)); break;
   }
   // Keep walkthrough suggested listing pinned to row 1 so the badge is visible
   const suggest = getWalkthroughSuggestMeta();
@@ -661,6 +665,20 @@ function sortListingRows(rows, sort) {
   return sorted;
 }
 
+function listingMatchesQuery(l, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  const meta = getSymbolMeta(l.sym);
+  return [
+    l.sym,
+    l.name,
+    l.sector,
+    l.desc,
+    meta.exchange,
+    ...(meta.tags || []),
+  ].some((v) => String(v || '').toLowerCase().includes(q));
+}
+
 function getFullListingRows(state) {
   if (listingsSort === 'deals') return [...state.listings];
   return ALL_SYMBOLS.map(sym => makeDirectoryListing(sym));
@@ -672,7 +690,10 @@ export function showMoreListings(total) {
 }
 
 export function getFullListingsTotal(state) {
-  return listingsSort === 'deals' ? (state.listings?.length || 0) : getSymbolCount();
+  const rows = listingsSort === 'deals'
+    ? (state.listings || [])
+    : ALL_SYMBOLS.map(sym => makeDirectoryListing(sym));
+  return rows.filter((l) => listingMatchesQuery(l, listingsQuery)).length;
 }
 
 function randomFlavor() {
@@ -689,11 +710,6 @@ function randomFlavor() {
     'Earnings play gone wrong — fire sale',
   ];
   return flavors[Math.floor(Math.random() * flavors.length)];
-}
-
-function listingSpreadPct(l) {
-  if (!l?.marketPrice || l.isMarket) return 0;
-  return ((l.marketPrice - l.price) / l.marketPrice) * 100;
 }
 
 const sparkSeries = new Map();
@@ -871,127 +887,116 @@ function patchHotRow(el, l) {
   if (el.querySelector('.listing-spark')) patchSparkline(el, l);
 }
 
-function listingHtml(l, state, { withSpark = false, vectorIcon = false, hot = false } = {}) {
-  if (hot) return hotListingHtml(l);
-  const marketTag = l.isMarket ? '<span class="market-tag">MARKET</span>' : '';
-  const meta = getSymbolMeta(l.sym);
-  const spread = listingSpreadPct(l);
-  const spreadHtml = !l.isMarket && Math.abs(spread) >= 0.05
-    ? `<div class="listing-spread ${spread > 0 ? 'under' : 'over'}">${spread > 0 ? '−' : '+'}${Math.abs(spread).toFixed(1)}% vs mkt</div>`
-    : '';
-  const spark = withSpark ? sparklineHtml(l.sym, l.price, l.changePct) : '';
-  const mark = vectorIcon
-    ? vectorMarkHtml(meta, 'sm')
-    : logoMarkHtml(l.sym, { color: meta.color, letter: meta.letter, size: 'sm' });
-  const suggestMeta = getWalkthroughSuggestMeta();
-  const isSuggest = !!(suggestMeta && suggestMeta.sym === String(l.sym).toUpperCase());
-  const suggestBadge = isSuggest
-    ? `<div class="suggest-badge" title="${escapeHtml(suggestMeta.reason || '')}">Suggested first trade</div>`
-    : '';
+const DEFAULT_EDGE_SCALE = { min: 3, max: 4, badgeCutoff: Infinity };
+
+/** Builds the "Mkt $X · ±X.X% vs mkt · [EDGE]" row — the single source of truth for a
+ *  listing's edge, replacing the old two-number listing-mkt/listing-spread combo that
+ *  showed the stock's unrelated daily change% right next to a separately (and
+ *  inversely-signed) computed ask-vs-market spread. */
+function dealCardEdgeRowHtml(l, tokens, edgePct) {
+  if (l.isMarket) {
+    return '<div class="deal-card-edge-row deal-card-edge-row-market"><span class="deal-card-mkt">Live quote</span></div>';
+  }
+  const up = edgePct >= 0;
   return `
-    <div class="listing ${l.isDeal ? 'deal' : ''} ${getSelectedSym() === l.sym ? 'selected' : ''} ${l.isMarket ? 'market-row' : ''} ${isSuggest ? 'walkthrough-suggest' : ''}" data-sym="${l.sym}">
-      <div class="listing-rail" aria-hidden="true"></div>
-      <div class="listing-main">
-        ${mark}
-        <div class="listing-copy">
-          <div class="listing-top">
-            <span class="listing-sym">${l.sym}</span>
-            ${marketTag}
-            <span class="sector-tag">${meta.exchange}</span>
-          </div>
-          <div class="listing-name">${l.name}</div>
-          <div class="listing-flavor">${l.desc}</div>
-          ${l.hint ? `<div class="insider-hint">TIP · ${l.hint}</div>` : ''}
-        </div>
-        ${spark}
-        <div class="listing-side">
-          <div class="listing-ask-label">${l.isMarket ? 'Market' : 'Ask'}</div>
-          <div class="listing-price">$${l.price.toFixed(2)}</div>
-          <div class="listing-mkt">${l.isMarket ? 'Live quote' : `Mkt $${l.marketPrice.toFixed(2)}`} <span class="${l.changePct >= 0 ? 'up' : 'down'}">${l.changePct >= 0 ? '+' : ''}${(l.changePct || 0).toFixed(2)}%</span></div>
-          ${spreadHtml}
-          ${l.isDeal ? '<div class="deal-badge" data-gloss="great-deal">Great deal</div>' : ''}
-          ${suggestBadge}
-          <div class="listing-cta">Snipe<span aria-hidden="true"> →</span></div>
-        </div>
-      </div>
+    <div class="deal-card-edge-row">
+      <span class="deal-card-mkt">Mkt $${l.marketPrice.toFixed(2)}</span>
+      <span class="deal-card-delta ${up ? 'up' : 'down'}">${up ? '+' : ''}${truncate1(edgePct)}% vs mkt</span>
+      ${tokens.showBadge ? '<span class="deal-card-edge-badge" title="Standout edge over live market — a real outlier in today\u2019s deal feed">EDGE</span>' : ''}
     </div>`;
 }
 
-function patchListingRow(el, l) {
-  el.classList.toggle('deal', !!l.isDeal);
+function listingHtml(l, state, { scale = DEFAULT_EDGE_SCALE, hot = false } = {}) {
+  if (hot) return hotListingHtml(l);
+  const meta = getSymbolMeta(l.sym);
+  const marketTag = l.isMarket ? '<span class="market-tag">MARKET</span>' : '';
+  const mark = logoMarkHtml(l.sym, { color: meta.color, letter: meta.letter, size: 'sm' });
+  const suggestMeta = getWalkthroughSuggestMeta();
+  const isSuggest = !!(suggestMeta && suggestMeta.sym === String(l.sym).toUpperCase());
+  const edgePct = computeListingEdgePct(l);
+  const tokens = edgeVisualTokens(edgePct, scale);
+  return `
+    <article class="listing deal-card ${getSelectedSym() === l.sym ? 'selected' : ''} ${l.isMarket ? 'market-row' : ''} ${isSuggest ? 'walkthrough-suggest' : ''}" style="${escapeAttr(tokens.style)}" data-sym="${l.sym}">
+      <div class="deal-card-main">
+        <div class="deal-card-id">
+          ${mark}
+          <div class="deal-card-id-copy">
+            <div class="deal-card-sym-row">
+              <span class="deal-card-sym">${l.sym}</span>
+              <span class="deal-card-exchange">${escapeHtml(meta.exchange || '')}</span>
+              ${marketTag}
+              ${isSuggest ? `<span class="deal-card-tag deal-card-tag-suggest suggest-badge" title="${escapeAttr(suggestMeta.reason || '')}">Suggested</span>` : ''}
+            </div>
+            <div class="deal-card-name">${escapeHtml(l.name || l.sym)}</div>
+          </div>
+        </div>
+        <div class="deal-card-side">
+          <div class="deal-card-ask">
+            <span class="deal-card-ask-lbl">${l.isMarket ? 'Market' : 'Ask'}</span>
+            <span class="deal-card-ask-px">$${l.price.toFixed(2)}</span>
+          </div>
+          ${dealCardEdgeRowHtml(l, tokens, edgePct)}
+          <button type="button" class="btn-snipe">Snipe</button>
+        </div>
+      </div>
+      <p class="deal-card-thesis">${escapeHtml(l.desc || '')}</p>
+      ${l.hint ? `<div class="deal-card-hint">TIP · ${escapeHtml(l.hint)}</div>` : ''}
+      <div class="deal-card-wave">${dealWaveSvg(l.sym, tokens.glow)}</div>
+    </article>`;
+}
+
+function patchListingRow(el, l, { scale = DEFAULT_EDGE_SCALE } = {}) {
   el.classList.toggle('selected', getSelectedSym() === l.sym);
   el.classList.toggle('market-row', !!l.isMarket);
   const suggestMeta = getWalkthroughSuggestMeta();
   const isSuggest = !!(suggestMeta && suggestMeta.sym === String(l.sym).toUpperCase());
   el.classList.toggle('walkthrough-suggest', isSuggest);
-  const priceEl = el.querySelector('.listing-price');
-  if (priceEl) priceEl.textContent = `$${l.price.toFixed(2)}`;
-  const askLbl = el.querySelector('.listing-ask-label');
+
+  const edgePct = computeListingEdgePct(l);
+  const tokens = edgeVisualTokens(edgePct, scale);
+  if (el.dataset.edgeStyle !== tokens.style) {
+    el.setAttribute('style', tokens.style);
+    el.dataset.edgeStyle = tokens.style;
+  }
+
+  const askPxEl = el.querySelector('.deal-card-ask-px');
+  if (askPxEl) askPxEl.textContent = `$${l.price.toFixed(2)}`;
+  const askLbl = el.querySelector('.deal-card-ask-lbl');
   if (askLbl) askLbl.textContent = l.isMarket ? 'Market' : 'Ask';
-  const mktEl = el.querySelector('.listing-mkt');
-  if (mktEl) {
-    const chg = `${l.changePct >= 0 ? '+' : ''}${(l.changePct || 0).toFixed(2)}%`;
-    const next = `${l.isMarket ? 'Live quote' : `Mkt $${l.marketPrice.toFixed(2)}`} <span class="${l.changePct >= 0 ? 'up' : 'down'}">${chg}</span>`;
-    if (mktEl.dataset.patch !== next) {
-      mktEl.innerHTML = next;
-      mktEl.dataset.patch = next;
+
+  const edgeRowEl = el.querySelector('.deal-card-edge-row');
+  if (edgeRowEl) {
+    const nextRow = dealCardEdgeRowHtml(l, tokens, edgePct);
+    if (edgeRowEl.dataset.patch !== nextRow) {
+      edgeRowEl.outerHTML = nextRow;
+      el.querySelector('.deal-card-edge-row').dataset.patch = nextRow;
     }
   }
-  const spread = listingSpreadPct(l);
-  let spreadEl = el.querySelector('.listing-spread');
-  if (!l.isMarket && Math.abs(spread) >= 0.05) {
-    const html = `${spread > 0 ? '−' : '+'}${Math.abs(spread).toFixed(1)}% vs mkt`;
-    if (!spreadEl) {
-      const side = el.querySelector('.listing-side');
-      const mkt = el.querySelector('.listing-mkt');
-      if (side && mkt) {
-        mkt.insertAdjacentHTML('afterend', `<div class="listing-spread ${spread > 0 ? 'under' : 'over'}">${html}</div>`);
-      }
-    } else {
-      spreadEl.textContent = html;
-      spreadEl.className = `listing-spread ${spread > 0 ? 'under' : 'over'}`;
-    }
-  } else if (spreadEl) {
-    spreadEl.remove();
+
+  const waveEl = el.querySelector('.deal-card-wave');
+  const glowKey = tokens.glow.toFixed(2);
+  if (waveEl && waveEl.dataset.glow !== glowKey) {
+    waveEl.innerHTML = dealWaveSvg(l.sym, tokens.glow);
+    waveEl.dataset.glow = glowKey;
   }
-  let badge = el.querySelector('.deal-badge');
-  if (l.isDeal && !badge) {
-    const side = el.querySelector('.listing-side');
-    const cta = el.querySelector('.listing-cta');
-    if (side) {
-      const html = '<div class="deal-badge" data-gloss="great-deal">Great deal</div>';
-      if (cta) cta.insertAdjacentHTML('beforebegin', html);
-      else side.insertAdjacentHTML('beforeend', html);
-    }
-  } else if (!l.isDeal && badge) {
-    badge.remove();
+
+  let suggestTag = el.querySelector('.deal-card-tag-suggest');
+  const symRow = el.querySelector('.deal-card-sym-row');
+  if (isSuggest && !suggestTag && symRow) {
+    const html = `<span class="deal-card-tag deal-card-tag-suggest suggest-badge" title="${escapeAttr(suggestMeta.reason || '')}">Suggested</span>`;
+    symRow.insertAdjacentHTML('beforeend', html);
+  } else if (isSuggest && suggestTag) {
+    suggestTag.title = suggestMeta.reason || '';
+  } else if (!isSuggest && suggestTag) {
+    suggestTag.remove();
   }
-  let suggestBadge = el.querySelector('.suggest-badge');
-  if (isSuggest && !suggestBadge) {
-    const side = el.querySelector('.listing-side');
-    const cta = el.querySelector('.listing-cta');
-    if (side) {
-      const html = `<div class="suggest-badge" title="${escapeHtml(suggestMeta.reason || '')}">Suggested first trade</div>`;
-      if (cta) cta.insertAdjacentHTML('beforebegin', html);
-      else side.insertAdjacentHTML('beforeend', html);
-    }
-  } else if (isSuggest && suggestBadge) {
-    suggestBadge.title = suggestMeta.reason || '';
-  } else if (!isSuggest && suggestBadge) {
-    suggestBadge.remove();
-  }
-  if (el.querySelector('.listing-spark')) patchSparkline(el, l);
 }
 
-function listingRowNeedsRebuild(el, { withSpark = false, vectorIcon = false } = {}) {
-  if (!el) return true;
-  if (withSpark && !el.querySelector('.listing-spark')) return true;
-  if (vectorIcon && !el.querySelector('.sym-mark-vector')) return true;
-  if (!vectorIcon && el.querySelector('.sym-mark-vector')) return true;
-  return false;
+function listingRowNeedsRebuild(el) {
+  return !el;
 }
 
-function tryPatchListings(container, rows, state, { withSpark = false, vectorIcon = false, hot = false } = {}) {
+function tryPatchListings(container, rows, state, { hot = false, scale = DEFAULT_EDGE_SCALE } = {}) {
   const sel = hot ? ':scope > .hot-row' : ':scope > .listing';
   const existing = [...container.querySelectorAll(sel)];
   const sameOrder = existing.length === rows.length
@@ -1000,11 +1005,11 @@ function tryPatchListings(container, rows, state, { withSpark = false, vectorIco
   // Stable order: patch text/classes in place. Never reparent — reparenting
   // cancels :hover and makes listing cards flash/stutter under the cursor.
   if (sameOrder) {
-    const needsRebuild = !hot && rows.some((_, i) => listingRowNeedsRebuild(existing[i], { withSpark, vectorIcon }));
+    const needsRebuild = !hot && rows.some((_, i) => listingRowNeedsRebuild(existing[i]));
     if (!needsRebuild) {
       rows.forEach((l, i) => {
         if (hot) patchHotRow(existing[i], l);
-        else patchListingRow(existing[i], l);
+        else patchListingRow(existing[i], l, { scale });
       });
       return true;
     }
@@ -1030,11 +1035,11 @@ function tryPatchListings(container, rows, state, { withSpark = false, vectorIco
         tmp.innerHTML = hotListingHtml(l).trim();
         el = tmp.firstElementChild;
       }
-    } else if (el && !listingRowNeedsRebuild(el, { withSpark, vectorIcon })) {
-      patchListingRow(el, l);
+    } else if (el && !listingRowNeedsRebuild(el)) {
+      patchListingRow(el, l, { scale });
     } else {
       const tmp = document.createElement('div');
-      tmp.innerHTML = listingHtml(l, state, { withSpark, vectorIcon }).trim();
+      tmp.innerHTML = listingHtml(l, state, { scale }).trim();
       el = tmp.firstElementChild;
     }
     frag.appendChild(el);
@@ -1081,20 +1086,29 @@ function renderListings(state, containerId) {
   const sortEl = document.getElementById('listings-sort');
   if (sortEl && sortEl.value !== listingsSort) sortEl.value = listingsSort;
 
-  const sorted = sortListingRows(getFullListingRows(state), listingsSort);
+  const allRows = getFullListingRows(state);
+  const filtered = allRows.filter((l) => listingMatchesQuery(l, listingsQuery));
+  const sorted = sortListingRows(filtered, listingsSort);
   const visible = sorted.slice(0, listingsVisibleCount);
   if (!visible.length) {
-    container.innerHTML = '<div class="empty">Scanning for deals… check back in a moment.</div>';
+    container.innerHTML = listingsQuery
+      ? `<div class="empty">No listings match "${escapeHtml(listingsQuery)}".</div>`
+      : '<div class="empty">Scanning for deals… check back in a moment.</div>';
     return;
   }
   fillMissingQuotes(visible.map(l => l.sym));
-  tryPatchListings(container, visible, state);
+  // Glow scale is recomputed from the *entire* current deal pool (not just the
+  // visible page) so the bar for "genuinely outstanding" doesn't shift as you
+  // paginate or sort — see js/ui/deal-desk.js computeEdgeGlowScale().
+  const scale = computeEdgeGlowScale(state.listings);
+  tryPatchListings(container, visible, state, { scale });
   bindListingClicks(container, state, visible);
 
   const meta = document.getElementById('listings-meta');
   if (meta) {
     const total = sorted.length;
-    const mode = listingsSort === 'deals' ? 'deal feed' : `${getSymbolCount()} symbols`;
+    const universe = listingsSort === 'deals' ? 'deal feed' : `${getSymbolCount()} symbols`;
+    const mode = listingsQuery ? `${total} match${total === 1 ? '' : 'es'} · ${universe}` : universe;
     meta.textContent = `Showing ${visible.length} of ${total} · ${mode}`;
   }
 
@@ -1111,28 +1125,13 @@ function renderListings(state, containerId) {
 
 export function renderListingSearchResults(query, state) {
   const box = document.getElementById('listing-search-results');
-  if (!box) return;
-  const q = (query || '').trim();
-  if (!q) {
+  listingsQuery = (query || '').trim();
+  listingsVisibleCount = CONFIG.LISTING_PAGE_SIZE;
+  if (box) {
     box.classList.add('hidden');
     box.innerHTML = '';
-    return;
   }
-
-  const matches = searchSymbols(q, 30);
-  if (!matches.length) {
-    box.classList.remove('hidden');
-    box.innerHTML = `<div class="empty">No symbols match "${escapeHtml(q)}"</div>`;
-    return;
-  }
-
-  const listings = matches.map(sym => makeMarketListing(sym));
-  box.classList.remove('hidden');
-  box.innerHTML = `
-    <div class="search-results-header">${listings.length} result${listings.length === 1 ? '' : 's'} — click to open on the trade desk</div>
-    ${listings.map(l => listingHtml(l, state)).join('')}
-  `;
-  bindListingClicks(box, state, listings);
+  renderListings(state, 'listings-full');
 }
 
 

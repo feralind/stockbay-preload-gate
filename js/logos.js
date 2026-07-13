@@ -103,6 +103,7 @@ export const LOGO_DOMAINS = {
   'bank:wells': 'wellsfargo.com',
   'bank:citi': 'citi.com',
   'bank:capitalone': 'capitalone.com',
+  'bank:sofi': 'sofi.com',
   'bank:local': 'navyfederal.org',
 };
 

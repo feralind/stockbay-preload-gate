@@ -379,23 +379,22 @@ export function achievementBadgeSvg(tier, { unlocked = false, category = 'trade'
   const c = unlocked ? meta.color : 'currentColor';
   const opacity = unlocked ? '1' : '0.45';
   const motifs = {
-    trade: `<path d="M7 22 12 10l3 5 4-9 3 5" fill="none" stroke="${c}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M6 25h20" stroke="${c}" stroke-width="1.4" opacity="0.7"/>`,
-    staff: `<circle cx="12" cy="11" r="3.2" fill="none" stroke="${c}" stroke-width="1.5"/>
-      <circle cx="20.5" cy="12" r="2.6" fill="none" stroke="${c}" stroke-width="1.4" opacity="0.85"/>
-      <path d="M6.5 24c.4-3.4 2.4-5.2 5.5-5.2s5.1 1.8 5.4 5.2" fill="none" stroke="${c}" stroke-width="1.5"/>
-      <path d="M18 24c.25-2.2 1.4-3.5 2.8-3.5 1.5 0 2.6 1.4 2.8 3.5" fill="none" stroke="${c}" stroke-width="1.4" opacity="0.85"/>`,
-    finance: `<rect x="7" y="10" width="18" height="13" rx="2" fill="none" stroke="${c}" stroke-width="1.5"/>
-      <path d="M7 14h18" stroke="${c}" stroke-width="1.3"/>
-      <path d="M11 10V8.5h10V10" stroke="${c}" stroke-width="1.3"/>
-      <path d="M12 19h3M17 19h3" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/>`,
-    perk: `<circle cx="16" cy="16" r="3" fill="none" stroke="${c}" stroke-width="1.5"/>
-      <circle cx="16" cy="16" r="7" fill="none" stroke="${c}" stroke-width="1.3" opacity="0.65"/>
-      <path d="M16 6.5v2.2M16 23.3v2.2M6.5 16h2.2M23.3 16h2.2" stroke="${c}" stroke-width="1.4" stroke-linecap="round"/>`,
+    trade: `<path d="M7 22 12 10l3 5 4-9 3 5" fill="none" stroke="${c}" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M6 25h20" stroke="${c}" stroke-width="1.6" opacity="0.7"/>`,
+    staff: `<circle cx="12" cy="11" r="3.2" fill="none" stroke="${c}" stroke-width="1.75"/>
+      <circle cx="20.5" cy="12" r="2.6" fill="none" stroke="${c}" stroke-width="1.6" opacity="0.85"/>
+      <path d="M6.5 24c.4-3.4 2.4-5.2 5.5-5.2s5.1 1.8 5.4 5.2" fill="none" stroke="${c}" stroke-width="1.75"/>
+      <path d="M18 24c.25-2.2 1.4-3.5 2.8-3.5 1.5 0 2.6 1.4 2.8 3.5" fill="none" stroke="${c}" stroke-width="1.6" opacity="0.85"/>`,
+    finance: `<rect x="7" y="10" width="18" height="13" rx="2" fill="none" stroke="${c}" stroke-width="1.75"/>
+      <path d="M7 14h18" stroke="${c}" stroke-width="1.5"/>
+      <path d="M11 10V8.5h10V10" stroke="${c}" stroke-width="1.5"/>
+      <path d="M12 19h3M17 19h3" stroke="${c}" stroke-width="1.85" stroke-linecap="round"/>`,
+    perk: `<circle cx="16" cy="16" r="3" fill="none" stroke="${c}" stroke-width="1.75"/>
+      <circle cx="16" cy="16" r="7" fill="none" stroke="${c}" stroke-width="1.5" opacity="0.65"/>
+      <path d="M16 6.5v2.2M16 23.3v2.2M6.5 16h2.2M23.3 16h2.2" stroke="${c}" stroke-width="1.6" stroke-linecap="round"/>`,
   };
   const motif = motifs[category] || motifs.trade;
   return `<svg class="ach-badge-svg ach-cat-${category}" viewBox="0 0 32 32" aria-hidden="true" style="opacity:${opacity}">
-    <rect x="3.5" y="3.5" width="25" height="25" rx="6" fill="none" stroke="${c}" stroke-width="1.5" opacity="0.55"/>
     ${motif}
   </svg>`;
 }

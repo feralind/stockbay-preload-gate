@@ -87,10 +87,9 @@ function perkMarkSvg(perkId) {
 }
 
 function perkMarkHtml(perk) {
-  const tier = Math.min(6, Math.max(1, Number(perk?.tier) || 1));
   const svg = perkMarkSvg(perk?.id);
   const inner = svg || `<span class="perk-mark-letter">${(perk?.name || '?').slice(0, 1)}</span>`;
-  return `<div class="perk-mark perk-mark-t${tier}" data-tier="${tier}" aria-hidden="true"><span class="perk-mark-ring"></span>${inner}<span class="perk-mark-tier">T${tier}</span></div>`;
+  return `<div class="perk-mark" aria-hidden="true">${inner}</div>`;
 }
 
 function statusForPerk(p, state, rep) {
@@ -220,28 +219,32 @@ export function renderPerks(state, containerId) {
         <h3 class="perks-title">Desk Perks</h3>
         <p class="perks-sub">Permanent unlocks gated by cash and <strong>REP rank</strong>. Each card shows purpose, effects, and requirements. Early Scanner and HR remain affordable.</p>
       </div>
-      <div class="perks-rank-chip">
-        <span class="perks-rank-lbl">Your rank</span>
-        <span class="perks-rank-val">${rank.name}</span>
-        <span class="perks-rank-meta">REP ${rep}${next ? ` · next ${next.name} at ${next.minRep}` : ' · maximum title'}</span>
+    </div>
+    <div class="perks-summary">
+      <div class="perks-summary-rank">
+        <span class="perks-summary-lbl">Your rank</span>
+        <div class="perks-summary-rank-row">
+          <span class="perks-summary-rank-val">${rank.name}</span>
+          <span class="perks-summary-rank-meta">REP ${rep}${next ? ` · next ${next.name} at ${next.minRep}` : ' · maximum title'}</span>
+        </div>
         ${next ? `<div class="perks-rank-bar" aria-hidden="true"><div class="perks-rank-fill" style="width:${progressPct}%"></div></div>` : ''}
       </div>
-    </div>
-    <div class="perks-kpi-strip">
-      <div class="perks-kpi">
-        <span class="perks-kpi-lbl">Owned</span>
-        <span class="perks-kpi-val">${ownedCount}<span style="font-size:13px;color:var(--muted);font-weight:600"> / ${Object.keys(PERKS).length}</span></span>
-        <span class="perks-kpi-hint">Permanent desk unlocks</span>
-      </div>
-      <div class="perks-kpi">
-        <span class="perks-kpi-lbl">Cash</span>
-        <span class="perks-kpi-val">${fmt(cash)}</span>
-        <span class="perks-kpi-hint">Available to allocate</span>
-      </div>
-      <div class="perks-kpi">
-        <span class="perks-kpi-lbl">REP</span>
-        <span class="perks-kpi-val">${rep}</span>
-        <span class="perks-kpi-hint">${rank.blurb || rank.name}</span>
+      <div class="perks-summary-stats">
+        <div class="perks-stat">
+          <span class="perks-stat-lbl">Owned</span>
+          <span class="perks-stat-val">${ownedCount}<span class="perks-stat-of"> / ${Object.keys(PERKS).length}</span></span>
+          <span class="perks-stat-hint">Permanent desk unlocks</span>
+        </div>
+        <div class="perks-stat">
+          <span class="perks-stat-lbl">Cash</span>
+          <span class="perks-stat-val">${fmt(cash)}</span>
+          <span class="perks-stat-hint">Available to allocate</span>
+        </div>
+        <div class="perks-stat">
+          <span class="perks-stat-lbl">REP</span>
+          <span class="perks-stat-val">${rep}</span>
+          <span class="perks-stat-hint">${rank.blurb || rank.name}</span>
+        </div>
       </div>
     </div>` : '';
 
@@ -268,7 +271,13 @@ export function renderPerks(state, containerId) {
             </div>
             <div class="perk-desc">${p.desc}</div>
             ${buildPerkInlineHtml(p.id)}
-            <div class="perk-cost">${costLine}</div>
+            <div class="perk-buy-row">
+              <div class="perk-cost-group">
+                <span class="perk-cost-lbl">${owned ? 'Status' : 'Cost'}</span>
+                <span class="perk-cost">${costLine}</span>
+              </div>
+              ${canBuy ? '<button type="button" class="btn btn-accent btn-sm perk-buy-btn">Unlock</button>' : ''}
+            </div>
           </div>
         </div>`;
     }).join('');
@@ -276,7 +285,7 @@ export function renderPerks(state, containerId) {
     return `
       <section class="perk-tier-band ${unlocked ? 'is-open' : 'is-dimmed'}" style="--tier-accent:${meta.accent}">
         <header class="perk-tier-head">
-          <div>
+          <div class="perk-tier-head-id">
             <span class="perk-tier-badge">Tier ${t}</span>
             <h4 class="perk-tier-title">${meta.rank.name}</h4>
           </div>

@@ -4,6 +4,12 @@
 import { macroAprAdjustment } from './macro.js';
 import { VAULT_COLLATERAL_LTV } from './vault.js';
 
+/**
+ * Ambient card glow — `glow` is the bank's primary brand color (also drives the left
+ * accent stripe + logo chip via `color`), `glow2` is a secondary brand tone blended in
+ * for a two-tone corner light so each lender's card reads as distinct/premium instead
+ * of a flat single-hue wash. Falls back to `color`/`glow` when a bank has no secondary.
+ */
 export const BANKS = [
   {
     id: 'chase',
@@ -12,6 +18,8 @@ export const BANKS = [
     domain: 'chase.com',
     category: 'National banks',
     color: '#117ACA',
+    glow: '#117ACA',
+    glow2: '#0A3161',
     personalApr: 11.99,
     companyApr: 8.49,
     maxPersonal: 2500,
@@ -26,6 +34,8 @@ export const BANKS = [
     domain: 'bankofamerica.com',
     category: 'National banks',
     color: '#E31837',
+    glow: '#E31837',
+    glow2: '#012169',
     personalApr: 12.49,
     companyApr: 8.99,
     maxPersonal: 2000,
@@ -40,6 +50,8 @@ export const BANKS = [
     domain: 'wellsfargo.com',
     category: 'National banks',
     color: '#D71E28',
+    glow: '#D71E28',
+    glow2: '#FFC72C',
     personalApr: 13.25,
     companyApr: 7.99,
     maxPersonal: 1800,
@@ -54,6 +66,8 @@ export const BANKS = [
     domain: 'citi.com',
     category: 'National banks',
     color: '#003B70',
+    glow: '#003B70',
+    glow2: '#E32219',
     personalApr: 10.99,
     companyApr: 9.25,
     maxPersonal: 3000,
@@ -68,6 +82,8 @@ export const BANKS = [
     domain: 'capitalone.com',
     category: 'National banks',
     color: '#D03027',
+    glow: '#D03027',
+    glow2: '#003057',
     personalApr: 14.99,
     companyApr: 10.49,
     maxPersonal: 1200,
@@ -76,12 +92,30 @@ export const BANKS = [
     desc: 'Easier approval for thinner credit files.',
   },
   {
+    id: 'sofi',
+    name: 'SoFi Personal Loans',
+    short: 'SoFi',
+    domain: 'sofi.com',
+    category: 'Online lenders',
+    color: '#0090FF',
+    glow: '#0090FF',
+    glow2: '#22D3EE',
+    personalApr: 9.99,
+    companyApr: 11.25,
+    maxPersonal: 3500,
+    maxCompany: 6000,
+    minCredit: 680,
+    desc: 'Fintech-fast funding. Best rates need excellent credit.',
+  },
+  {
     id: 'local',
     name: 'Navy Federal Credit Union',
     short: 'NFCU',
     domain: 'navyfederal.org',
     category: 'Credit union',
-    color: '#2E7D32',
+    color: '#003057',
+    glow: '#003057',
+    glow2: '#FFB81C',
     personalApr: 9.49,
     companyApr: 7.25,
     maxPersonal: 1500,

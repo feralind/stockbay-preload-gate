@@ -4,9 +4,9 @@
  */
 
 import {
-  BANKS, creditTier, getActiveLoans, getTotalDebt, projectLoanPayoff,
-  maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers, utilizationRatio,
-  bankDebt, otherBanksDebt,
+  BANKS, APR_CREDIT_TIERS, DAILY_CREDIT_GAIN_CAP, creditTier, getActiveLoans, getTotalDebt,
+  projectLoanPayoff, maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers,
+  utilizationRatio, bankDebt, otherBanksDebt,
 } from '../finance.js';
 import { getVaultPledgedAppraisal } from '../vault.js';
 import { domainLogoHtml } from '../logos.js';
@@ -16,6 +16,97 @@ import { fmt } from './shared.js';
 
 /** Draft loan amounts per bank — survives renderFinance rebuilds so wheel scroll doesn't snap to 250 */
 const loanDraftAmounts = new Map();
+
+/** @type {'lenders' | 'loans' | 'history' | 'builder'} */
+let activeFinTab = 'lenders';
+let finTabsBound = false;
+
+function setFinanceTab(tab) {
+  activeFinTab = tab;
+  document.querySelectorAll('.fin-tab').forEach((btn) => {
+    const on = btn.getAttribute('data-fin-tab') === tab;
+    btn.classList.toggle('is-active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('[data-fin-panel]').forEach((panel) => {
+    const on = panel.getAttribute('data-fin-panel') === tab;
+    panel.classList.toggle('hidden', !on);
+    if (on) panel.removeAttribute('hidden');
+    else panel.setAttribute('hidden', '');
+  });
+}
+
+function bindFinanceTabsOnce() {
+  if (finTabsBound) return;
+  const tabs = document.getElementById('fin-tabs');
+  if (!tabs) return;
+  finTabsBound = true;
+  tabs.addEventListener('click', (e) => {
+    const btn = e.target?.closest?.('[data-fin-tab]');
+    if (!btn) return;
+    setFinanceTab(btn.getAttribute('data-fin-tab'));
+  });
+}
+
+/** Circular ring gauge for a 300–850 FICO-style score — thin arc, color follows credit tier. */
+function creditGaugeHtml(label, score, tier, util) {
+  const r = 27;
+  const circumference = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(1, (Number(score) - 300) / (850 - 300)));
+  const offset = circumference * (1 - pct);
+  return `
+    <div class="credit-gauge">
+      <div class="credit-gauge-ring-wrap" style="--gauge-color:${tier.color}">
+        <svg viewBox="0 0 64 64" width="88" height="88" class="credit-gauge-ring" aria-hidden="true">
+          <circle cx="32" cy="32" r="${r}" class="credit-gauge-track"></circle>
+          <circle cx="32" cy="32" r="${r}" class="credit-gauge-arc"
+            stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle>
+        </svg>
+        <div class="credit-gauge-score">${score}</div>
+      </div>
+      <div class="credit-gauge-lbl">${label}</div>
+      <div class="credit-gauge-tier" style="color:${tier.color}">${tier.label} · ${util}% util</div>
+    </div>`;
+}
+
+function financeGaugesHtml(finance) {
+  const p = creditTier(finance.personalCredit);
+  const b = creditTier(finance.businessCredit);
+  const pUtil = Math.round(utilizationRatio(finance, 'personal') * 100);
+  const bUtil = Math.round(utilizationRatio(finance, 'company') * 100);
+  return creditGaugeHtml('Personal credit', finance.personalCredit, p, pUtil)
+    + creditGaugeHtml('Company credit', finance.businessCredit, b, bUtil);
+}
+
+/** Credit Builder tab — tier ladder + the score-building rules baked into finance.js. */
+function creditBuilderHtml(finance) {
+  const ascending = APR_CREDIT_TIERS.slice().reverse();
+  const rows = ascending.map((tier, i) => {
+    const next = ascending[i + 1];
+    const ceiling = next ? next.min - 1 : 850;
+    const inPersonal = finance.personalCredit >= tier.min && finance.personalCredit <= ceiling;
+    const inBusiness = finance.businessCredit >= tier.min && finance.businessCredit <= ceiling;
+    const range = tier.min === 0 ? `Below ${ceiling + 1}` : `${tier.min}–${ceiling}`;
+    const you = [inPersonal ? 'Personal' : '', inBusiness ? 'Business' : ''].filter(Boolean).join(' & ');
+    return `<div class="builder-tier-row ${inPersonal || inBusiness ? 'is-current' : ''}">
+      <span class="builder-tier-name">${tier.label}</span>
+      <span class="builder-tier-range">${range}</span>
+      <span class="builder-tier-apr">${tier.aprAdj > 0 ? '+' : ''}${tier.aprAdj}% APR · ${tier.limitMult}× limit</span>
+      ${you ? `<span class="builder-tier-you">You: ${you}</span>` : ''}
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="builder-shell">
+      <div class="builder-ladder">${rows}</div>
+      <div class="builder-tips">
+        <div class="builder-tip"><strong>Age it before you cash out.</strong> A loan must survive one day-end interest tick before payoff or partial repay can raise your score — same-morning borrow→repay builds nothing.</div>
+        <div class="builder-tip"><strong>Daily gain caps.</strong> Personal credit can climb at most ${DAILY_CREDIT_GAIN_CAP.personal} pts/day, business ${DAILY_CREDIT_GAIN_CAP.business} pts/day — spreading paydowns across days beats one huge payment.</div>
+        <div class="builder-tip"><strong>Utilization matters.</strong> Staying under 30% of your total credit limit earns an APR discount; 80%+ utilization adds a penalty and shrinks new approvals.</div>
+        <div class="builder-tip"><strong>Late payments hit hardest.</strong> A single missed auto-pay can cost 20–30+ points — far more than any single on-time payment gains.</div>
+      </div>
+    </div>`;
+}
 
 function vaultCollateralOpts(state) {
   return { collateralValue: getVaultPledgedAppraisal(state || {}) };
@@ -198,27 +289,17 @@ function bindBankListActions(bankList, state, finance) {
 export function renderFinance(state) {
   const finance = state.finance;
   if (!finance) return;
+  bindFinanceTabsOnce();
   const gameDay = formatMarketClock()?.day || 1;
   const collatOpts = vaultCollateralOpts(state);
   const pledged = getVaultPledgedAppraisal(state);
-  const pUtil = Math.round(utilizationRatio(finance, 'personal') * 100);
-  const bUtil = Math.round(utilizationRatio(finance, 'company') * 100);
+
+  const gauges = document.getElementById('finance-gauges');
+  if (gauges) gauges.innerHTML = financeGaugesHtml(finance);
 
   const pills = document.getElementById('credit-pills');
   if (pills) {
-    const p = creditTier(finance.personalCredit);
-    const b = creditTier(finance.businessCredit);
     pills.innerHTML = `
-      <div class="credit-pill" data-gloss="credit-score">
-        <span class="credit-pill-lbl">Personal credit</span>
-        <span class="credit-pill-val" style="color:${p.color}">${finance.personalCredit}</span>
-        <span class="credit-tier" data-gloss="credit-score">${p.label} · ${pUtil}% util</span>
-      </div>
-      <div class="credit-pill" data-gloss="credit-score">
-        <span class="credit-pill-lbl">Business credit</span>
-        <span class="credit-pill-val" style="color:${b.color}">${finance.businessCredit}</span>
-        <span class="credit-tier" data-gloss="credit-score">${b.label} · ${bUtil}% util</span>
-      </div>
       <div class="credit-pill" data-gloss="credit-score">
         <span class="credit-pill-lbl">Total debt</span>
         <span class="credit-pill-val down">${fmt(getTotalDebt(finance))}</span>
@@ -231,6 +312,9 @@ export function renderFinance(state) {
       </div>`;
   }
 
+  const builder = document.getElementById('credit-builder');
+  if (builder) builder.innerHTML = creditBuilderHtml(finance);
+
   const bankList = document.getElementById('bank-list');
   if (bankList) {
     const live = liveLoanAmtInput(bankList);
@@ -240,7 +324,7 @@ export function renderFinance(state) {
       bindBankListActions(bankList, state, finance);
     } else {
       snapLoanDrafts(bankList);
-      const groups = ['National banks', 'Credit union'];
+      const groups = ['National banks', 'Online lenders', 'Credit union'];
       const lenderRows = BANKS.map((bank) => {
         const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
         return {
@@ -255,6 +339,7 @@ export function renderFinance(state) {
         if (!banks.length) return '';
         return `<div class="bank-section">
           <div class="bank-section-label">${group}</div>
+          <div class="bank-section-grid">
           ${banks.map(bank => {
             const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
             const ceil = maxBorrowableForBank(bank.id, finance, 50, gameDay, collatOpts);
@@ -272,53 +357,56 @@ export function renderFinance(state) {
                   · company: <strong>${fmt(oweCompanyElse)}</strong>
                 </div>`
               : `<div class="bank-debt-hint muted-text">No outstanding debt on file — lenders still share your credit picture.</div>`;
+            const glow = bank.glow || bank.color;
+            const glow2 = bank.glow2 || glow;
             return `
-            <div class="bank-card" style="--bank:${bank.color}">
-              ${bankLogoHtml(bank)}
-              <div class="bank-body">
-                <div class="bank-head">
-                  <div>
+            <div class="bank-card fin-lender-card" style="--bank:${bank.color}; --bank-glow:${glow}; --bank-glow2:${glow2}">
+              <div class="fin-lender-top">
+                ${bankLogoHtml(bank)}
+                <div class="fin-lender-id">
+                  <div class="fin-lender-name-row">
                     <strong class="bank-name">${bank.name}</strong>
-                    <span class="bank-domain">${bank.domain}</span>
-                    ${bankBadgeHtml(bank.id, rateBadges)}
+                    <span class="bank-short">${bank.short}</span>
                   </div>
-                  <span class="bank-short">${bank.short}</span>
+                  <span class="bank-domain">${bank.domain}</span>
+                  ${bankBadgeHtml(bank.id, rateBadges)}
                 </div>
-                <div class="bank-desc">${bank.desc}</div>
-                <div class="bank-rates">
-                  <span class="rate-chip">Your personal ${offers?.personalApr ?? bank.personalApr}% APR</span>
-                  <span class="rate-chip">Your company ${offers?.companyApr ?? bank.companyApr}% APR</span>
-                  <span class="rate-chip muted">Min credit ${bank.minCredit}</span>
-                </div>
-                ${debtHint}
-                <div class="bank-actions">
-                  <label class="loan-amt-field">
-                    <span>${eligible ? `Amount · max $${ceil.toLocaleString()}` : 'Amount · apply anyway'}</span>
-                    <input type="number" class="loan-amt" data-bank="${bank.id}"
-                      value="${startAmt}"
-                      min="100"
-                      max="${Math.max(eligible ? ceil : 5000, 100)}"
-                      step="50"
-                      title="${eligible
-                        ? `Scroll to adjust · about $${ceil.toLocaleString()} available now`
-                        : `Underwriting may deny — credit min ${bank.minCredit}`}">
-                  </label>
-                  <div class="loan-type-btns">
-                    <button type="button" class="loan-btn loan-btn-personal borrow-btn ${personalMax < 100 ? 'is-tight' : ''}" data-bank="${bank.id}" data-type="personal"
-                      title="${personalMax >= 100 ? `About $${personalMax.toLocaleString()} personal available` : 'May be denied — confirm to apply'}">
-                      <span class="loan-btn-kicker">Personal</span>
-                      <span class="loan-btn-apr">${offers?.personalApr ?? bank.personalApr}% APR</span>
-                    </button>
-                    <button type="button" class="loan-btn loan-btn-company borrow-btn ${companyMax < 100 ? 'is-tight' : ''}" data-bank="${bank.id}" data-type="company"
-                      title="${companyMax >= 100 ? `About $${companyMax.toLocaleString()} company available` : 'May be denied — confirm to apply'}">
-                      <span class="loan-btn-kicker">Company</span>
-                      <span class="loan-btn-apr">${offers?.companyApr ?? bank.companyApr}% APR</span>
-                    </button>
-                  </div>
+              </div>
+              <div class="bank-desc">${bank.desc}</div>
+              <div class="bank-rates">
+                <span class="rate-chip">Your personal ${offers?.personalApr ?? bank.personalApr}% APR</span>
+                <span class="rate-chip">Your company ${offers?.companyApr ?? bank.companyApr}% APR</span>
+                <span class="rate-chip muted">Min credit ${bank.minCredit}</span>
+              </div>
+              ${debtHint}
+              <div class="bank-actions">
+                <label class="loan-amt-field">
+                  <span>${eligible ? `Amount · max $${ceil.toLocaleString()}` : 'Amount · apply anyway'}</span>
+                  <input type="number" class="loan-amt" data-bank="${bank.id}"
+                    value="${startAmt}"
+                    min="100"
+                    max="${Math.max(eligible ? ceil : 5000, 100)}"
+                    step="50"
+                    title="${eligible
+                      ? `Scroll to adjust · about $${ceil.toLocaleString()} available now`
+                      : `Underwriting may deny — credit min ${bank.minCredit}`}">
+                </label>
+                <div class="loan-type-btns">
+                  <button type="button" class="loan-btn loan-btn-personal borrow-btn ${personalMax < 100 ? 'is-tight' : ''}" data-bank="${bank.id}" data-type="personal"
+                    title="${personalMax >= 100 ? `About $${personalMax.toLocaleString()} personal available` : 'May be denied — confirm to apply'}">
+                    <span class="loan-btn-kicker">Personal</span>
+                    <span class="loan-btn-apr">${offers?.personalApr ?? bank.personalApr}% APR</span>
+                  </button>
+                  <button type="button" class="loan-btn loan-btn-company borrow-btn ${companyMax < 100 ? 'is-tight' : ''}" data-bank="${bank.id}" data-type="company"
+                    title="${companyMax >= 100 ? `About $${companyMax.toLocaleString()} company available` : 'May be denied — confirm to apply'}">
+                    <span class="loan-btn-kicker">Company</span>
+                    <span class="loan-btn-apr">${offers?.companyApr ?? bank.companyApr}% APR</span>
+                  </button>
                 </div>
               </div>
             </div>`;
           }).join('')}
+          </div>
         </div>`;
       }).join('');
 

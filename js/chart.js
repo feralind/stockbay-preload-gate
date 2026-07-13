@@ -1,39 +1,40 @@
 // @ts-check
-import { syncQuoteToPrice, shouldRejectLiveCandleTick, LIVE_CANDLE_MAX_JUMP_PCT, candleBarVolFraction, isSimulationMode } from './api.js';
+/**
+ * Trade chart — clean broker-style Apache ECharts candlesticks.
+ * Public API kept stable for app.js / chart-panel / quality tests.
+ */
+import {
+  syncQuoteToPrice, shouldRejectLiveCandleTick, LIVE_CANDLE_MAX_JUMP_PCT,
+  candleBarVolFraction, isSimulationMode, getCachedQuote,
+} from './api.js';
 
+/** @type {any} */
 let chart = null;
-let candleSeries = null;
-let waveSeries = null;
-let volumeSeries = null;
-let ma20Series = null;
-let ma50Series = null;
-/** Analyst Reports support/resistance price lines on the candle series. */
-let srPriceLines = [];
+/** @type {HTMLElement | null} */
+let chartHost = null;
 let currentSym = null;
 let themeColors = null;
 let resizeObserver = null;
 let lastBarCount = 0;
 let lastRange = '1D';
-let wheelAbort = null;
-/** Last OHLC bar kept for live tick updates (same time, mutating H/L/C). */
+/** @type {Array<{time:number,open:number,high:number,low:number,close:number,volume?:number}>} */
+let lastBars = [];
 let lastCandle = null;
 let lastLiveUpdateAt = 0;
-/** After −/+/wheel zoom, skip auto-fit until Reset or new symbol/TF data. */
 let userZoomed = false;
 /** @type {'candle' | 'wave'} */
 let chartStyle = 'candle';
+let showMa = true;
+let showSr = false;
 let fitRetryTimer = null;
-const LIVE_UPDATE_MS = 100;
-/** Skip a live tick that would move the last bar by more than this fraction. */
-const LIVE_MAX_JUMP_PCT = LIVE_CANDLE_MAX_JUMP_PCT;
+let fitRaf = 0;
 
-/** Empty slots past the last bar for the last-price label (not double-counted with rightOffset). */
-const RIGHT_PAD_BARS = 2;
-/** Target / clamp for default visible bar window (broker-like density). */
-const MIN_VISIBLE_BARS = 36;
-const MAX_VISIBLE_BARS = 120;
-const TARGET_BAR_PX = 7;
+const LIVE_UPDATE_MS = 100;
+const LIVE_MAX_JUMP_PCT = LIVE_CANDLE_MAX_JUMP_PCT;
+const MIN_VISIBLE_BARS = 40;
+const MAX_VISIBLE_BARS = 110;
 const INTRADAY_RANGES = new Set(['1D', '5D', '1M', '1', '5', '15', '60']);
+const LONG_RANGES = new Set(['6M', 'YTD', '1Y', '5Y', 'MAX', 'D']);
 const CHART_STYLE_KEY = 'stockway_chart_style_v1';
 
 function rangeBarMinutes(range) {
@@ -41,22 +42,149 @@ function rangeBarMinutes(range) {
   if (key === '1D' || key === '5') return 5;
   if (key === '5D' || key === '15') return 15;
   if (key === '1M' || key === '60') return 60;
+  if (key === 'MAX') return 1440 * 21;
+  if (key === '5Y' || key === '1Y' || key === '6M' || key === 'YTD' || key === 'D') return 1440;
   return 1440;
 }
 
-/** Max high-low span for the live-updating last bar (stops spear wicks). */
 export function maxLiveBarRangePct(range) {
-  return candleBarVolFraction(rangeBarMinutes(range), 1) * 3.5;
+  return candleBarVolFraction(rangeBarMinutes(range), 1) * 2.6;
+}
+
+function maxHistoricalBarRangePct(range) {
+  const key = String(range || '1D').toUpperCase();
+  if (key === 'MAX') return 0.45;
+  if (LONG_RANGES.has(key)) return 0.28;
+  return candleBarVolFraction(rangeBarMinutes(range), 1) * 5.5;
+}
+
+export function peerMedianRange(bars) {
+  if (!Array.isArray(bars) || bars.length < 3) return 0;
+  const ranges = bars
+    .slice(0, -1)
+    .map((b) => Math.max(0, Number(b.high) - Number(b.low)))
+    .filter((r) => r > 0)
+    .sort((a, b) => a - b);
+  if (!ranges.length) return 0;
+  return ranges[Math.floor(ranges.length / 2)] || 0;
+}
+
+/** Cap a forming bar so Yahoo spears can't dominate peers. */
+export function clampBarToPeers(bar, peerRange, mid) {
+  if (!bar || !(peerRange > 0) || !(mid > 0)) return bar;
+  const maxR = Math.max(peerRange * 2.2, mid * 0.0025);
+  let open = Number(bar.open);
+  let close = Number(bar.close);
+  let high = Number(bar.high);
+  let low = Number(bar.low);
+  if (![open, close, high, low].every((v) => Number.isFinite(v) && v > 0)) return bar;
+
+  const maxCloseDev = maxR * 2;
+  if (Math.abs(close - mid) > maxCloseDev) {
+    close = mid + Math.sign(close - mid || 1) * maxCloseDev;
+  }
+  if (Math.abs(close - open) > maxR) {
+    open = close > open ? close - maxR * 0.85 : close + maxR * 0.85;
+  }
+  const bodyHi = Math.max(open, close);
+  const bodyLo = Math.min(open, close);
+  const half = maxR / 2;
+  const center = (bodyHi + bodyLo) / 2;
+  high = Math.max(bodyHi, Math.min(high, center + half));
+  low = Math.min(bodyLo, Math.max(low, center - half));
+  if (high - low > maxR) {
+    high = Math.max(bodyHi, center + half);
+    low = Math.min(bodyLo, center - half);
+    if (high - low > maxR) {
+      high = center + half;
+      low = center - half;
+    }
+  }
+  return { ...bar, open, high, low, close };
 }
 
 /**
- * Pure: expand OHLC with a new close, but clamp total bar range.
+ * Broker-style Y window: pad the real session range.
+ * Last-bar spears are ignored for high/low; last close is soft-pinned.
  */
+export function computePriceAxisRange(bars, range = '1D') {
+  if (!Array.isArray(bars) || !bars.length) return null;
+  const completed = bars.length > 1 ? bars.slice(0, -1) : bars;
+  const highs = completed.map((b) => Number(b.high)).filter((v) => Number.isFinite(v) && v > 0);
+  const lows = completed.map((b) => Number(b.low)).filter((v) => Number.isFinite(v) && v > 0);
+  if (!highs.length || !lows.length) return null;
+
+  const sortedHigh = [...highs].sort((a, b) => a - b);
+  const sortedLow = [...lows].sort((a, b) => a - b);
+  const pick = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * p)))];
+
+  // Light winsorize so one bad completed wick doesn't own the pane
+  let minV = pick(sortedLow, completed.length >= 16 ? 0.05 : 0);
+  let maxV = pick(sortedHigh, completed.length >= 16 ? 0.95 : 1);
+  const sessionMid = (minV + maxV) / 2 || 1;
+
+  const lastClose = Number(bars[bars.length - 1]?.close) || 0;
+  if (lastClose > 0) {
+    const soft = Math.max((maxV - minV) * 0.15, sessionMid * 0.002);
+    const pinned = Math.min(maxV + soft, Math.max(minV - soft, lastClose));
+    minV = Math.min(minV, pinned);
+    maxV = Math.max(maxV, pinned);
+  }
+
+  const mid = (minV + maxV) / 2 || sessionMid;
+  let span = Math.max(maxV - minV, mid * 0.001);
+  const key = String(range || '1D').toUpperCase();
+  const intraday = isIntradayRange(key);
+
+  // Quiet day floor — enough air that normal bars don't look gigantic
+  const minSpan = mid * (intraday ? 0.018 : LONG_RANGES.has(key) ? 0.08 : 0.03);
+  if (span < minSpan) {
+    const extra = (minSpan - span) / 2;
+    minV -= extra;
+    maxV += extra;
+    span = maxV - minV;
+  }
+
+  // Hard ceiling only for absurd leftover outliers
+  const maxSpan = mid * (intraday ? 0.06 : LONG_RANGES.has(key) ? 0.6 : 0.22);
+  if (span > maxSpan) {
+    minV = mid - maxSpan / 2;
+    maxV = mid + maxSpan / 2;
+  }
+
+  const pad = Math.max((maxV - minV) * 0.1, mid * 0.002);
+  return {
+    min: Math.max(0.01, minV - pad),
+    max: maxV + pad,
+  };
+}
+
+function sanitizeLastBarInPlace() {
+  if (!lastBars.length) return;
+  const i = lastBars.length - 1;
+  const mid = Number(lastBars[Math.max(0, i - 1)]?.close) || Number(lastBars[i]?.close) || 0;
+  const peer = peerMedianRange(lastBars);
+  const clamped = clampBarToPeers(lastBars[i], peer, mid);
+  lastBars[i] = clamped;
+  if (lastCandle) {
+    lastCandle.open = clamped.open;
+    lastCandle.high = clamped.high;
+    lastCandle.low = clamped.low;
+    lastCandle.close = clamped.close;
+  }
+}
+
 export function applyLiveCandleTick(bar, price, maxRangePct) {
   if (!bar) return null;
   const px = Number(price);
   if (!(px > 0)) return null;
-  const open = Number(bar.open);
+  let open = Number(bar.open);
+  if (!(open > 0)) open = px;
+  const mid = (open + px) / 2 || px;
+  const cap = mid * (Number(maxRangePct) > 0 ? maxRangePct : 0.02);
+  if (Math.abs(px - open) > cap) {
+    open = px - Math.sign(px - open || 1) * cap * 0.9;
+  }
   const next = {
     time: bar.time,
     open,
@@ -64,8 +192,6 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
     high: Math.max(Number(bar.high) || px, open, px),
     low: Math.min(Number(bar.low) || px, open, px),
   };
-  const mid = (open + px) / 2 || px;
-  const cap = mid * (Number(maxRangePct) > 0 ? maxRangePct : 0.02);
   if (next.high - next.low > cap) {
     const bodyHigh = Math.max(open, px);
     const bodyLow = Math.min(open, px);
@@ -77,325 +203,79 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
   return next;
 }
 
-export async function waitForChartLib(maxMs = 10000) {
-  const start = Date.now();
-  while (typeof LightweightCharts === 'undefined' && Date.now() - start < maxMs) {
-    await new Promise(r => setTimeout(r, 150));
-  }
-  return typeof LightweightCharts !== 'undefined';
-}
+export function sanitizeOhlcBar(open, high, low, close, maxRangePct = 0.08) {
+  let o = Number(open);
+  let h = Number(high);
+  let l = Number(low);
+  let c = Number(close);
+  if (![o, h, l, c].every((v) => Number.isFinite(v) && v > 0)) return null;
 
-export async function initChart(container) {
-  if (!container) return false;
-  const ok = await waitForChartLib();
-  if (!ok) {
-    container.innerHTML = '<div class="chart-error">Chart library loading… refresh if this persists.</div>';
-    return false;
-  }
-  rebuildChart(container);
-  return true;
-}
-
-function rebuildChart(container) {
-  if (!container || typeof LightweightCharts === 'undefined') return;
-
-  if (chart) {
-    chart.remove();
-    chart = null;
-  }
-  if (resizeObserver) {
-    resizeObserver.disconnect();
-    resizeObserver = null;
-  }
-  if (wheelAbort) {
-    wheelAbort.abort();
-    wheelAbort = null;
+  const bodyCap = Math.max(0.0001, Number(maxRangePct) || 0.08);
+  if (Math.abs(o - c) / c > bodyCap) {
+    o = c + Math.sign(o - c) * c * bodyCap * 0.9;
   }
 
-  lastCandle = null;
-  lastLiveUpdateAt = 0;
-  lastBarCount = 0;
-  userZoomed = false;
-  srPriceLines = [];
-  if (fitRetryTimer) {
-    clearTimeout(fitRetryTimer);
-    fitRetryTimer = null;
+  h = Math.max(o, c, h);
+  l = Math.min(o, c, l);
+  if (!(l > 0)) l = Math.min(o, c);
+
+  const mid = (o + c) / 2 || c;
+  const maxSpan = mid * bodyCap;
+  if (h - l > maxSpan) {
+    const bodyHigh = Math.max(o, c);
+    const bodyLow = Math.min(o, c);
+    const bodySpan = bodyHigh - bodyLow;
+    const room = Math.max(0, maxSpan - bodySpan);
+    h = bodyHigh + room * 0.55;
+    l = Math.max(0.01, bodyLow - room * 0.45);
   }
-
-  try {
-    const saved = localStorage.getItem(CHART_STYLE_KEY);
-    if (saved === 'wave' || saved === 'candle') chartStyle = saved;
-  } catch { /* ignore */ }
-
-  const bg = 'rgba(0,0,0,0)';
-  const grid = themeColors?.chartGrid || getCss('--chart-grid') || 'rgba(255,255,255,0.06)';
-  const green = themeColors?.green || getCss('--accent-trade') || getCss('--green') || '#3b82f6';
-  const red = themeColors?.red || getCss('--rose') || getCss('--red') || '#f43f5e';
-  const muted = themeColors?.muted || getCss('--muted') || '#a1a1aa';
-  const border = themeColors?.border || getCss('--glass-stroke') || 'rgba(255,255,255,0.14)';
-  const blue = themeColors?.blue || getCss('--blue') || '#60a5fa';
-  const orange = '#f59e0b';
-
-  const w = container.clientWidth || 400;
-  const h = container.clientHeight || 280;
-
-  const layoutBg = (typeof LightweightCharts !== 'undefined' && LightweightCharts.ColorType)
-    ? { type: LightweightCharts.ColorType.Solid, color: bg }
-    : { color: bg };
-
-  chart = LightweightCharts.createChart(container, {
-    width: w,
-    height: h,
-    layout: {
-      background: layoutBg,
-      textColor: muted,
-    },
-    grid: { vertLines: { color: grid }, horzLines: { color: grid } },
-    crosshair: {
-      mode: LightweightCharts.CrosshairMode.Normal,
-      vertLine: { color: `${blue}55`, width: 1, style: 2 },
-      horzLine: { color: `${blue}55`, width: 1, style: 2 },
-    },
-    rightPriceScale: {
-      borderColor: border,
-      scaleMargins: { top: 0.08, bottom: 0.22 },
-      entireTextOnly: true,
-    },
-    timeScale: {
-      borderColor: border,
-      timeVisible: true,
-      secondsVisible: false,
-      rightOffset: RIGHT_PAD_BARS,
-      barSpacing: TARGET_BAR_PX,
-      minBarSpacing: 3,
-      maxBarSpacing: 18,
-      fixLeftEdge: false,
-      // false: layout changes (Trade dual pane) must re-fit, not freeze a broken range
-      lockVisibleTimeRangeOnResize: false,
-    },
-    handleScale: {
-      mouseWheel: false,
-      pinch: true,
-      axisPressedMouseMove: { time: true, price: true },
-    },
-    handleScroll: {
-      mouseWheel: false,
-      pressedMouseMove: true,
-      horzTouchDrag: true,
-      vertTouchDrag: true,
-    },
-  });
-
-  candleSeries = chart.addCandlestickSeries({
-    upColor: green,
-    downColor: red,
-    borderUpColor: green,
-    borderDownColor: red,
-    wickUpColor: green,
-    wickDownColor: red,
-  });
-
-  waveSeries = chart.addAreaSeries({
-    lineColor: green,
-    topColor: `${green}55`,
-    bottomColor: `${green}05`,
-    lineWidth: 2,
-    priceLineVisible: true,
-    lastValueVisible: true,
-    crosshairMarkerVisible: true,
-  });
-
-  volumeSeries = chart.addHistogramSeries({
-    priceFormat: { type: 'volume' },
-    priceScaleId: 'volume',
-  });
-  chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-
-  ma20Series = chart.addLineSeries({ color: blue, lineWidth: 2, title: 'MA20', priceLineVisible: false, lastValueVisible: true });
-  ma50Series = chart.addLineSeries({ color: orange, lineWidth: 2, title: 'MA50', priceLineVisible: false, lastValueVisible: true });
-
-  applyChartStyleVisibility();
-
-  resizeObserver = new ResizeObserver(() => {
-    if (!chart || container.clientWidth <= 0 || container.clientHeight <= 0) return;
-    chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
-    if (!userZoomed && lastBarCount > 0) {
-      // Defer fit until after layout settles (fixes empty-left until TF click)
-      scheduleFitChart();
-    }
-  });
-  resizeObserver.observe(container);
-
-  wheelAbort = new AbortController();
-  container.addEventListener('wheel', onChartWheel, { passive: false, signal: wheelAbort.signal });
+  return { open: o, high: h, low: l, close: c };
 }
 
-function applyChartStyleVisibility() {
-  const isWave = chartStyle === 'wave';
-  try { candleSeries?.applyOptions({ visible: !isWave }); } catch { /* ignore */ }
-  try { waveSeries?.applyOptions({ visible: isWave }); } catch { /* ignore */ }
-}
-
-export function getChartStyle() {
-  return chartStyle;
-}
-
-/** @param {'candle' | 'wave'} style */
-export function setChartStyle(style) {
-  const next = style === 'wave' ? 'wave' : 'candle';
-  chartStyle = next;
-  try { localStorage.setItem(CHART_STYLE_KEY, next); } catch { /* ignore */ }
-  applyChartStyleVisibility();
-  document.querySelectorAll('.chart-style-btn').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.chartStyle === next);
-  });
-  if (!userZoomed) scheduleFitChart();
-}
-
-function scheduleFitChart() {
-  if (fitRetryTimer) clearTimeout(fitRetryTimer);
-  requestAnimationFrame(() => {
-    resizeChart();
-    if (!userZoomed) fitChartToData();
-    // Second pass after Dual Pane / flex layout finishes
-    fitRetryTimer = setTimeout(() => {
-      fitRetryTimer = null;
-      resizeChart();
-      if (!userZoomed) fitChartToData();
-    }, 80);
-  });
-}
-
-function onChartWheel(e) {
-  if (!chart || lastBarCount <= 0) return;
-  e.preventDefault();
-  zoomChart(e.deltaY < 0 ? 1 : -1);
-}
-
-function getCss(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
-
-function isIntradayRange(range) {
-  return INTRADAY_RANGES.has(String(range || '1D').toUpperCase());
-}
-
-/**
- * Normalize OHLC for Lightweight Charts: unix seconds only, ascending, unique times.
- * Business-day objects were abandoned — collapsing intraday bars onto calendar days
- * (bad proxy data) left 2 logical bars while fit assumed N≈100+ → left crush.
- */
-export function normalizeChartCandles(candles) {
+export function normalizeChartCandles(candles, range = '1D') {
   if (!Array.isArray(candles) || !candles.length) return [];
+  const rangeKey = String(range || '1D').toUpperCase();
+  const maxRangePct = maxHistoricalBarRangePct(rangeKey);
   const byTime = new Map();
   for (const c of candles) {
     let t = Number(c?.time);
     if (!Number.isFinite(t) || t <= 0) continue;
-    // ms → seconds if a provider ever sends millis
     if (t > 1e12) t = Math.floor(t / 1000);
-    const open = Number(c.open);
-    const high = Number(c.high);
-    const low = Number(c.low);
-    const close = Number(c.close);
-    if (![open, high, low, close].every(Number.isFinite)) continue;
+    const fixed = sanitizeOhlcBar(c.open, c.high, c.low, c.close, maxRangePct);
+    if (!fixed) continue;
     byTime.set(t, {
       time: t,
-      open,
-      high,
-      low,
-      close,
+      open: fixed.open,
+      high: fixed.high,
+      low: fixed.low,
+      close: fixed.close,
       volume: Number(c.volume) || 0,
     });
   }
-  return [...byTime.values()].sort((a, b) => a.time - b.time);
-}
-
-/** Visible bar count for a sensible default density (width-aware, clamped). */
-function targetVisibleBars() {
-  const container = document.getElementById('chart-container');
-  const width = container?.clientWidth || 400;
-  const byWidth = Math.floor(width / TARGET_BAR_PX);
-  return Math.min(MAX_VISIBLE_BARS, Math.max(MIN_VISIBLE_BARS, byWidth || MIN_VISIBLE_BARS));
-}
-
-/**
- * Default view: last N bars + small right pad.
- * When there are fewer bars than the width target, fit to content instead of
- * leaving a huge empty left void (looked "broken" until TF re-click).
- */
-export function fitChartToData() {
-  if (!chart || lastBarCount <= 0) return;
-  const ts = chart.timeScale();
-  const last = lastBarCount - 1;
-  const want = targetVisibleBars();
-  if (lastBarCount < want) {
-    try {
-      ts.fitContent();
-      // Keep a tiny right pad after fitContent
-      const lr = ts.getVisibleLogicalRange();
-      if (lr) {
-        ts.setVisibleLogicalRange({ from: Math.max(-0.5, lr.from), to: last + RIGHT_PAD_BARS });
-      }
-    } catch {
-      ts.setVisibleLogicalRange({ from: -0.5, to: last + RIGHT_PAD_BARS });
+  const sorted = [...byTime.values()].sort((a, b) => a.time - b.time);
+  if (LONG_RANGES.has(rangeKey) || sorted.length < 3) return sorted;
+  const maxDev = Math.max(0.06, maxRangePct * 1.35);
+  return sorted.map((b, i) => {
+    const from = Math.max(0, i - 4);
+    const to = Math.min(sorted.length, i + 5);
+    const sample = sorted.slice(from, to).map((x) => x.close).sort((a, c) => a - c);
+    const mid = sample[Math.floor(sample.length / 2)] || b.close;
+    if (!(mid > 0)) return b;
+    if (Math.abs(b.close - mid) / mid <= maxDev
+      && (b.high - b.low) / mid <= maxRangePct * 1.15) {
+      return b;
     }
-  } else {
-    const from = last - want + 1;
-    const to = last + RIGHT_PAD_BARS;
-    ts.setVisibleLogicalRange({ from, to });
-  }
-  userZoomed = false;
+    const fixed = sanitizeOhlcBar(
+      Math.max(mid * (1 - maxDev), Math.min(mid * (1 + maxDev), b.open)),
+      b.high,
+      b.low,
+      Math.max(mid * (1 - maxDev), Math.min(mid * (1 + maxDev), b.close)),
+      maxRangePct,
+    );
+    return fixed ? { ...b, ...fixed } : b;
+  });
 }
 
-export function zoomChart(direction) {
-  if (!chart || lastBarCount <= 0) return;
-  const ts = chart.timeScale();
-  const lr = ts.getVisibleLogicalRange();
-  if (!lr) return;
-  userZoomed = true;
-  const span = lr.to - lr.from;
-  const factor = direction > 0 ? 0.82 : 1.22;
-  const maxSpan = Math.max(lastBarCount + RIGHT_PAD_BARS + 8, MAX_VISIBLE_BARS * 2);
-  const newSpan = Math.min(maxSpan, Math.max(12, span * factor));
-  const center = (lr.from + lr.to) / 2;
-  let from = center - newSpan / 2;
-  let to = center + newSpan / 2;
-  const rightLimit = lastBarCount - 1 + RIGHT_PAD_BARS + 2;
-  if (to > rightLimit) {
-    const shift = to - rightLimit;
-    from -= shift;
-    to -= shift;
-  }
-  ts.setVisibleLogicalRange({ from, to });
-}
-
-export function resetChartZoom() {
-  userZoomed = false;
-  fitChartToData();
-}
-
-export function applyChartTheme(colors) {
-  themeColors = colors;
-  const container = document.getElementById('chart-container');
-  if (container) rebuildChart(container);
-}
-
-/** Clear Analyst S/R price lines from the candle series. */
-function clearSrPriceLines() {
-  if (!candleSeries) {
-    srPriceLines = [];
-    return;
-  }
-  for (const line of srPriceLines) {
-    try { candleSeries.removePriceLine(line); } catch (_) { /* series rebuilt */ }
-  }
-  srPriceLines = [];
-}
-
-/**
- * Pure: recent swing support (below last close) and resistance (above).
- * Falls back to window min/max when no local pivots qualify.
- */
 export function findSupportResistance(bars = []) {
   if (!Array.isArray(bars) || bars.length < 20) {
     return { support: null, resistance: null };
@@ -434,43 +314,540 @@ export function findSupportResistance(bars = []) {
   };
 }
 
-function applySrPriceLines(formatted, showSR) {
-  clearSrPriceLines();
-  if (!showSR || !candleSeries || !formatted?.length) return;
-  const { support, resistance } = findSupportResistance(formatted);
-  const green = themeColors?.green || getCss('--accent-trade') || getCss('--green') || '#3b82f6';
-  const red = themeColors?.red || getCss('--rose') || getCss('--red') || '#f43f5e';
-  const dashed = typeof LightweightCharts !== 'undefined' && LightweightCharts.LineStyle
-    ? LightweightCharts.LineStyle.Dashed
-    : 2;
-  if (support > 0) {
-    srPriceLines.push(candleSeries.createPriceLine({
-      price: +support.toFixed(4),
-      color: green,
-      lineWidth: 1,
-      lineStyle: dashed,
-      axisLabelVisible: true,
-      title: 'S',
-    }));
-  }
-  if (resistance > 0) {
-    srPriceLines.push(candleSeries.createPriceLine({
-      price: +resistance.toFixed(4),
-      color: red,
-      lineWidth: 1,
-      lineStyle: dashed,
-      axisLabelVisible: true,
-      title: 'R',
-    }));
+function getCss(name) {
+  try {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  } catch {
+    return '';
   }
 }
 
-export function setChartData(candles, showMA = true, range = '1D', showSR = false) {
-  if (!candleSeries || !candles?.length) return;
+function isIntradayRange(range) {
+  return INTRADAY_RANGES.has(String(range || '1D').toUpperCase());
+}
 
-  lastRange = String(range || '1D').toUpperCase();
+function theme() {
+  return {
+    up: themeColors?.green || getCss('--accent-trade') || getCss('--green') || '#22c55e',
+    down: themeColors?.red || getCss('--rose') || getCss('--red') || '#ef4444',
+    muted: themeColors?.muted || getCss('--muted') || '#94a3b8',
+    border: themeColors?.border || getCss('--glass-stroke') || 'rgba(255,255,255,0.12)',
+    blue: themeColors?.blue || getCss('--blue') || '#60a5fa',
+    orange: '#f59e0b',
+    grid: themeColors?.chartGrid || getCss('--chart-grid') || 'rgba(148,163,184,0.08)',
+    cross: 'rgba(148,163,184,0.35)',
+  };
+}
+
+function formatAxisLabel(ts, intraday) {
+  const d = new Date(Number(ts) * 1000);
+  if (!Number.isFinite(d.getTime())) return '';
+  if (intraday) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  if (lastRange === 'MAX' || lastRange === '5Y') {
+    return d.toLocaleDateString([], { month: 'short', year: '2-digit' });
+  }
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function formatPrice(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  if (Math.abs(n) >= 100) return n.toFixed(2);
+  if (Math.abs(n) >= 1) return n.toFixed(3);
+  return n.toFixed(4);
+}
+
+function formatVolume(v) {
+  const n = Number(v) || 0;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+
+function formatTooltipTime(ts, intraday) {
+  const d = new Date(Number(ts) * 1000);
+  if (!Number.isFinite(d.getTime())) return '';
+  if (intraday) {
+    return d.toLocaleString([], {
+      month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit',
+    });
+  }
+  return d.toLocaleDateString([], {
+    weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+  });
+}
+
+function calcMA(data, period) {
+  const out = [];
+  for (let i = 0; i < data.length; i++) {
+    if (i < period - 1) {
+      out.push('-');
+      continue;
+    }
+    let sum = 0;
+    for (let j = 0; j < period; j++) sum += data[i - j].close;
+    out.push(+(sum / period).toFixed(4));
+  }
+  return out;
+}
+
+function targetVisibleBars() {
+  const width = chartHost?.clientWidth || 400;
+  const byWidth = Math.floor(width / 8);
+  const base = Math.min(MAX_VISIBLE_BARS, Math.max(MIN_VISIBLE_BARS, byWidth || MIN_VISIBLE_BARS));
+  if (lastRange === 'MAX') return Math.min(64, Math.max(40, Math.floor(base * 0.7)));
+  if (lastRange === '5Y') return Math.min(90, Math.max(48, base));
+  return base;
+}
+
+function defaultDataZoom() {
+  const n = lastBarCount;
+  const shared = { xAxisIndex: [0, 1], filterMode: 'filter' };
+  if (n <= 0) {
+    return [
+      { type: 'inside', ...shared, start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
+      { type: 'slider', ...shared, show: false, start: 0, end: 100 },
+    ];
+  }
+  const want = targetVisibleBars();
+  const start = n <= want ? 0 : Math.max(0, ((n - want) / n) * 100);
+  return [
+    { type: 'inside', ...shared, start, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
+    { type: 'slider', ...shared, show: false, start, end: 100 },
+  ];
+}
+
+function buildTooltipHtml(barIndex) {
+  const bar = lastBars[barIndex];
+  if (!bar) return '';
+  const t = theme();
+  const up = bar.close >= bar.open;
+  const tone = up ? t.up : t.down;
+  const chg = bar.open > 0 ? ((bar.close - bar.open) / bar.open) * 100 : 0;
+  const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+  const when = formatTooltipTime(bar.time, isIntradayRange(lastRange));
+  const sym = String(currentSym || '').toUpperCase() || '—';
+  return `
+    <div style="min-width:128px;max-width:160px;line-height:1.35">
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${t.muted};margin-bottom:3px">${sym}</div>
+      <div style="font-size:11px;color:#e8eaed;margin-bottom:6px">${when}</div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11px;font-variant-numeric:tabular-nums">
+        <span style="color:${t.muted}">O</span><span style="text-align:right">${formatPrice(bar.open)}</span>
+        <span style="color:${t.muted}">H</span><span style="text-align:right">${formatPrice(bar.high)}</span>
+        <span style="color:${t.muted}">L</span><span style="text-align:right">${formatPrice(bar.low)}</span>
+        <span style="color:${t.muted}">C</span><span style="text-align:right;color:${tone};font-weight:700">${formatPrice(bar.close)}</span>
+        <span style="color:${t.muted}">Chg</span><span style="text-align:right;color:${tone}">${chgStr}</span>
+        <span style="color:${t.muted}">Vol</span><span style="text-align:right">${formatVolume(bar.volume)}</span>
+      </div>
+    </div>`;
+}
+
+/** ECharts candle datum: [open, close, low, high] — raw sanitized OHLC, no visual smash. */
+function toOhlc(bars) {
+  return bars.map((b) => [b.open, b.close, b.low, b.high]);
+}
+
+function buildOption() {
+  const t = theme();
   const intraday = isIntradayRange(lastRange);
-  const sanitized = normalizeChartCandles(candles);
+  const isWave = chartStyle === 'wave';
+  // Index categories stay unique; clock labels are formatting only.
+  const cats = lastBars.map((_, i) => String(i));
+  const axis = computePriceAxisRange(lastBars, lastRange);
+  const ohlc = toOhlc(lastBars);
+  const closes = lastBars.map((b) => b.close);
+  const vols = lastBars.map((b) => ({
+    value: b.volume || 0,
+    itemStyle: {
+      color: b.close >= b.open ? `${t.up}55` : `${t.down}55`,
+    },
+  }));
+  const ma20 = showMa && !isWave && lastBars.length >= 20 ? calcMA(lastBars, 20) : [];
+  const ma50 = showMa && !isWave && lastBars.length >= 50 ? calcMA(lastBars, 50) : [];
+
+  /** @type {any[]} */
+  const markLineData = [];
+  if (showSr && !isWave && lastBars.length >= 20) {
+    const { support, resistance } = findSupportResistance(lastBars);
+    if (support > 0) {
+      markLineData.push({
+        yAxis: support,
+        name: 'S',
+        lineStyle: { color: t.up, type: 'dashed', width: 1, opacity: 0.7 },
+        label: { formatter: 'S', color: t.up, fontSize: 10 },
+      });
+    }
+    if (resistance > 0) {
+      markLineData.push({
+        yAxis: resistance,
+        name: 'R',
+        lineStyle: { color: t.down, type: 'dashed', width: 1, opacity: 0.7 },
+        label: { formatter: 'R', color: t.down, fontSize: 10 },
+      });
+    }
+  }
+
+  const zoom = userZoomed ? undefined : defaultDataZoom();
+  const labelFmt = (value) => {
+    const bar = lastBars[Number(value)];
+    return bar ? formatAxisLabel(bar.time, intraday) : '';
+  };
+
+  return {
+    animation: true,
+    animationDuration: 650,
+    animationEasing: 'cubicOut',
+    animationDurationUpdate: 0,
+    backgroundColor: 'transparent',
+    textStyle: { color: t.muted, fontFamily: 'Inter, system-ui, sans-serif' },
+    legend: { show: false },
+    tooltip: {
+      trigger: 'axis',
+      triggerOn: 'mousemove',
+      confine: true,
+      enterable: false,
+      appendToBody: true,
+      renderMode: 'html',
+      className: 'sw-chart-tooltip',
+      borderWidth: 1,
+      borderColor: t.border,
+      backgroundColor: 'rgba(10,12,16,0.96)',
+      padding: [7, 9],
+      extraCssText: [
+        'width:auto!important',
+        'height:auto!important',
+        'max-width:160px!important',
+        'border-radius:8px',
+        'box-shadow:0 8px 24px rgba(0,0,0,0.45)',
+        'pointer-events:none',
+        'z-index:40',
+      ].join(';'),
+      textStyle: { color: '#e8eaed', fontSize: 11 },
+      axisPointer: {
+        type: 'cross',
+        snap: true,
+        label: { show: false },
+        lineStyle: { color: t.cross, width: 1, type: 'dashed' },
+        crossStyle: { color: t.cross, width: 1, type: 'dashed' },
+      },
+      formatter: (params) => {
+        const list = Array.isArray(params) ? params : [params];
+        const idx = list.find((p) => Number.isFinite(p?.dataIndex))?.dataIndex;
+        if (!Number.isFinite(idx)) return '';
+        return buildTooltipHtml(idx);
+      },
+    },
+    axisPointer: { link: [{ xAxisIndex: 'all' }] },
+    grid: [
+      { left: 8, right: 58, top: 12, bottom: '24%', containLabel: false },
+      { left: 8, right: 58, top: '80%', bottom: 26, containLabel: false },
+    ],
+    xAxis: [
+      {
+        type: 'category',
+        data: cats,
+        boundaryGap: true,
+        axisLine: { lineStyle: { color: t.border } },
+        axisTick: { show: false },
+        axisLabel: {
+          color: t.muted,
+          hideOverlap: true,
+          fontSize: 10,
+          margin: 8,
+          formatter: labelFmt,
+        },
+        splitLine: { show: false },
+      },
+      {
+        type: 'category',
+        gridIndex: 1,
+        data: cats,
+        boundaryGap: true,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { show: false },
+        splitLine: { show: false },
+      },
+    ],
+    yAxis: [
+      {
+        scale: true,
+        position: 'right',
+        min: axis?.min,
+        max: axis?.max,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: {
+          color: t.muted,
+          fontSize: 10,
+          margin: 6,
+          formatter: (v) => formatPrice(v),
+        },
+        splitLine: {
+          show: true,
+          lineStyle: { color: t.grid, width: 1 },
+        },
+        splitNumber: 5,
+      },
+      {
+        scale: true,
+        gridIndex: 1,
+        splitNumber: 2,
+        axisLabel: { show: false },
+        axisLine: { show: false },
+        axisTick: { show: false },
+        splitLine: { show: false },
+      },
+    ],
+    dataZoom: zoom || defaultDataZoom(),
+    series: [
+      {
+        id: 'candles',
+        name: 'Price',
+        type: 'candlestick',
+        data: isWave ? [] : ohlc,
+        barMaxWidth: 10,
+        itemStyle: {
+          color: t.up,
+          color0: t.down,
+          borderColor: t.up,
+          borderColor0: t.down,
+          borderWidth: 1,
+        },
+        markLine: markLineData.length ? {
+          symbol: 'none',
+          silent: true,
+          animation: false,
+          data: markLineData,
+        } : undefined,
+      },
+      {
+        id: 'wave',
+        name: 'Wave',
+        type: 'line',
+        data: isWave ? closes : [],
+        showSymbol: false,
+        smooth: 0.12,
+        connectNulls: false,
+        lineStyle: { width: 2, color: t.up },
+        areaStyle: isWave ? {
+          color: {
+            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: `${t.up}40` },
+              { offset: 1, color: `${t.up}00` },
+            ],
+          },
+        } : undefined,
+      },
+      {
+        id: 'ma20',
+        name: 'MA20',
+        type: 'line',
+        data: ma20,
+        showSymbol: false,
+        lineStyle: { width: 1.25, color: t.blue, opacity: 0.85 },
+        z: 3,
+      },
+      {
+        id: 'ma50',
+        name: 'MA50',
+        type: 'line',
+        data: ma50,
+        showSymbol: false,
+        lineStyle: { width: 1.25, color: t.orange, opacity: 0.85 },
+        z: 3,
+      },
+      {
+        id: 'volume',
+        name: 'Volume',
+        type: 'bar',
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: vols,
+        barMaxWidth: 8,
+        large: true,
+        tooltip: { show: false },
+      },
+    ],
+  };
+}
+
+function paint(resetZoom = true) {
+  if (!chart || !lastBars.length) return;
+  if (resetZoom) userZoomed = false;
+  try {
+    chart.setOption(buildOption(), { notMerge: true });
+  } catch (err) {
+    console.warn('chart paint failed', err);
+  }
+}
+
+export async function waitForChartLib(maxMs = 10000) {
+  const start = Date.now();
+  while (typeof echarts === 'undefined' && Date.now() - start < maxMs) {
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  return typeof echarts !== 'undefined';
+}
+
+function hostSize() {
+  const w = Math.max(chartHost?.clientWidth || 0, 320);
+  const h = Math.max(chartHost?.clientHeight || 0, 320);
+  return { w, h };
+}
+
+function rebuildChart(container) {
+  if (!container || typeof echarts === 'undefined') return;
+
+  if (fitRetryTimer) {
+    clearTimeout(fitRetryTimer);
+    fitRetryTimer = null;
+  }
+  if (fitRaf) {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = 0;
+  }
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
+  if (chart) {
+    try { chart.dispose(); } catch { /* ignore */ }
+    chart = null;
+  }
+
+  chartHost = container;
+  container.innerHTML = '';
+  lastCandle = null;
+  lastLiveUpdateAt = 0;
+  userZoomed = false;
+
+  try {
+    const saved = localStorage.getItem(CHART_STYLE_KEY);
+    if (saved === 'wave' || saved === 'candle') chartStyle = saved;
+  } catch { /* ignore */ }
+
+  const { w, h } = hostSize();
+  chart = echarts.init(container, null, {
+    renderer: 'canvas',
+    width: w,
+    height: h,
+  });
+
+  chart.on('datazoom', () => { userZoomed = true; });
+
+  resizeObserver = new ResizeObserver(() => {
+    if (!chart || !chartHost) return;
+    if (chartHost.clientWidth <= 0 || chartHost.clientHeight <= 0) return;
+    try {
+      const size = hostSize();
+      chart.resize({ width: size.w, height: size.h });
+    } catch { /* ignore */ }
+  });
+  resizeObserver.observe(container);
+
+  if (lastBars.length) paint(true);
+}
+
+export async function initChart(container) {
+  if (!container) return false;
+  const ok = await waitForChartLib();
+  if (!ok) {
+    container.innerHTML = '<div class="chart-error">Chart library loading… refresh if this persists.</div>';
+    return false;
+  }
+  rebuildChart(container);
+  return true;
+}
+
+export function getChartStyle() {
+  return chartStyle;
+}
+
+/** @param {'candle' | 'wave'} style */
+export function setChartStyle(style) {
+  const next = style === 'wave' ? 'wave' : 'candle';
+  chartStyle = next;
+  try { localStorage.setItem(CHART_STYLE_KEY, next); } catch { /* ignore */ }
+  paint(false);
+}
+
+export function scheduleFitChart() {
+  if (fitRetryTimer) clearTimeout(fitRetryTimer);
+  if (fitRaf) cancelAnimationFrame(fitRaf);
+  fitRaf = requestAnimationFrame(() => {
+    fitRaf = 0;
+    resizeChart();
+    if (!userZoomed) fitChartToData();
+    fitRetryTimer = setTimeout(() => {
+      fitRetryTimer = null;
+      resizeChart();
+      if (!userZoomed) fitChartToData();
+    }, 120);
+  });
+}
+
+export function fitChartToData() {
+  if (!chart || lastBarCount <= 0) return;
+  if (!chartHost || chartHost.clientWidth <= 8) return;
+  userZoomed = false;
+  try {
+    chart.setOption({ dataZoom: defaultDataZoom() });
+  } catch { /* ignore */ }
+}
+
+export function zoomChart(direction) {
+  if (!chart || lastBarCount <= 0) return;
+  userZoomed = true;
+  try {
+    const opt = chart.getOption();
+    const dz = opt?.dataZoom?.[0];
+    const start = Number(dz?.start ?? 0);
+    const end = Number(dz?.end ?? 100);
+    const span = Math.max(5, end - start);
+    const factor = direction > 0 ? 0.82 : 1.22;
+    const newSpan = Math.min(100, Math.max(8, span * factor));
+    const center = (start + end) / 2;
+    let nextStart = center - newSpan / 2;
+    let nextEnd = center + newSpan / 2;
+    if (nextStart < 0) {
+      nextEnd -= nextStart;
+      nextStart = 0;
+    }
+    if (nextEnd > 100) {
+      nextStart -= (nextEnd - 100);
+      nextEnd = 100;
+    }
+    chart.setOption({
+      dataZoom: [
+        { start: Math.max(0, nextStart), end: Math.min(100, nextEnd) },
+        { start: Math.max(0, nextStart), end: Math.min(100, nextEnd) },
+      ],
+    });
+  } catch { /* ignore */ }
+}
+
+export function resetChartZoom() {
+  userZoomed = false;
+  fitChartToData();
+}
+
+export function applyChartTheme(colors) {
+  themeColors = colors || null;
+  if (lastBars.length) paint(false);
+}
+
+export function setChartData(candles, showMA = true, range = '1D', showSR = false) {
+  lastRange = String(range || '1D').toUpperCase();
+  showMa = !!showMA;
+  showSr = !!showSR;
+  const sanitized = normalizeChartCandles(candles, lastRange);
   if (!sanitized.length) return;
 
   const formatted = sanitized.map((c) => ({
@@ -479,57 +856,45 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
     high: c.high,
     low: c.low,
     close: c.close,
+    volume: c.volume || 0,
   }));
-  lastBarCount = formatted.length;
-  const last = formatted[formatted.length - 1];
-  lastCandle = last ? { ...last } : null;
-  lastLiveUpdateAt = 0;
-  userZoomed = false;
 
-  candleSeries.setData(formatted);
-  waveSeries?.setData(formatted.map((c) => ({ time: c.time, value: c.close })));
-  const green = themeColors?.green || getCss('--accent-trade') || getCss('--green');
-  const red = themeColors?.red || getCss('--rose') || getCss('--red');
-  volumeSeries.setData(sanitized.map((c) => ({
-    time: c.time,
-    value: c.volume || 0,
-    color: c.close >= c.open ? `${green}66` : `${red}66`,
-  })));
-
-  if (showMA && formatted.length >= 20) {
-    ma20Series.setData(calcMA(formatted, 20));
-    ma50Series.setData(calcMA(formatted, Math.min(50, formatted.length - 1)));
-  } else {
-    ma20Series.setData([]);
-    ma50Series.setData([]);
+  const lastIdx = formatted.length - 1;
+  if (lastIdx >= 0 && currentSym) {
+    const q = getCachedQuote(currentSym);
+    const px = Number(q?.price);
+    const bar = formatted[lastIdx];
+    if (px > 0 && bar?.close > 0 && !shouldRejectLiveCandleTick(bar.close, px)) {
+      const capped = applyLiveCandleTick(bar, px, maxLiveBarRangePct(lastRange));
+      if (capped) {
+        formatted[lastIdx] = {
+          time: bar.time,
+          open: capped.open,
+          high: capped.high,
+          low: capped.low,
+          close: capped.close,
+          volume: bar.volume || 0,
+        };
+      }
+    }
   }
 
-  applySrPriceLines(formatted, !!showSR);
-  applyChartStyleVisibility();
+  if (lastIdx >= 1) {
+    const mid = Number(formatted[lastIdx - 1]?.close) || Number(formatted[lastIdx]?.close) || 0;
+    formatted[lastIdx] = clampBarToPeers(formatted[lastIdx], peerMedianRange(formatted), mid);
+  }
 
-  chart?.timeScale().applyOptions({
-    timeVisible: intraday,
-    secondsVisible: false,
-    rightOffset: RIGHT_PAD_BARS,
-    fixLeftEdge: false,
-    lockVisibleTimeRangeOnResize: false,
-    barSpacing: TARGET_BAR_PX,
-    minBarSpacing: 3,
-    maxBarSpacing: 18,
-  });
-
+  lastBars = formatted;
+  lastBarCount = formatted.length;
+  lastCandle = formatted[lastIdx] ? { ...formatted[lastIdx] } : null;
+  lastLiveUpdateAt = 0;
+  userZoomed = false;
+  paint(true);
   scheduleFitChart();
 }
 
-/**
- * Live-update the last candle from a quote tick (MSN-style last-point feel).
- * Same bar time; open unchanged; high/low expand; close = price.
- * Rejects outlier quotes that disagree with the loaded series (e.g. seed $361
- * vs candle close ~$49) so the last bar never jumps vertically.
- * No-ops if no chart data, wrong symbol, or invalid price. Does not refit/zoom.
- */
 export function updateLastCandleFromQuote(sym, price, opts = {}) {
-  if (!candleSeries || !lastCandle) return false;
+  if (!chart || !lastCandle || !lastBars.length) return false;
   const want = String(sym || '').toUpperCase();
   const have = String(currentSym || '').toUpperCase();
   if (!want || !have || want !== have) return false;
@@ -540,9 +905,6 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   if (anchor > 0) {
     const maxJump = opts.maxJumpPct ?? LIVE_MAX_JUMP_PCT;
     if (shouldRejectLiveCandleTick(anchor, px, maxJump)) {
-      // Pre-sim only: pull poisoned seed quotes back to the candle series.
-      // During sim the tape is authoritative — never rewind tradeable prices to a stale bar
-      // (that was a 2.5–3% free-entry exploit after shocks).
       if (!isSimulationMode()) {
         try { syncQuoteToPrice(want, anchor, { source: 'candle' }); } catch { /* ignore */ }
       }
@@ -558,20 +920,32 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   const maxRange = opts.maxBarRangePct ?? maxLiveBarRangePct(lastRange);
   const next = applyLiveCandleTick(lastCandle, px, maxRange);
   if (!next) return false;
+
   lastCandle.open = next.open;
   lastCandle.high = next.high;
   lastCandle.low = next.low;
   lastCandle.close = next.close;
 
+  const i = lastBars.length - 1;
+  lastBars[i] = {
+    ...lastBars[i],
+    open: next.open,
+    high: next.high,
+    low: next.low,
+    close: next.close,
+  };
+  sanitizeLastBarInPlace();
+
   try {
-    candleSeries.update({
-      time: lastCandle.time,
-      open: lastCandle.open,
-      high: lastCandle.high,
-      low: lastCandle.low,
-      close: lastCandle.close,
+    const axis = computePriceAxisRange(lastBars, lastRange);
+    const isWave = chartStyle === 'wave';
+    chart.setOption({
+      yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
+      series: [
+        { id: 'candles', data: isWave ? [] : toOhlc(lastBars) },
+        { id: 'wave', data: isWave ? lastBars.map((b) => b.close) : [] },
+      ],
     });
-    waveSeries?.update({ time: lastCandle.time, value: lastCandle.close });
   } catch {
     return false;
   }
@@ -579,33 +953,18 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
 }
 
 export function resizeChart() {
-  const container = document.getElementById('chart-container');
-  if (chart && container?.clientWidth > 0) {
-    chart.applyOptions({
-      width: container.clientWidth,
-      height: container.clientHeight || 280,
-    });
-  }
-}
-
-function calcMA(data, period) {
-  const out = [];
-  for (let i = period - 1; i < data.length; i++) {
-    let sum = 0;
-    for (let j = 0; j < period; j++) sum += data[i - j].close;
-    out.push({ time: data[i].time, value: sum / period });
-  }
-  return out;
+  if (!chart || !chartHost) return;
+  if (chartHost.clientWidth <= 0) return;
+  try {
+    const { w, h } = hostSize();
+    chart.resize({ width: w, height: h });
+  } catch { /* ignore */ }
 }
 
 export function getCurrentSym() { return currentSym; }
+
 export function setCurrentSym(sym) {
-  const next = sym || null;
-  if (String(currentSym || '').toUpperCase() !== String(next || '').toUpperCase()) {
-    lastCandle = null;
-    lastLiveUpdateAt = 0;
-  }
-  currentSym = next;
+  currentSym = sym ? String(sym).toUpperCase() : null;
 }
 
 export function destroyChart() {
@@ -613,19 +972,20 @@ export function destroyChart() {
     clearTimeout(fitRetryTimer);
     fitRetryTimer = null;
   }
-  if (wheelAbort) {
-    wheelAbort.abort();
-    wheelAbort = null;
+  if (fitRaf) {
+    cancelAnimationFrame(fitRaf);
+    fitRaf = 0;
   }
-  if (resizeObserver) resizeObserver.disconnect();
-  if (chart) { chart.remove(); chart = null; }
-  candleSeries = null;
-  waveSeries = null;
-  volumeSeries = null;
-  ma20Series = null;
-  ma50Series = null;
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
+  if (chart) {
+    try { chart.dispose(); } catch { /* ignore */ }
+    chart = null;
+  }
+  chartHost = null;
+  lastBars = [];
   lastBarCount = 0;
   lastCandle = null;
-  lastLiveUpdateAt = 0;
-  userZoomed = false;
 }

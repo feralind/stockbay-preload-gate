@@ -1,3 +1,5 @@
+declare const echarts: any;
+/** @deprecated Removed — trade chart now uses Apache ECharts. */
 declare const LightweightCharts: any;
 
 interface Window {

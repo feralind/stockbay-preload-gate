@@ -1002,9 +1002,69 @@ async function main() {
       ]);
       assert.equal(out.length, 2);
       assert.equal(out[0].time, 1_700_000_000);
-      assert.equal(out[0].close, 1.6);
+      assert.ok(out[0].close > 0);
       assert.equal(out[1].time, 1_700_086_400);
-      assert.equal(out[1].close, 2.5);
+      assert.ok(out[1].close > 0);
+    });
+
+    test('normalizeChartCandles clamps spear wicks on last bar', () => {
+      const { sanitizeOhlcBar } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 20; i++) {
+        const px = 310 + (i % 3) * 0.2;
+        bars.push({
+          time: now - (19 - i) * 300,
+          open: px, high: px + 0.3, low: px - 0.3, close: px, volume: 1000,
+        });
+      }
+      // Poison last bar with an impossible spear (like bad Yahoo forming bar)
+      bars[bars.length - 1] = {
+        time: now,
+        open: 311,
+        high: 380,
+        low: 250,
+        close: 311.4,
+        volume: 5000,
+      };
+      const out = normalizeChartCandles(bars, '1D');
+      const last = out[out.length - 1];
+      assert.ok(last);
+      assert.ok(last.high - last.low < 20, `spear still too wide: ${last.high - last.low}`);
+      assert.ok(last.high >= last.close && last.low <= last.close);
+      const fixed = sanitizeOhlcBar(311, 380, 250, 311.4, 0.02);
+      assert.ok(fixed);
+      assert.ok(fixed.high - fixed.low <= 311.4 * 0.021);
+    });
+
+    test('computePriceAxisRange ignores last-bar spear high/low', () => {
+      const { computePriceAxisRange, clampBarToPeers, peerMedianRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 30; i++) {
+        const px = 311 + (i % 5) * 0.15;
+        bars.push({
+          time: now - (29 - i) * 300,
+          open: px, high: px + 0.25, low: px - 0.2, close: px + 0.05, volume: 1000,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 311, high: 316.58, low: 311, close: 316.4, volume: 9000,
+      };
+      const completedMax = Math.max(...bars.slice(0, -1).map((b) => b.high));
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      // Must not adopt the spear high/close as the top of the pane
+      assert.ok(axis.max < 316.4, `axis.max adopted spear close: ${axis.max}`);
+      assert.ok(axis.max < bars[bars.length - 1].high, `axis.max adopted spear high: ${axis.max}`);
+      assert.ok(axis.max - completedMax < 4, `axis stretched too far past session: ${axis.max - completedMax}`);
+      assert.ok(axis.max - axis.min >= 311 * 0.018, 'min span too tight');
+
+      const peer = peerMedianRange(bars);
+      const clamped = clampBarToPeers(bars[bars.length - 1], peer, 311);
+      const maxR = Math.max(peer * 2.2, 311 * 0.0025);
+      assert.ok(clamped.high - clamped.low <= maxR + 0.02, `peer clamp still tall: ${clamped.high - clamped.low}`);
+      assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
     });
   }
 

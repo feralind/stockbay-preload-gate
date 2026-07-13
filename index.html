@@ -9,12 +9,12 @@
   <link rel="icon" href="assets/icon.svg?v=1.0.0" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=1.0.10">
-  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css?v=1.0.18">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script>
-    if (typeof LightweightCharts === 'undefined') {
-      document.write('<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"><\/script>');
+    if (typeof echarts === 'undefined') {
+      document.write('<script src="https://unpkg.com/echarts@5.5.1/dist/echarts.min.js"><\/script>');
     }
     window.__STOCKSTAY_BOOT = Date.now();
     if (/Electron/i.test(navigator.userAgent)) document.documentElement.classList.add('electron');
@@ -468,8 +468,8 @@
               <option value="sector">Sector A → Z</option>
             </select>
           </div>
-          <div id="listing-search-results" class="listing-search-results hidden"></div>
-          <div id="listings-full" class="listings-board"></div>
+          <div id="listing-search-results" class="listing-search-results deal-desk-grid hidden"></div>
+          <div id="listings-full" class="listings-board deal-desk-grid"></div>
           <button class="btn listings-show-more hidden" id="listings-show-more">Show more listings</button>
         </div>
       </section>
@@ -555,13 +555,39 @@
       </section>
       <section class="view-panel" id="view-achievements">
         <div class="achievements-view">
-          <div class="ach-header">
-            <div>
-              <h3>Achievements</h3>
-              <p class="muted-text" id="ach-progress">0 / 0 unlocked</p>
+          <header class="ach-progress-panel" id="ach-progress-panel">
+            <div class="ach-progress-ring-wrap" aria-hidden="true">
+              <svg class="ach-progress-ring" viewBox="0 0 120 120" preserveAspectRatio="xMidYMid meet">
+                <circle class="ach-progress-track" cx="60" cy="60" r="52"></circle>
+                <circle class="ach-progress-value" id="ach-progress-arc" cx="60" cy="60" r="52"></circle>
+              </svg>
+              <div class="ach-progress-center">
+                <strong id="ach-progress-pct">0%</strong>
+                <span>Overall Progress</span>
+              </div>
             </div>
-            <button class="btn btn-accent" id="btn-claim-all">Claim all</button>
-          </div>
+            <div class="ach-kpi-row">
+              <div class="ach-kpi">
+                <span class="ach-kpi-ico" aria-hidden="true">✓</span>
+                <em>Total Unlocked</em>
+                <strong id="ach-kpi-unlocked">0</strong>
+              </div>
+              <div class="ach-kpi">
+                <span class="ach-kpi-ico" aria-hidden="true">◈</span>
+                <em>Next Reward</em>
+                <strong id="ach-kpi-reward">$0</strong>
+              </div>
+              <div class="ach-kpi">
+                <span class="ach-kpi-ico" aria-hidden="true">♛</span>
+                <em>Current Tier</em>
+                <strong id="ach-kpi-tier">—</strong>
+              </div>
+            </div>
+            <div class="ach-progress-actions">
+              <p class="muted-text" id="ach-progress">0 / 0 unlocked</p>
+              <button class="btn btn-accent" id="btn-claim-all">Claim all</button>
+            </div>
+          </header>
           <div id="achievements-grid" class="achievements-grid"></div>
         </div>
       </section>
@@ -575,20 +601,34 @@
               <h2 class="finance-title">Financing Desk</h2>
               <p class="finance-sub" data-gloss="credit-score">Live APR quotes from your credit, utilization, and bank relationship. Hold a loan through one day-end interest tick before payoff builds score — miss payments and it tanks fast.</p>
             </div>
-            <div class="credit-pills" id="credit-pills"></div>
+            <div class="finance-gauges" id="finance-gauges" data-gloss="credit-score"></div>
           </header>
-          <div class="finance-grid">
-            <div class="finance-col">
-              <h4 class="finance-col-title">Lenders</h4>
-              <div id="bank-list" class="bank-list"></div>
-            </div>
-            <div class="finance-col">
-              <h4 class="finance-col-title">Active loans</h4>
-              <div id="loan-payoff-calc" class="loan-payoff-calc"></div>
-              <div id="loan-list" class="loan-list"></div>
-              <h4 class="finance-col-title mt">Payment history</h4>
-              <div id="loan-history" class="loan-history"></div>
-            </div>
+          <div class="credit-pills" id="credit-pills"></div>
+          <nav class="fin-tabs" id="fin-tabs" role="tablist" aria-label="Financing Desk sections">
+            <button type="button" class="fin-tab is-active" role="tab" data-fin-tab="lenders" aria-selected="true">Lenders</button>
+            <button type="button" class="fin-tab" role="tab" data-fin-tab="loans" aria-selected="false">Active Loans</button>
+            <button type="button" class="fin-tab" role="tab" data-fin-tab="history" aria-selected="false">Payment History</button>
+            <button type="button" class="fin-tab" role="tab" data-fin-tab="builder" aria-selected="false">Credit Builder</button>
+          </nav>
+
+          <div class="fin-tab-panel" id="fin-panel-lenders" data-fin-panel="lenders" role="tabpanel">
+            <div id="bank-list" class="bank-list"></div>
+          </div>
+
+          <div class="fin-tab-panel hidden" id="fin-panel-loans" data-fin-panel="loans" role="tabpanel" hidden>
+            <h4 class="finance-col-title">Active loans</h4>
+            <div id="loan-payoff-calc" class="loan-payoff-calc"></div>
+            <div id="loan-list" class="loan-list"></div>
+          </div>
+
+          <div class="fin-tab-panel hidden" id="fin-panel-history" data-fin-panel="history" role="tabpanel" hidden>
+            <h4 class="finance-col-title">Payment history</h4>
+            <div id="loan-history" class="loan-history"></div>
+          </div>
+
+          <div class="fin-tab-panel hidden" id="fin-panel-builder" data-fin-panel="builder" role="tabpanel" hidden>
+            <h4 class="finance-col-title">Credit builder</h4>
+            <div id="credit-builder" class="credit-builder"></div>
           </div>
         </div>
       </section>
@@ -955,6 +995,6 @@
 
   <div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true" role="status"></div>
 
-  <script type="module" src="js/app.js?v=1.0.6"></script>
+  <script type="module" src="js/app.js?v=1.0.8"></script>
 </body>
 </html>

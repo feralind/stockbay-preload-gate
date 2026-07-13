@@ -2,7 +2,7 @@
 import {
   fetchCandles, fillMissingQuotes, isSimulationMode, syncQuoteToPrice,
 } from '../api.js';
-import { setChartData, setCurrentSym, resizeChart } from '../chart.js';
+import { setChartData, setCurrentSym, scheduleFitChart } from '../chart.js';
 import { setSelectedSym } from './selection.js';
 
 let chartResolution = '1D';
@@ -67,31 +67,29 @@ export async function loadChart(sym, hasAnalyst) {
   setCurrentSym(sym);
   fillMissingQuotes([sym]);
   const box = document.getElementById('chart-container');
-  const waveStarted = Date.now();
-  box?.classList.add('chart-loading');
+  if (box) {
+    box.classList.remove('chart-reveal');
+    box.classList.add('chart-loading');
+  }
   try {
     const candles = await fetchCandles(sym, chartResolution);
-    // Brief wave even for instant offline/sim candles so symbol/range changes feel responsive
-    const minWaveMs = 320;
-    const elapsed = Date.now() - waveStarted;
-    if (elapsed < minWaveMs) {
-      await new Promise(r => setTimeout(r, minWaveMs - elapsed));
-    }
     const lastClose = candles?.[candles.length - 1]?.close;
     // During sim the quote cache is the fill source of truth — never let chart load rewrite it
     if (lastClose > 0 && !isSimulationMode()) {
       syncQuoteToPrice(sym, lastClose, { source: 'candle' });
     }
     setChartData(candles, hasAnalyst, chartResolution, hasAnalyst);
-    // Extra fit after Dual Pane layout (avoids empty-left until TF click)
-    requestAnimationFrame(() => {
-      resizeChart();
-      setTimeout(() => resizeChart(), 100);
-    });
+    // Paint one frame while still clipped, then wipe L→R
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    setTimeout(() => scheduleFitChart(), 180);
   } finally {
-    // Let the next frame paint candles under the wave, then fade the overlay out
-    requestAnimationFrame(() => {
-      box?.classList.remove('chart-loading');
-    });
+    if (!box) return;
+    box.classList.remove('chart-loading');
+    // Force restart if reveal is re-triggered quickly
+    void box.offsetWidth;
+    box.classList.add('chart-reveal');
+    const done = () => box.classList.remove('chart-reveal');
+    box.addEventListener('animationend', done, { once: true });
+    setTimeout(done, 1200);
   }
 }
