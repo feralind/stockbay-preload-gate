@@ -204,41 +204,66 @@ function feedDot(q) {
   return `<span class="feed-dot ${live ? 'live' : 'sim'}" title="${live ? 'Live-anchored' : 'Simulated drift'}"></span>`;
 }
 
-export function renderWatchlist(state) {
-  fillMissingQuotes(watchlist);
-  const el = document.getElementById('watchlist');
-  if (!el) return;
+function watchlistRoots() {
+  // Trade desk owns the watchlist UI; sidebar duplicate removed.
+  return [document.getElementById('trade-watchlist')].filter(Boolean);
+}
 
-  const existing = [...el.querySelectorAll('.watch-item')].map((n) => n.dataset.sym);
-  const sameStructure = existing.length === watchlist.length && watchlist.every((s, i) => existing[i] === s);
+function paintWatchlistPrices(el) {
+  watchlist.forEach((sym) => {
+    const item = el.querySelector(`.watch-item[data-sym="${sym}"]`);
+    if (!item) return;
+    const q = getCachedQuote(sym);
+    const price = q?.price?.toFixed(2) || '—';
+    const chg = q?.changePct || 0;
+    const cls = chg >= 0 ? 'up' : 'down';
+    item.classList.toggle('active', getSelectedSym() === sym);
+    const chgEl = item.querySelector('.watch-chg');
+    if (chgEl) {
+      chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+      chgEl.className = `watch-chg ${cls}`;
+    }
+    const priceEl = item.querySelector('.watch-price');
+    if (priceEl) priceEl.textContent = `$${price}`;
+    const nameEl = item.querySelector('.watch-name');
+    if (nameEl) nameEl.textContent = getSymbolMeta(sym).name || '';
+    const feed = item.querySelector('.feed-dot');
+    if (feed && q) {
+      const live = q.simulated === false;
+      feed.className = `feed-dot ${live ? 'live' : 'sim'}`;
+      feed.title = live ? 'Live-anchored' : 'Simulated drift';
+    }
+  });
+}
 
-  if (sameStructure && existing.length) {
-    watchlist.forEach((sym) => {
-      const item = el.querySelector(`.watch-item[data-sym="${sym}"]`);
-      if (!item) return;
-      const q = getCachedQuote(sym);
-      const price = q?.price?.toFixed(2) || '—';
-      const chg = q?.changePct || 0;
-      const cls = chg >= 0 ? 'up' : 'down';
-      item.classList.toggle('active', getSelectedSym() === sym);
-      const chgEl = item.querySelector('.watch-chg');
-      if (chgEl) {
-        chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
-        chgEl.className = `watch-chg ${cls}`;
-      }
-      const priceEl = item.querySelector('.watch-price');
-      if (priceEl) priceEl.textContent = `$${price}`;
-      const feed = item.querySelector('.feed-dot');
-      if (feed && q) {
-        const live = q.simulated === false;
-        feed.className = `feed-dot ${live ? 'live' : 'sim'}`;
-        feed.title = live ? 'Live-anchored' : 'Simulated drift';
-      }
-    });
-    return;
-  }
+function bindWatchlistRoot(el, state) {
+  el.querySelectorAll('.watch-item').forEach((item) => {
+    item.onclick = () => {
+      const sym = setSelectedSym(item.dataset.sym);
+      state.onSelectSymbol?.(sym);
+      listingsUi.switchView?.('trade');
+      listingsUi.showChartTab?.('chart');
+      listingsUi.renderAll?.(state);
+      setTimeout(() => listingsUi.resizeChart?.(), 100);
+    };
+  });
+  el.querySelectorAll('.watch-alert-btn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      openPriceAlert(btn.dataset.sym, state);
+    };
+  });
+  el.querySelectorAll('.watch-remove-btn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      state.onRemoveWatchlist?.(btn.dataset.sym);
+    };
+  });
+}
 
-  el.innerHTML = watchlist.map(sym => {
+function watchlistMarkup() {
+  if (!watchlist.length) return '<div class="empty">Add symbols with +</div>';
+  return watchlist.map((sym) => {
     const q = quoteForDisplay(sym);
     const meta = getSymbolMeta(sym);
     const price = q?.price?.toFixed(2) || '—';
@@ -251,6 +276,7 @@ export function renderWatchlist(state) {
         ${logoMarkHtml(sym, { color: meta.color, letter: meta.letter, size: 'sm' })}
         <div class="watch-meta">
           <div class="watch-sym">${sym}${feedDot(q)}${alertDot}</div>
+          <div class="watch-name">${meta.name || ''}</div>
           <div class="watch-chg ${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</div>
         </div>
         <div class="watch-price">$${price}</div>
@@ -259,29 +285,24 @@ export function renderWatchlist(state) {
           <button type="button" class="watch-remove-btn" data-sym="${sym}" title="Remove from watchlist" aria-label="Remove ${sym}">×</button>
         </div>
       </div>`;
-  }).join('') || '<div class="empty">Add symbols with +</div>';
+  }).join('');
+}
 
-  el.querySelectorAll('.watch-item').forEach(item => {
-    item.onclick = () => {
-      const sym = setSelectedSym(item.dataset.sym);
-      state.onSelectSymbol?.(sym);
-      listingsUi.switchView?.('trade');
-      listingsUi.showChartTab?.('chart');
-      listingsUi.renderAll?.(state);
-      setTimeout(() => listingsUi.resizeChart?.(), 100);
-    };
-  });
-  el.querySelectorAll('.watch-alert-btn').forEach(btn => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      openPriceAlert(btn.dataset.sym, state);
-    };
-  });
-  el.querySelectorAll('.watch-remove-btn').forEach(btn => {
-    btn.onclick = (e) => {
-      e.stopPropagation();
-      state.onRemoveWatchlist?.(btn.dataset.sym);
-    };
+export function renderWatchlist(state) {
+  fillMissingQuotes(watchlist);
+  const roots = watchlistRoots();
+  if (!roots.length) return;
+
+  const markup = watchlistMarkup();
+  roots.forEach((el) => {
+    const existing = [...el.querySelectorAll('.watch-item')].map((n) => n.dataset.sym);
+    const sameStructure = existing.length === watchlist.length && watchlist.every((s, i) => existing[i] === s);
+    if (sameStructure && existing.length) {
+      paintWatchlistPrices(el);
+      return;
+    }
+    el.innerHTML = markup;
+    bindWatchlistRoot(el, state);
   });
 }
 

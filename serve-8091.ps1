@@ -62,14 +62,33 @@ function Fetch-YahooQuote($sym) {
   } catch { return $null }
 }
 
+# Must match js/providers.js YAHOO_CANDLE_RANGES — wrong defaults (5m/5d for every
+# TF) collapse daily ranges onto 1–2 business days and crush the chart left.
+function Get-YahooCandleRange($resolution) {
+  $key = ([string]$resolution).ToUpperInvariant()
+  switch ($key) {
+    '1D'  { return @{ interval = '5m';  range = '1d' } }
+    '5D'  { return @{ interval = '15m'; range = '5d' } }
+    '1M'  { return @{ interval = '60m'; range = '1mo' } }
+    '6M'  { return @{ interval = '1d';  range = '6mo' } }
+    'YTD' { return @{ interval = '1d';  range = 'ytd' } }
+    '1Y'  { return @{ interval = '1d';  range = '1y' } }
+    '5Y'  { return @{ interval = '1d';  range = '5y' } }
+    'MAX' { return @{ interval = '1mo'; range = 'max' } }
+    '1'   { return @{ interval = '1m';  range = '1d' } }
+    '5'   { return @{ interval = '5m';  range = '5d' } }
+    '15'  { return @{ interval = '15m'; range = '5d' } }
+    '60'  { return @{ interval = '1h';  range = '1mo' } }
+    'D'   { return @{ interval = '1d';  range = '6mo' } }
+    default { return @{ interval = '5m'; range = '1d' } }
+  }
+}
+
 function Fetch-YahooCandles($sym, $resolution, $count) {
   $ysym = To-YahooSymbol $sym
-  $interval = "5m"
-  $range = "5d"
-  if ($resolution -eq "1") { $interval = "1m" }
-  if ($resolution -eq "15") { $interval = "15m" }
-  if ($resolution -eq "60") { $interval = "1h" }
-  if ($resolution -eq "D") { $interval = "1d"; $range = "6mo" }
+  $cfg = Get-YahooCandleRange $resolution
+  $interval = $cfg.interval
+  $range = $cfg.range
   $url = "https://query1.finance.yahoo.com/v8/finance/chart/${ysym}?interval=${interval}&range=${range}"
   try {
     $r = Invoke-RestMethod -Uri $url -UserAgent $UserAgent -TimeoutSec 15
@@ -224,13 +243,14 @@ function Handle-Api($req, $res) {
       Write-Json $res @{ error = "Invalid symbol" }
       return $true
     }
-    $resVal = $query["resolution"]
-    if (-not $resVal) { $resVal = "5" }
+    $resVal = $query["range"]
+    if (-not $resVal) { $resVal = $query["resolution"] }
+    if (-not $resVal) { $resVal = "1D" }
     $cnt = 120
     if ($query["count"]) {
       $parsedCnt = 0
       [void][int]::TryParse($query["count"], [ref]$parsedCnt)
-      if ($parsedCnt -gt 0) { $cnt = [Math]::Min(500, $parsedCnt) }
+      if ($parsedCnt -gt 0) { $cnt = [Math]::Min(2500, $parsedCnt) }
     }
     $candles = Fetch-YahooCandles $sym $resVal $cnt
     if ($candles) { Write-Json $res @{ candles = $candles }; return $true }

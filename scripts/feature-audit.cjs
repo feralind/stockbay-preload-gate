@@ -25,7 +25,7 @@ const checks = [
   ['Left resize markup', 'index.html', [/id="sidebar-left-resize"/]],
   ['Achievements render', 'js/ui/achievements.js', [/export function renderAchievements/, /achievements-grid/]],
   ['Achievements wired from ui barrel', 'js/ui.js', [/from '\.\/ui\/achievements\.js'/, /renderAchievements\(state\)/]],
-  ['Staff render', 'js/ui/staff.js', [/export function renderStaff/, /staff-hire-list/, /hire-brief/, /exitSpec|Exit Specialist|hire-lane-sell/]],
+  ['Staff render', 'js/ui/staff.js', [/export function renderStaff/, /staff-hire-list/, /hire-brief/, /exitSpec|Exit Specialist|hire-lane-sell/, /hr-tabs|staff-overview-cards|getNextHireRecommendation/]],
   ['Staff risk discipline', 'js/staff.js', [/STAFF_DEFAULT_MAX_POSITION_PCT/, /staffMaxBuyShares/, /exitSpec/, /listingConviction/, /STAFF_AI_MIN_CONFIDENCE/]],
   ['Staff wired from ui barrel', 'js/ui.js', [/from '\.\/ui\/staff\.js'/, /renderStaff\(state\)/]],
   ['Finance render', 'js/ui/finance.js', [/export function renderFinance/, /bank-list/, /export function setLoanDraftAmount/]],

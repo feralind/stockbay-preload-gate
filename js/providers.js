@@ -58,8 +58,43 @@ export async function proxyCandles(sym, range = '1D', count = 120) {
     const res = await fetch(`/api/candles?symbol=${encodeURIComponent(sym)}&range=${encodeURIComponent(range)}&resolution=${encodeURIComponent(range)}&count=${count}`);
     if (!res.ok) return null;
     const data = await res.json();
-    return data.candles || null;
+    const candles = data.candles || null;
+    // Stale/buggy local proxies used to return 5m bars for every TF — reject those.
+    if (!candlesLookPlausibleForRange(candles, range)) return null;
+    return candles;
   } catch { return null; }
+}
+
+/**
+ * Reject candle payloads that clearly don't span the requested range
+ * (e.g. 2 days of 5m bars labeled as 6M / MAX).
+ */
+export function candlesLookPlausibleForRange(candles, range) {
+  if (!Array.isArray(candles) || candles.length < 2) return false;
+  const times = candles.map((c) => Number(c?.time)).filter((t) => Number.isFinite(t) && t > 0);
+  if (times.length < 2) return false;
+  const first = Math.min(...times);
+  const last = Math.max(...times);
+  const span = last - first;
+  const key = String(range || '1D').toUpperCase();
+  /** Minimum acceptable span (seconds) per UI range key. */
+  const minSpan = {
+    '1D': 30 * 60,
+    '5D': 1.5 * 86400,
+    '1M': 10 * 86400,
+    '6M': 60 * 86400,
+    YTD: 14 * 86400,
+    '1Y': 180 * 86400,
+    '5Y': 600 * 86400,
+    MAX: 365 * 86400,
+    '1': 20 * 60,
+    '5': 1 * 86400,
+    '15': 1 * 86400,
+    '60': 5 * 86400,
+    D: 60 * 86400,
+  }[key];
+  if (minSpan != null && span < minSpan) return false;
+  return true;
 }
 
 async function fetchYahooCandlesDirect(sym, range = '1D', count = 120) {
@@ -160,7 +195,7 @@ export async function fetchCandlesFromProviders(sym, range = '1D', count = 120) 
   if (proxy?.length) return proxy;
 
   const yahoo = await fetchYahooCandlesDirect(sym, range, count);
-  if (yahoo?.length) return yahoo;
+  if (yahoo?.length && candlesLookPlausibleForRange(yahoo, range)) return yahoo;
 
   // Finnhub candles fallback
   if (CONFIG.FINNHUB_API_KEY && CONFIG.FINNHUB_API_KEY !== 'YOUR_FINNHUB_API_KEY') {
@@ -178,7 +213,8 @@ export async function fetchCandlesFromProviders(sym, range = '1D', count = 120) 
           const candles = data.t.map((t, i) => ({
             time: t, open: data.o[i], high: data.h[i], low: data.l[i], close: data.c[i], volume: data.v[i],
           })).filter(isValidCandle);
-          return count > 0 ? candles.slice(-count) : candles;
+          const sliced = count > 0 ? candles.slice(-count) : candles;
+          if (candlesLookPlausibleForRange(sliced, range)) return sliced;
         }
       }
     } catch { /* fall through */ }

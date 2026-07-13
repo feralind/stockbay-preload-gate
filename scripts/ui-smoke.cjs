@@ -143,20 +143,42 @@ async function main() {
     const cashAfterBuy = await page.evaluate(() => window.__stockwayTest.getCash());
     assert(cashAfterBuy < cashBefore, `buy should spend cash (${cashBefore} → ${cashAfterBuy})`);
 
+    // Clear post-trade coachmarks so later chrome clicks are not intercepted
+    for (let i = 0; i < 8; i++) {
+      const visible = await page.locator('#coachmark-root:not(.hidden) #coachmark-skip, #coachmark-root:not(.hidden) #coachmark-next').first().isVisible().catch(() => false);
+      if (!visible) break;
+      await page.locator('#coachmark-skip, #coachmark-next').first().click({ force: true }).catch(() => {});
+      await page.waitForTimeout(100);
+    }
+
     // Watchlist
     const watchBefore = await page.evaluate(() => window.__stockwayTest.getWatchCount());
-    await page.locator('#btn-watch-symbol, #btn-add-watch').first().click();
+    await page.locator('#btn-watch-symbol, #btn-trade-add-watch').first().click();
     await page.waitForTimeout(200);
     const watchAfter = await page.evaluate(() => window.__stockwayTest.getWatchCount());
     assert(watchAfter >= watchBefore, 'watchlist should not shrink after add');
     assert(watchAfter > 0, 'watchlist should have at least one symbol');
 
-    // Hire staff
+    // Hire staff (Compact Console: Hire buttons live on the Hire tab)
     await page.evaluate(() => window.__stockwayTest.ensureSmokeStaffUnlock());
     await page.locator('.nav-item[data-view="staff"]').click();
-    await page.waitForSelector('.hire-btn', { timeout: 15000 });
+    await page.waitForSelector('#view-staff.active', { timeout: 10000 });
+    await page.evaluate(() => {
+      document.querySelectorAll('.hr-tab').forEach((btn) => {
+        const on = btn.getAttribute('data-staff-tab') === 'hire';
+        btn.classList.toggle('is-active', on);
+        btn.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-staff-panel]').forEach((panel) => {
+        const on = panel.getAttribute('data-staff-panel') === 'hire';
+        panel.classList.toggle('hidden', !on);
+        if (on) panel.removeAttribute('hidden');
+        else panel.setAttribute('hidden', '');
+      });
+    });
+    await page.waitForSelector('.hire-btn', { state: 'visible', timeout: 15000 });
     const staffBefore = await page.evaluate(() => window.__stockwayTest.getStaffCount());
-    await page.locator('.hire-btn').first().click();
+    await page.locator('.hire-btn').first().click({ force: true });
     if (await dialogOk.isVisible().catch(() => false)) {
       await dialogOk.click();
     }

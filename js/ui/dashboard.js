@@ -2,6 +2,7 @@
 /**
  * Dashboard view render — extracted from ui.js (Stage C1).
  * Section 2–4: Standing, office ladder, mega goals, luxury sinks.
+ * Market overview chrome: index KPIs, movers ribbon, dual-line equity chart, discover grid.
  * Perf: fingerprint sections and skip identical DOM writes.
  */
 
@@ -29,12 +30,16 @@ import { getPlayerStanding } from '../meta.js';
 import { getEquity } from '../portfolio.js';
 import { getProfile } from '../profile.js';
 import { getRelicEffect, getRelicSlotLimit } from '../relics.js';
+import { getSymbolName } from '../symbols.js';
 import { THE_SEAT } from '../the-seat.js';
 import { getVaultBookValue, getVaultDeskAura } from '../vault.js';
-import { escapeAttr, escapeHtml, fmt } from './shared.js';
+import { setSelectedSym } from './selection.js';
+import { escapeAttr, escapeHtml, fmt, quoteForDisplay } from './shared.js';
 
 /** @type {(viewId: string) => void} */
 let switchView = () => {};
+/** @type {(sym: string) => void} */
+let selectSymbol = () => {};
 
 /** Soft eligibility helper — re-export for tests / feature audit (visuals use purchased tier). */
 export const getSoftOfficeStage = getEligibleOfficeTier;
@@ -47,6 +52,20 @@ export { getNextNetWorthMilestone };
 const dashSnap = {};
 
 let dashGotoBound = false;
+/** @type {'1D'|'5D'|'1M'|'YTD'|'6M'|'1Y'|'5Y'|'MAX'} */
+let equityTf = 'MAX';
+/** @type {Array<{ t?: number, equity: number, day?: number }> } */
+let lastEquityHist = [];
+/** @type {number} */
+let lastTradingEquity = 0;
+/** @type {{ pts: number[], sma: number[], labels: string[], min: number, max: number } | null} */
+let chartGeom = null;
+let chartHoverBound = false;
+
+const DASH_TEAL = '#2dd4bf';
+const DASH_GOLD = '#eab308';
+const INDEX_SYMS = ['SPY', 'QQQ', 'DIA', 'IWM', 'GLD'];
+const RIBBON_FALLBACK = ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'AMZN', 'META', 'AMD', 'SLV', 'USO', 'TLT'];
 
 /**
  * @param {HTMLElement | null} el
@@ -84,6 +103,29 @@ function ensureDashGotoDelegation() {
   dashGotoBound = true;
   root.addEventListener('click', (e) => {
     const t = /** @type {HTMLElement} */ (e.target);
+    const tfBtn = t?.closest?.('[data-eq-tf]');
+    if (tfBtn instanceof HTMLElement) {
+      const next = /** @type {typeof equityTf} */ (tfBtn.getAttribute('data-eq-tf') || 'MAX');
+      if (next !== equityTf) {
+        equityTf = next;
+        root.querySelectorAll('[data-eq-tf]').forEach((btn) => {
+          btn.classList.toggle('active', btn.getAttribute('data-eq-tf') === equityTf);
+        });
+        dashSnap.chartSig = '';
+        drawEquityChart(lastEquityHist, lastTradingEquity);
+      }
+      return;
+    }
+    const disc = t?.closest?.('[data-dash-sym]');
+    if (disc instanceof HTMLElement) {
+      const sym = disc.getAttribute('data-dash-sym');
+      if (sym) {
+        const key = setSelectedSym(sym);
+        switchView('trade');
+        selectSymbol(key || sym);
+      }
+      return;
+    }
     const btn = t?.closest?.('[data-goto]');
     if (!(btn instanceof HTMLElement)) return;
     const viewId = btn.getAttribute('data-goto') || btn.dataset?.goto;
@@ -300,45 +342,445 @@ function renderMegaGoalCard(state, active) {
 
 function ensureDashStatsShell(stats) {
   if (!stats) return false;
-  const nums = stats.querySelectorAll('.dash-stat-card .stat-num');
+  const cards = stats.querySelectorAll('.dash-index-card');
   const wired = stats.querySelector('[data-gloss="net-worth"]') && stats.querySelector('[data-gloss="credit-score"]');
-  if (nums.length === 4 && wired) return true;
+  if (cards.length === 5 && wired && dashSnap.statsShell === '3') return true;
   stats.innerHTML = `
-    <div class="dash-stat-card interactive-card" data-gloss="cash"><span class="stat-lbl">Cash</span><span class="stat-num"></span></div>
-    <div class="dash-stat-card interactive-card" data-gloss="net-worth"><span class="stat-lbl">Net Worth</span><span class="stat-num"></span></div>
-    <div class="dash-stat-card interactive-card" data-gloss="credit-score"><span class="stat-lbl">Debt</span><span class="stat-num"></span></div>
-    <div class="dash-stat-card interactive-card"><span class="stat-lbl">REP</span><span class="stat-num"></span></div>
+    <div class="dash-stat-card dash-index-card interactive-card" data-gloss="cash">
+      <span class="stat-lbl">Cash</span>
+      <span class="stat-num" data-stat="cash"></span>
+      <span class="dash-index-delta muted" data-stat-delta="cash">Buying power</span>
+    </div>
+    <div class="dash-stat-card dash-index-card interactive-card" data-gloss="net-worth">
+      <span class="stat-lbl">Net Worth</span>
+      <span class="stat-num" data-stat="nw"></span>
+      <span class="dash-index-delta" data-stat-delta="nw"></span>
+    </div>
+    <div class="dash-stat-card dash-index-card interactive-card" data-index-sym="SPY">
+      <span class="stat-lbl">S&amp;P 500</span>
+      <span class="stat-num" data-stat="spy"></span>
+      <span class="dash-index-delta" data-stat-delta="spy"></span>
+    </div>
+    <div class="dash-stat-card dash-index-card interactive-card" data-gloss="credit-score">
+      <span class="stat-lbl">Debt</span>
+      <span class="stat-num" data-stat="debt"></span>
+      <span class="dash-index-delta muted" data-stat-delta="debt">Outstanding</span>
+    </div>
+    <div class="dash-stat-card dash-index-card interactive-card">
+      <span class="stat-lbl">REP</span>
+      <span class="stat-num" data-stat="rep"></span>
+      <span class="dash-index-delta muted" data-stat-delta="rep">Standing</span>
+    </div>
   `;
-  dashSnap.statsShell = '2';
+  dashSnap.statsShell = '3';
   dashSnap.statCash = '';
   dashSnap.statNw = '';
+  dashSnap.statSpy = '';
   dashSnap.statDebt = '';
   dashSnap.statRep = '';
   return true;
 }
 
-function renderDashStats(state, net, debt, meta) {
+function renderDashStats(state, net, debt, meta, delta) {
   const stats = document.getElementById('dash-stats');
   if (!stats) return;
   ensureDashStatsShell(stats);
-  const nums = stats.querySelectorAll('.dash-stat-card .stat-num');
-  if (nums.length !== 4) return;
+
   const cash = fmt(state.portfolio.cash);
   const nw = fmt(net);
   const debtTxt = fmt(debt);
   const rep = String(meta.reputation ?? 0);
-  if (dashSnap.statCash !== cash) { dashSnap.statCash = cash; nums[0].textContent = cash; }
-  if (dashSnap.statNw !== nw) { dashSnap.statNw = nw; nums[1].textContent = nw; }
-  if (dashSnap.statDebt !== debtTxt) {
+  const spyQ = quoteForDisplay('SPY');
+  const spyPx = spyQ?.price > 0
+    ? spyQ.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : '—';
+  const spyChg = spyQ?.change ?? 0;
+  const spyPct = spyQ?.changePct ?? 0;
+
+  const cashEl = stats.querySelector('[data-stat="cash"]');
+  const nwEl = stats.querySelector('[data-stat="nw"]');
+  const spyEl = stats.querySelector('[data-stat="spy"]');
+  const debtEl = stats.querySelector('[data-stat="debt"]');
+  const repEl = stats.querySelector('[data-stat="rep"]');
+  const nwDelta = stats.querySelector('[data-stat-delta="nw"]');
+  const spyDelta = stats.querySelector('[data-stat-delta="spy"]');
+
+  if (cashEl && dashSnap.statCash !== cash) { dashSnap.statCash = cash; cashEl.textContent = cash; }
+  if (nwEl && dashSnap.statNw !== nw) { dashSnap.statNw = nw; nwEl.textContent = nw; }
+  if (spyEl && dashSnap.statSpy !== spyPx) { dashSnap.statSpy = spyPx; spyEl.textContent = spyPx; }
+  if (debtEl && dashSnap.statDebt !== debtTxt) {
     dashSnap.statDebt = debtTxt;
-    nums[2].textContent = debtTxt;
-    nums[2].classList.toggle('down', !!debt);
+    debtEl.textContent = debtTxt;
+    debtEl.classList.toggle('down', !!debt);
   }
-  if (dashSnap.statRep !== rep) { dashSnap.statRep = rep; nums[3].textContent = rep; }
+  if (repEl && dashSnap.statRep !== rep) { dashSnap.statRep = rep; repEl.textContent = rep; }
+
+  if (nwDelta) {
+    const dTxt = `${delta >= 0 ? '+' : ''}$${Math.round(delta).toLocaleString()}`;
+    const pct = net ? (delta / Math.max(Math.abs(net - delta), 1)) * 100 : 0;
+    const html = `${delta >= 0 ? '▲' : '▼'} ${dTxt} <em>${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</em>`;
+    if (dashSnap.statNwDelta !== html) {
+      dashSnap.statNwDelta = html;
+      nwDelta.className = `dash-index-delta ${delta >= 0 ? 'up' : 'down'}`;
+      nwDelta.innerHTML = html;
+    }
+  }
+  if (spyDelta && spyQ?.price > 0) {
+    const html = `${spyChg >= 0 ? '▲' : '▼'} ${spyChg >= 0 ? '+' : ''}${Number(spyChg).toFixed(2)} <em>${spyPct >= 0 ? '+' : ''}${Number(spyPct).toFixed(2)}%</em>`;
+    if (dashSnap.statSpyDelta !== html) {
+      dashSnap.statSpyDelta = html;
+      spyDelta.className = `dash-index-delta ${spyPct >= 0 ? 'up' : 'down'}`;
+      spyDelta.innerHTML = html;
+    }
+  }
+}
+
+
+/**
+ * @param {object} state
+ * @returns {{ sym: string, name: string, price: number, changePct: number }[]}
+ */
+function collectMovers(state) {
+  /** @type {Map<string, { sym: string, name: string, price: number, changePct: number }>} */
+  const map = new Map();
+  const push = (sym, name, price, changePct) => {
+    const key = String(sym || '').toUpperCase();
+    if (!key || !(price > 0) || map.has(key)) return;
+    map.set(key, { sym: key, name: name || getSymbolName(key) || key, price, changePct: Number(changePct) || 0 });
+  };
+  (state.listings || []).forEach((l) => {
+    const q = quoteForDisplay(l.sym);
+    push(l.sym, l.name || getSymbolName(l.sym), q?.price || l.marketPrice || l.price, q?.changePct ?? l.changePct);
+  });
+  INDEX_SYMS.concat(RIBBON_FALLBACK).forEach((sym) => {
+    const q = quoteForDisplay(sym);
+    if (q?.price > 0) push(sym, getSymbolName(sym), q.price, q.changePct);
+  });
+  (state.watchlist || []).forEach((sym) => {
+    const q = quoteForDisplay(sym);
+    if (q?.price > 0) push(sym, getSymbolName(sym), q.price, q.changePct);
+  });
+  return [...map.values()].sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+}
+
+function sparkSvg(sym, price, changePct) {
+  const up = (changePct ?? 0) >= 0;
+  const n = 12;
+  const w = 72;
+  const h = 28;
+  const seed = [...String(sym)].reduce((a, c) => a + c.charCodeAt(0), 0);
+  const pts = [];
+  let v = price > 0 ? price * (1 - (changePct || 0) / 200) : 100;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const wobble = Math.sin((seed + i * 17) * 0.37) * 0.008 + Math.cos((seed + i) * 0.21) * 0.005;
+    v = Math.max(0.01, v * (1 + wobble + ((changePct || 0) / 100) * 0.02 * t));
+    pts.push(v);
+  }
+  pts[pts.length - 1] = price > 0 ? price : pts[pts.length - 1];
+  const min = Math.min(...pts);
+  const max = Math.max(...pts);
+  const span = max - min || 1;
+  const coords = pts.map((p, i) => {
+    const x = (i / (n - 1)) * (w - 2) + 1;
+    const y = h - 2 - ((p - min) / span) * (h - 4);
+    return [x, y];
+  });
+  const line = coords.map((c, i) => `${i ? 'L' : 'M'}${c[0].toFixed(1)},${c[1].toFixed(1)}`).join(' ');
+  const last = coords[coords.length - 1];
+  return `<svg class="dash-mini-spark ${up ? 'up' : 'down'}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <path class="spark-line" d="${line}"></path>
+    <circle class="dash-spark-dot" cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.2"></circle>
+  </svg>`;
+}
+
+function renderTickerRibbon(state) {
+  const el = document.getElementById('dash-ticker-ribbon');
+  if (!el) return;
+  const movers = collectMovers(state).slice(0, 8);
+  if (!movers.length) {
+    setHtmlIfChanged(el, 'ribbon', '<div class="empty">Market tape warms up as quotes load.</div>');
+    return;
+  }
+  const html = movers.map((m) => {
+    const up = m.changePct >= 0;
+    const cls = up ? 'up' : 'down';
+    const arrow = up ? '▲' : '▼';
+    return `<button type="button" class="dash-ticker-card" data-dash-sym="${escapeAttr(m.sym)}" title="Open ${escapeAttr(m.sym)}">
+      <span class="dash-ticker-trend ${cls}">${arrow}</span>
+      <span class="dash-ticker-name">${escapeHtml(m.name)}</span>
+      <span class="dash-ticker-price">${m.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      <span class="dash-ticker-pct ${cls}">${up ? '+' : ''}${m.changePct.toFixed(2)}%</span>
+    </button>`;
+  }).join('');
+  setHtmlIfChanged(el, 'ribbon', html);
+}
+
+function renderDiscover(state) {
+  const el = document.getElementById('dash-discover');
+  if (!el) return;
+  const watch = Array.isArray(state.watchlist) ? state.watchlist : [];
+  const pool = collectMovers(state);
+  const prefer = [...new Set([...watch, ...INDEX_SYMS, ...pool.map((m) => m.sym)])];
+  const cards = prefer.slice(0, 8).map((sym) => {
+    const q = quoteForDisplay(sym);
+    const price = q?.price || 0;
+    const pct = q?.changePct || 0;
+    const name = getSymbolName(sym) || sym;
+    if (!(price > 0)) return '';
+    return `<button type="button" class="dash-discover-card" data-dash-sym="${escapeAttr(sym)}">
+      <div class="dash-discover-top">
+        <span class="dash-discover-name">${escapeHtml(name)}</span>
+        <span class="dash-discover-ticker">${escapeHtml(sym)}</span>
+      </div>
+      <div class="dash-discover-price">${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+      ${sparkSvg(sym, price, pct)}
+    </button>`;
+  }).filter(Boolean).join('');
+  setHtmlIfChanged(el, 'discover', cards || '<div class="empty">Add names to your watchlist to fill Discover.</div>');
+}
+
+function renderAssetTable(state) {
+  const recent = document.getElementById('dash-recent');
+  if (!recent) return;
+  const trades = (state.portfolio.history || []).slice(0, 8);
+  const movers = collectMovers(state).slice(0, 6);
+  let rows = '';
+  if (trades.length) {
+    rows = trades.map((t) => {
+      const q = quoteForDisplay(t.sym);
+      const pct = q?.changePct || 0;
+      const up = pct >= 0;
+      const px = Number(t.price) || q?.price || 0;
+      return `<tr class="dash-asset-row" data-dash-sym="${escapeAttr(t.sym)}">
+        <td class="dash-asset-check"><span class="dash-check" aria-hidden="true"></span></td>
+        <td><strong>${escapeHtml(t.action)} ${escapeHtml(t.sym)}</strong><div class="muted-text">${escapeHtml(getSymbolName(t.sym) || '')}</div></td>
+        <td class="num">${px.toFixed(2)}</td>
+        <td class="num ${up ? 'up' : 'down'}">${up ? '+' : ''}${(q?.change || 0).toFixed(2)}</td>
+        <td><span class="dash-pct-pill ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${up ? '+' : ''}${pct.toFixed(2)}%</span></td>
+        <td class="num muted-text">×${t.shares}</td>
+      </tr>`;
+    }).join('');
+  } else if (movers.length) {
+    rows = movers.map((m) => {
+      const up = m.changePct >= 0;
+      const chg = m.price * (m.changePct / 100);
+      return `<tr class="dash-asset-row" data-dash-sym="${escapeAttr(m.sym)}">
+        <td class="dash-asset-check"><span class="dash-check" aria-hidden="true"></span></td>
+        <td><strong>${escapeHtml(m.name)}</strong><div class="muted-text">${escapeHtml(m.sym)}</div></td>
+        <td class="num">${m.price.toFixed(2)}</td>
+        <td class="num ${up ? 'up' : 'down'}">${up ? '+' : ''}${chg.toFixed(2)}</td>
+        <td><span class="dash-pct-pill ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${up ? '+' : ''}${m.changePct.toFixed(2)}%</span></td>
+        <td class="num muted-text">Tape</td>
+      </tr>`;
+    }).join('');
+  }
+  const html = rows
+    ? `<table class="dash-tape-table"><thead><tr>
+        <th></th><th>Name</th><th>Price</th><th>Change</th><th>%</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table>`
+    : '<div class="empty">No flips yet — open the Trade Desk and make your first move.</div>';
+  setHtmlIfChanged(recent, 'recent', html);
+}
+
+/**
+ * @param {Array<{ t?: number, equity: number, day?: number, phase?: string }>} hist
+ * @param {string} tf
+ */
+function filterEquityHist(hist, tf) {
+  if (!hist?.length) return [];
+  if (tf === 'MAX') return hist.slice();
+  const maxDay = Math.max(...hist.map((p) => Number(p.day) || 0));
+  const dayWindow = {
+    '1D': 1,
+    '5D': 5,
+    '1M': 22,
+    YTD: Math.max(1, maxDay),
+    '6M': 130,
+    '1Y': 260,
+    '5Y': 9999,
+  }[tf] ?? Infinity;
+  if (Number.isFinite(dayWindow) && maxDay > 0) {
+    const minDay = maxDay - dayWindow + 1;
+    const byDay = hist.filter((p) => (Number(p.day) || 0) >= minDay);
+    if (byDay.length >= 2) return byDay;
+  }
+  const now = hist[hist.length - 1]?.t || Date.now();
+  const msWindow = {
+    '1D': 1,
+    '5D': 5,
+    '1M': 30,
+    YTD: 365,
+    '6M': 180,
+    '1Y': 365,
+    '5Y': 365 * 5,
+  }[tf];
+  if (!msWindow) return hist.slice();
+  const cut = now - msWindow * 86400000;
+  const byTime = hist.filter((p) => (p.t || 0) >= cut);
+  return byTime.length >= 2 ? byTime : hist.slice(-Math.max(2, Math.min(hist.length, msWindow + 1)));
+}
+
+function smaSeries(pts, window = 5) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const from = Math.max(0, i - window + 1);
+    const slice = pts.slice(from, i + 1);
+    out.push(slice.reduce((a, b) => a + b, 0) / slice.length);
+  }
+  return out;
+}
+
+function ensureChartHover() {
+  if (chartHoverBound) return;
+  const canvas = document.getElementById('equity-chart');
+  if (!(canvas instanceof HTMLCanvasElement)) return;
+  chartHoverBound = true;
+  canvas.addEventListener('mousemove', (e) => {
+    if (!chartGeom?.pts?.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((e.clientX - rect.left) / rect.width) * canvas.width;
+    const padL = 44;
+    const padR = 12;
+    const plotW = canvas.width - padL - padR;
+    const i = Math.round(((x - padL) / plotW) * (chartGeom.pts.length - 1));
+    const idx = Math.max(0, Math.min(chartGeom.pts.length - 1, i));
+    paintEquityChart(canvas, chartGeom, idx);
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (!chartGeom) return;
+    paintEquityChart(canvas, chartGeom, -1);
+  });
+}
+
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {{ pts: number[], sma: number[], labels: string[], min: number, max: number }} geom
+ * @param {number} hoverIdx
+ */
+function paintEquityChart(canvas, geom, hoverIdx = -1) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  const padL = 44;
+  const padR = 12;
+  const padT = 12;
+  const padB = 22;
+  const { pts, sma, min, max } = geom;
+  const span = max - min || 1;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const xAt = (i) => padL + (i / Math.max(pts.length - 1, 1)) * plotW;
+  const yAt = (v) => padT + plotH - ((v - min) / span) * plotH;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+  ctx.fillStyle = '#71717a';
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + (plotH * g) / 4;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR, y);
+    ctx.stroke();
+    const val = max - (span * g) / 4;
+    ctx.fillText(`$${Math.round(val).toLocaleString()}`, 4, y + 3);
+  }
+
+  // Gold SMA
+  if (sma.length > 1) {
+    ctx.strokeStyle = DASH_GOLD;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    sma.forEach((v, i) => {
+      const x = xAt(i);
+      const y = yAt(v);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  // Teal equity
+  ctx.strokeStyle = DASH_TEAL;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  pts.forEach((v, i) => {
+    const x = xAt(i);
+    const y = yAt(v);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  if (hoverIdx >= 0 && hoverIdx < pts.length) {
+    const x = xAt(hoverIdx);
+    const y = yAt(pts[hoverIdx]);
+    // Hatch band
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x - 10, padT, 20, plotH);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 1;
+    for (let hx = x - 14; hx < x + 14; hx += 3) {
+      ctx.beginPath();
+      ctx.moveTo(hx, padT);
+      ctx.lineTo(hx + 8, padT + plotH);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(250,250,250,0.35)';
+    ctx.beginPath();
+    ctx.moveTo(x, padT);
+    ctx.lineTo(x, padT + plotH);
+    ctx.stroke();
+    ctx.fillStyle = DASH_TEAL;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+    ctx.fill();
+    const label = geom.labels[hoverIdx] || '';
+    const tip = `${label}  $${Math.round(pts[hoverIdx]).toLocaleString()}`;
+    ctx.fillStyle = 'rgba(15,15,18,0.92)';
+    const tw = ctx.measureText(tip).width + 12;
+    const tx = Math.min(Math.max(padL, x - tw / 2), w - padR - tw);
+    ctx.fillRect(tx, 2, tw, 16);
+    ctx.fillStyle = '#e4e4e7';
+    ctx.fillText(tip, tx + 6, 13);
+  }
+}
+
+export function drawEquityChart(hist, current) {
+  const canvas = document.getElementById('equity-chart');
+  if (!(canvas instanceof HTMLCanvasElement)) return;
+  const filtered = filterEquityHist(hist || [], equityTf);
+  let pts = filtered.length ? filtered.map((p) => p.equity) : [current];
+  if (pts.length === 1) pts = [pts[0], pts[0]];
+  const sma = smaSeries(pts, Math.max(3, Math.min(8, Math.floor(pts.length / 4) || 3)));
+  const labels = filtered.length
+    ? filtered.map((p) => (p.day != null ? `Day ${p.day}` : ''))
+    : ['Now', 'Now'];
+  while (labels.length < pts.length) labels.push('');
+  const min = Math.min(...pts, ...sma) * 0.998;
+  const max = Math.max(...pts, ...sma) * 1.002 || min + 1;
+  const sig = `${equityTf}:${pts.length}:${pts[0]}:${pts[pts.length - 1]}:${Math.round(pts.reduce((a, b) => a + b, 0))}`;
+  if (dashSnap.chartSig === sig && chartGeom) return;
+  dashSnap.chartSig = sig;
+  chartGeom = { pts, sma, labels, min, max };
+  ensureChartHover();
+  paintEquityChart(canvas, chartGeom, -1);
 }
 
 export function renderDashboard(state) {
   ensureDashGotoDelegation();
+  if (typeof state?.onSelectSymbol === 'function') {
+    selectSymbol = (sym) => { state.onSelectSymbol?.(sym); };
+  }
 
   const meta = state.meta || {};
   const equity = getEquity(state.portfolio);
@@ -347,8 +789,10 @@ export function renderDashboard(state) {
   const net = equity - debt + vaultBook;
   const tradingEquity = equity - debt;
   const hist = meta.equityHistory || [];
+  lastEquityHist = hist;
   const startEq = hist[0]?.equity ?? tradingEquity;
   const delta = tradingEquity - startEq;
+  lastTradingEquity = tradingEquity;
 
   const profile = getProfile();
   const standing = getPlayerStanding(state, {
@@ -376,7 +820,16 @@ export function renderDashboard(state) {
   renderDashStanding(standing, state);
   renderOfficeStageCard(state, office, net, standing.rep);
   renderMegaGoalCard(state, activeMega);
-  renderDashStats(state, net, debt, meta);
+  renderDashStats(state, net, debt, meta, delta);
+  renderTickerRibbon(state);
+  renderDiscover(state);
+  renderAssetTable(state);
+
+  const priceEl = document.getElementById('dash-chart-price');
+  if (priceEl) setTextIfChanged(priceEl, 'chartPrice', fmt(tradingEquity));
+
+  const crumbs = document.getElementById('dash-chart-crumbs');
+  if (crumbs) setTextIfChanged(crumbs, 'crumbs', 'HOME › TRADING EQUITY');
 
   const deltaEl = document.getElementById('dash-equity-delta');
   if (deltaEl) {
@@ -390,6 +843,11 @@ export function renderDashboard(state) {
   if (chartNote instanceof HTMLElement && !chartNote.hasAttribute('data-gloss')) {
     chartNote.setAttribute('data-gloss', 'net-worth');
   }
+
+  // Sync TF active state
+  document.querySelectorAll('#dash-equity-tfs [data-eq-tf]').forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-eq-tf') === equityTf);
+  });
 
   const ch = meta.challenge;
   const chBox = document.getElementById('dash-challenge');
@@ -414,15 +872,6 @@ export function renderDashboard(state) {
   }
 
   drawEquityChart(hist, tradingEquity);
-
-  const recent = document.getElementById('dash-recent');
-  if (recent) {
-    const trades = (state.portfolio.history || []).slice(0, 6);
-    const recentHtml = trades.length
-      ? trades.map((t) => `<div class="dash-row"><span>${escapeHtml(t.action)} ${escapeHtml(t.sym)}</span><span>×${t.shares} @ $${Number(t.price).toFixed(2)}</span></div>`).join('')
-      : '<div class="empty">No flips yet — open the Trade Desk and make your first move.</div>';
-    setHtmlIfChanged(recent, 'recent', recentHtml);
-  }
 
   const firm = document.getElementById('dash-firm');
   if (firm) {
@@ -464,30 +913,4 @@ export function renderDashboard(state) {
       : identity + '<div class="empty">Your best runs appear here — grow equity to set a record.</div>';
     setHtmlIfChanged(lb, 'leaderboard', lbHtml);
   }
-}
-
-export function drawEquityChart(hist, current) {
-  const canvas = document.getElementById('equity-chart');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
-  const pts = hist.length ? hist.map((p) => p.equity) : [current];
-  if (pts.length === 1) pts.push(pts[0]);
-  const sig = `${pts.length}:${pts[0]}:${pts[pts.length - 1]}:${Math.round(pts.reduce((a, b) => a + b, 0))}`;
-  if (dashSnap.chartSig === sig) return;
-  dashSnap.chartSig = sig;
-  ctx.clearRect(0, 0, w, h);
-  const min = Math.min(...pts) * 0.998;
-  const max = Math.max(...pts) * 1.002 || min + 1;
-  ctx.strokeStyle = pts[pts.length - 1] >= pts[0] ? '#3fb950' : '#f85149';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  pts.forEach((v, i) => {
-    const x = (i / (pts.length - 1)) * (w - 20) + 10;
-    const y = h - 10 - ((v - min) / (max - min || 1)) * (h - 20);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
 }

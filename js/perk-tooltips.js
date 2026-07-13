@@ -144,10 +144,10 @@ export const PERK_DOSSIERS = {
 };
 
 /**
+ * Inline dossier for perk cards (no floating tooltip).
  * @param {string} perkId
- * @param {{ owned?: boolean, canBuy?: boolean, statusLabel?: string }} [ctx]
  */
-export function buildPerkTooltipHtml(perkId, ctx = {}) {
+export function buildPerkInlineHtml(perkId) {
   const perk = PERKS[perkId];
   const dossier = PERK_DOSSIERS[perkId];
   if (!perk || !dossier) return '';
@@ -162,36 +162,40 @@ export function buildPerkTooltipHtml(perkId, ctx = {}) {
   if (prereqs.length) reqs.push(`Requires ${prereqs.join(', ')}`);
 
   const effects = dossier.effects
-    .map((line) => `<li><span class="perk-tip-stat">${escapeTip(line)}</span></li>`)
+    .map((line) => `<li>${escapeTip(line)}</li>`)
     .join('');
   const notes = (dossier.notes || [])
-    .map((line) => `<p class="perk-tip-note">${escapeTip(line)}</p>`)
+    .map((line) => `<p class="perk-inline-note">${escapeTip(line)}</p>`)
     .join('');
 
-  const status = ctx.statusLabel
-    ? `<span class="perk-tip-status">${escapeTip(ctx.statusLabel)}</span>`
-    : '';
-
   return `
-    <div class="perk-tip-card perk-tip-t${perk.tier || 1}" role="tooltip">
-      <header class="perk-tip-head">
-        <div class="perk-tip-name">${escapeTip(perk.name)}</div>
-        <div class="perk-tip-meta">Tier ${perk.tier} · ${escapeTip(perk.tierLabel || '')}${status ? ` · ${status}` : ''}</div>
-      </header>
-      <section class="perk-tip-block">
-        <div class="perk-tip-label">Purpose</div>
-        <p class="perk-tip-point">${escapeTip(dossier.point)}</p>
-      </section>
-      <section class="perk-tip-block">
-        <div class="perk-tip-label">Effects</div>
-        <ul class="perk-tip-effects">${effects}</ul>
-      </section>
-      <section class="perk-tip-block">
-        <div class="perk-tip-label">Requirements</div>
-        <p class="perk-tip-reqs">${escapeTip(reqs.join(' · '))}</p>
-      </section>
-      ${notes ? `<section class="perk-tip-block perk-tip-notes">${notes}</section>` : ''}
+    <div class="perk-inline-dossier">
+      <div class="perk-inline-block">
+        <div class="perk-inline-label">Purpose</div>
+        <p class="perk-inline-point">${escapeTip(dossier.point)}</p>
+      </div>
+      <div class="perk-inline-block">
+        <div class="perk-inline-label">Effects</div>
+        <ul class="perk-inline-effects">${effects}</ul>
+      </div>
+      <div class="perk-inline-block">
+        <div class="perk-inline-label">Requirements</div>
+        <p class="perk-inline-reqs">${escapeTip(reqs.join(' · '))}</p>
+      </div>
+      ${notes ? `<div class="perk-inline-block perk-inline-notes">${notes}</div>` : ''}
     </div>`;
+}
+
+/**
+ * @param {string} perkId
+ * @param {{ owned?: boolean, canBuy?: boolean, statusLabel?: string }} [ctx]
+ * @deprecated Floating tooltips removed — use buildPerkInlineHtml.
+ */
+export function buildPerkTooltipHtml(perkId, ctx = {}) {
+  const perk = PERKS[perkId];
+  const inner = buildPerkInlineHtml(perkId);
+  if (!perk || !inner) return '';
+  return `<div class="perk-tip-card"><div class="perk-tip-name">${escapeTip(perk.name)}</div>${inner}</div>`;
 }
 
 function escapeTip(s) {
@@ -202,271 +206,13 @@ function escapeTip(s) {
     .replace(/"/g, '&quot;');
 }
 
-const HOVER_MS = 500;
-/** Grace so DOM re-renders (market ticks) don't flash the tip off. */
-const HIDE_GRACE_MS = 180;
-
-let tipEl = null;
-let tipTimer = null;
-let hideTimer = null;
-/** @type {HTMLElement | null} */
-let tipAnchor = null;
-/** Survives card re-render when the live DOM node is replaced. */
-let tipOpenPerkId = null;
-/** @type {WeakMap<HTMLElement, AbortController>} */
-const containerAborts = new WeakMap();
-/** @type {((id: string) => string) | null} */
-let statusGetter = null;
-let lastPointerX = 0;
-let lastPointerY = 0;
-let globalGuardsBound = false;
-
-function ensureTipEl() {
-  if (tipEl && tipEl.isConnected) return tipEl;
-  const existing = document.getElementById('perk-tooltip-root');
-  if (existing) {
-    tipEl = /** @type {HTMLElement} */ (existing);
-    return tipEl;
-  }
-  tipEl = document.createElement('div');
-  tipEl.id = 'perk-tooltip-root';
-  tipEl.className = 'perk-tooltip-root hidden';
-  tipEl.setAttribute('aria-hidden', 'true');
-  document.body.appendChild(tipEl);
-  return tipEl;
-}
-
-function clearShowTimer() {
-  if (tipTimer) {
-    clearTimeout(tipTimer);
-    tipTimer = null;
-  }
-}
-
-function clearHideTimer() {
-  if (hideTimer) {
-    clearTimeout(hideTimer);
-    hideTimer = null;
-  }
-}
-
-function hidePerkTooltip() {
-  clearShowTimer();
-  clearHideTimer();
-  tipAnchor = null;
-  tipOpenPerkId = null;
-  const el = tipEl || document.getElementById('perk-tooltip-root');
-  if (el) {
-    el.classList.add('hidden');
-    el.setAttribute('aria-hidden', 'true');
-    el.innerHTML = '';
-  }
-}
-
-/**
- * True when the pointer is still on the open perk card or the tip itself.
- * Scroll often moves the card away without firing pointerleave.
- */
-function tipStillUnderPointer() {
-  if (!tipOpenPerkId) return false;
-  const root = tipEl || document.getElementById('perk-tooltip-root');
-  const under = typeof document.elementFromPoint === 'function'
-    ? document.elementFromPoint(lastPointerX, lastPointerY)
-    : null;
-  if (under instanceof Element) {
-    if (root?.contains(under)) return true;
-    const card = under.closest?.('.perk[data-perk]');
-    if (card instanceof HTMLElement && card.getAttribute('data-perk') === tipOpenPerkId) {
-      return true;
-    }
-  }
-  if (tipAnchor?.isConnected && tipAnchor.matches(':hover')) return true;
-  return false;
-}
-
-/** Drop tip immediately when scroll/wheel leaves the card under a still cursor. */
-function dismissUnlessStillHovered() {
-  clearShowTimer();
-  if (!tipOpenPerkId) return;
-  if (tipStillUnderPointer()) {
-    if (tipAnchor?.isConnected) placeTip(tipAnchor);
-    return;
-  }
-  hidePerkTooltip();
-}
-
-function ensureGlobalGuards() {
-  if (globalGuardsBound || typeof document === 'undefined') return;
-  globalGuardsBound = true;
-
-  document.addEventListener('pointermove', (e) => {
-    lastPointerX = e.clientX;
-    lastPointerY = e.clientY;
-  }, { passive: true });
-
-  // Capture: #perks-full scroll doesn't bubble reliably to window in all layouts.
-  document.addEventListener('scroll', () => {
-    if (!tipOpenPerkId && !tipTimer) return;
-    requestAnimationFrame(dismissUnlessStillHovered);
-  }, { capture: true, passive: true });
-
-  document.addEventListener('wheel', () => {
-    if (!tipOpenPerkId && !tipTimer) return;
-    requestAnimationFrame(dismissUnlessStillHovered);
-  }, { capture: true, passive: true });
-}
-
-/**
- * Position the floating tip near the anchor, keeping it in viewport.
- * Prefer beside the card; never cover the hovered card center (avoids pointer thrash).
- * @param {HTMLElement} anchor
- */
-function placeTip(anchor) {
-  const root = ensureTipEl();
-  const tip = root.firstElementChild;
-  if (!tip || !anchor) return;
-  const rect = anchor.getBoundingClientRect();
-  const pad = 12;
-  const tw = tip.offsetWidth || 280;
-  const th = tip.offsetHeight || 200;
-  let left = rect.right + pad;
-  let top = rect.top;
-  if (left + tw > window.innerWidth - 8) {
-    left = rect.left - tw - pad;
-  }
-  if (left < 8) left = 8;
-  if (top + th > window.innerHeight - 8) top = Math.max(8, window.innerHeight - th - 8);
-  if (top < 8) top = 8;
-  root.style.left = `${Math.round(left)}px`;
-  root.style.top = `${Math.round(top)}px`;
-}
-
-/**
- * @param {HTMLElement} el
- * @param {string} perkId
- */
-function showTipFor(el, perkId) {
-  clearHideTimer();
-  tipAnchor = el;
-  tipOpenPerkId = perkId;
-  const root = ensureTipEl();
-  const statusLabel = statusGetter?.(perkId) || '';
-  // Avoid full wipe/rebuild if same perk already visible (stops visual flicker).
-  if (root.dataset.perkId !== perkId || root.classList.contains('hidden')) {
-    root.innerHTML = buildPerkTooltipHtml(perkId, { statusLabel });
-    root.dataset.perkId = perkId;
-  }
-  root.classList.remove('hidden');
-  root.setAttribute('aria-hidden', 'false');
-  placeTip(el);
-  requestAnimationFrame(() => {
-    if (tipOpenPerkId === perkId) placeTip(el);
-  });
-}
-
-/**
- * Schedule hide only if the pointer truly left (survives brief DOM replacement).
- * @param {string} perkId
- */
-function scheduleHide(perkId) {
-  clearHideTimer();
-  // Keep dwell timer — card rebuilds fire pointerleave while the cursor never moved.
-  hideTimer = setTimeout(() => {
-    hideTimer = null;
-    if (tipOpenPerkId !== perkId) return;
-    if (tipStillUnderPointer()) {
-      const live = document.querySelector(`.perk[data-perk="${CSS.escape(perkId)}"]:hover`)
-        || tipAnchor;
-      if (live instanceof HTMLElement) {
-        tipAnchor = live;
-        placeTip(live);
-      }
-      return;
-    }
-    hidePerkTooltip();
-  }, HIDE_GRACE_MS);
-}
-
-/**
- * After perks DOM is rebuilt, re-attach an open tip to the new card node.
- */
-function restoreOpenTip(container) {
-  if (!tipOpenPerkId) return;
-  const root = tipEl || document.getElementById('perk-tooltip-root');
-  if (!root || root.classList.contains('hidden')) return;
-
-  const neo = (container?.querySelector?.(`.perk[data-perk="${CSS.escape(tipOpenPerkId)}"]`)
-    || document.querySelector(`.perk[data-perk="${CSS.escape(tipOpenPerkId)}"]:hover`)
-    || document.querySelector(`.perk[data-perk="${CSS.escape(tipOpenPerkId)}"]`));
-
-  if (neo instanceof HTMLElement) {
-    tipAnchor = neo;
-    if (tipStillUnderPointer() || hideTimer) {
-      placeTip(neo);
-    } else {
-      hidePerkTooltip();
-    }
-  }
-}
-
-/**
- * Bind 0.5s dwell tooltips to perk cards inside a container.
- * Safe across frequent renderAll rebuilds — does not flash-hide on rebind.
- * @param {HTMLElement | null} container
- * @param {{ getStatus?: (perkId: string) => string, rebind?: boolean }} [opts]
- */
-export function bindPerkTooltips(container, opts = {}) {
-  if (!container) return;
-  if (typeof opts.getStatus === 'function') statusGetter = opts.getStatus;
-  ensureGlobalGuards();
-  if (opts.rebind === false) return;
-
-  // Drop prior listeners for this container (innerHTML recreates cards each render).
-  const prev = containerAborts.get(container);
-  if (prev) prev.abort();
-  const ac = new AbortController();
-  containerAborts.set(container, ac);
-  const { signal } = ac;
-
-  container.querySelectorAll('.perk[data-perk]').forEach((el) => {
-    const perkId = el.getAttribute('data-perk');
-    if (!perkId || !PERK_DOSSIERS[perkId]) return;
-
-    el.addEventListener('pointerenter', (e) => {
-      lastPointerX = e.clientX;
-      lastPointerY = e.clientY;
-      clearHideTimer();
-      clearShowTimer();
-      // Already open for this perk (e.g. after re-render) — just re-anchor.
-      if (tipOpenPerkId === perkId && tipEl && !tipEl.classList.contains('hidden')) {
-        showTipFor(el, perkId);
-        return;
-      }
-      tipTimer = setTimeout(() => showTipFor(el, perkId), HOVER_MS);
-    }, { signal });
-
-    el.addEventListener('pointerleave', () => {
-      scheduleHide(perkId);
-    }, { signal });
-
-    el.addEventListener('pointerdown', () => {
-      hidePerkTooltip();
-    }, { signal });
-
-    el.addEventListener('focus', () => {
-      clearHideTimer();
-      clearShowTimer();
-      tipTimer = setTimeout(() => showTipFor(el, perkId), HOVER_MS);
-    }, { signal });
-
-    el.addEventListener('blur', () => {
-      scheduleHide(perkId);
-    }, { signal });
-  });
-
-  restoreOpenTip(container);
-}
+/** No-op: tooltips removed; stats live on the card. */
+export function bindPerkTooltips() {}
 
 export function teardownPerkTooltips() {
-  hidePerkTooltip();
+  const el = document.getElementById('perk-tooltip-root');
+  if (el) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+  }
 }

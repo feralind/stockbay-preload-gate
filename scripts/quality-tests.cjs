@@ -918,8 +918,30 @@ async function main() {
       state.staff = [{ roleId: 'partner', tier: 'newbie', active: true }];
       const before = state.portfolio.cash;
       const paid = payDailySalaries(state);
-      assert.equal(paid, 36);
-      assert.equal(state.portfolio.cash, before - 36);
+      // partner $420 · HF 50% + Legend 10% → pay 40% = $168
+      assert.equal(paid, 168);
+      assert.equal(state.portfolio.cash, before - 168);
+    });
+    test('staff wages and train costs resist AFK spam', () => {
+      assert.ok(STAFF_ROLES.intern.salary >= 40);
+      assert.ok(STAFF_ROLES.partner.salary >= 400);
+      assert.ok(STAFF_ROLES.scout.hireCost >= 1000);
+      assert.ok(staffMod.STAFF_TIERS.newbie.trainCost >= 400);
+      assert.ok(staffMod.STAFF_TIERS.veteran.trainCost >= 1000);
+    });
+    test('staff coverage and next-hire prefer sell gap', () => {
+      const { getStaffCoverage, getNextHireRecommendation } = staffMod;
+      const empty = getStaffCoverage({ perks: ['hrDept'], staff: [] });
+      assert.equal(empty.buy.active, 0);
+      assert.equal(empty.sell.active, 0);
+      assert.ok(empty.buy.required >= 2);
+      const rec = getNextHireRecommendation({
+        perks: ['hrDept', 'scanner'],
+        staff: [{ roleId: 'scout', tier: 'newbie', active: true }],
+        portfolio: { cash: 50_000 },
+      });
+      assert.equal(rec.roleId, 'exitSpec');
+      assert.ok(/seller/i.test(rec.reason));
     });
     test('staff roles include Exit Specialist with sell lane and 5% size helpers', () => {
       assert.ok(STAFF_ROLES.exitSpec);
@@ -947,7 +969,7 @@ async function main() {
 
   {
     const chartMod = await import(pathToFileURL(path.join(__dirname, '../js/chart.js')).href);
-    const { findSupportResistance } = chartMod;
+    const { findSupportResistance, normalizeChartCandles } = chartMod;
     test('Analyst findSupportResistance returns levels below/above last close', () => {
       const bars = [];
       for (let i = 0; i < 40; i++) {
@@ -969,6 +991,40 @@ async function main() {
       const { support, resistance } = findSupportResistance(bars);
       assert.ok(support != null && support < 100);
       assert.ok(resistance != null && resistance > 100);
+    });
+
+    test('normalizeChartCandles dedupes times and converts ms to seconds', () => {
+      const out = normalizeChartCandles([
+        { time: 1_700_000_000, open: 1, high: 2, low: 0.5, close: 1.5, volume: 10 },
+        { time: 1_700_000_000, open: 1.1, high: 2.1, low: 0.6, close: 1.6, volume: 11 },
+        { time: 1_700_086_400_000, open: 2, high: 3, low: 1, close: 2.5, volume: 12 },
+        { time: 'bad', open: 1, high: 1, low: 1, close: 1 },
+      ]);
+      assert.equal(out.length, 2);
+      assert.equal(out[0].time, 1_700_000_000);
+      assert.equal(out[0].close, 1.6);
+      assert.equal(out[1].time, 1_700_086_400);
+      assert.equal(out[1].close, 2.5);
+    });
+  }
+
+  {
+    const providersMod = await import(pathToFileURL(path.join(__dirname, '../js/providers.js')).href);
+    const { candlesLookPlausibleForRange } = providersMod;
+    test('candlesLookPlausibleForRange rejects 5m-for-6M crush payload', () => {
+      const now = Math.floor(Date.now() / 1000);
+      const intraday = [];
+      for (let i = 0; i < 100; i++) {
+        intraday.push({ time: now - (99 - i) * 300, open: 1, high: 1, low: 1, close: 1 });
+      }
+      assert.equal(candlesLookPlausibleForRange(intraday, '6M'), false);
+      assert.equal(candlesLookPlausibleForRange(intraday, 'MAX'), false);
+      const daily = [];
+      for (let i = 0; i < 120; i++) {
+        daily.push({ time: now - (119 - i) * 86400, open: 1, high: 1, low: 1, close: 1 });
+      }
+      assert.equal(candlesLookPlausibleForRange(daily, '6M'), true);
+      assert.equal(candlesLookPlausibleForRange(intraday, '1D'), true);
     });
   }
 
@@ -1025,6 +1081,41 @@ async function main() {
     assert.equal(forged.equipped, 1);
     assert.equal(forged.tier, 1);
   });
+
+  {
+    const profileMod = await import(pathToFileURL(path.join(__dirname, '../js/profile.js')).href);
+    const { saveProfile, clearProfileCosmetics, sanitizeProfileCosmeticsAgainstOwned, getProfile } = profileMod;
+    test('desk reset clears vault cosmetics; ghost equips strip when unowned', () => {
+      saveProfile({
+        cosmetics: {
+          dashboard: 'goldTerminal',
+          background: 'yachtBackground',
+          badge: 'apexBadge',
+          title: 'floorLegendTitle',
+        },
+      });
+      assert.equal(getProfile().cosmetics.dashboard, 'goldTerminal');
+      clearProfileCosmetics();
+      assert.equal(getProfile().cosmetics.dashboard, null);
+      assert.equal(getProfile().cosmetics.background, null);
+      saveProfile({
+        cosmetics: {
+          dashboard: 'goldTerminal',
+          background: 'yachtBackground',
+          badge: null,
+          title: null,
+        },
+      });
+      sanitizeProfileCosmeticsAgainstOwned([]);
+      assert.equal(getProfile().cosmetics.dashboard, null);
+      assert.equal(getProfile().cosmetics.background, null);
+      saveProfile({ cosmetics: { dashboard: 'goldTerminal', background: 'yachtBackground' } });
+      sanitizeProfileCosmeticsAgainstOwned(['goldTerminal']);
+      assert.equal(getProfile().cosmetics.dashboard, 'goldTerminal');
+      assert.equal(getProfile().cosmetics.background, null);
+      clearProfileCosmetics();
+    });
+  }
 
   test('underwriteMaxAmount with collateral raises the ceiling by exactly 50% of pledged value, capped at bankMax', () => {
     const finance = createFinanceState();

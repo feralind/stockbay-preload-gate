@@ -41,7 +41,7 @@ import { applyRelicAwareSlippage, getDeskMarginGraceMinutes } from './desk-rules
 import { getMacroState } from './macro.js';
 import { isTaxDay, settleTaxDay } from './tax.js';
 import { startEventEngine, onEvent } from './events.js';
-import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote } from './chart.js';
+import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote, setChartStyle, getChartStyle } from './chart.js';
 import { initThemePanel } from './theme.js';
 import {
   tickStaff, hireStaff, fireStaff, trainStaff, renameStaff, STAFF_ROLES,
@@ -97,6 +97,7 @@ import {
   installNumberWheelScroll, bindMobileNav, bindSettingsNav, bindRightSidebarResize, bindLeftSidebarResize, bindProfileSettings, openPriceAlert, checkWatchlistAlerts, getWatchlistAlerts, loadWatchlistAlerts,
   closeOrderConfirm, closeMobileNav, getAiChatHistory, loadAiChatHistory, renderPendingOrders, renderCheckpointList, bindStatPopovers,
   getAlertHistory, loadAlertHistory, renderWatchlist, refreshOpenOptionsPanel, getSelectedListing,
+  updateTradeEstValue,
   startHotListingsRotation, stopHotListingsRotation, getHotListingPoolSymbols,
   getHotListingPool, reseedHotListingRotation, advanceHotListingRotation, getHotRotationOffset,
   pauseHotListingRotation, scheduleHotListingResume, isHotListingRotationPaused,
@@ -110,7 +111,7 @@ import { bindOverlayStack, registerOverlayClosers } from './overlays.js';
 import { bindHotkeys } from './hotkeys.js';
 import { installUiSounds, sfxBuy, sfxSell, sfxSuccess, sfxError, sfxToggle } from './sfx.js';
 import { resolveTickerInput, searchSymbols } from './symbols.js';
-import { getProfile, setProfileCosmetic } from './profile.js';
+import { getProfile, setProfileCosmetic, clearProfileCosmetics, sanitizeProfileCosmeticsAgainstOwned } from './profile.js';
 import {
   detectAndArmGmMode,
   isGmMode,
@@ -418,6 +419,8 @@ function clearAllSaveData({ archive = true, keepQuoteBaseline = false } = {}) {
   wipeKeys.forEach((k) => {
     try { localStorage.removeItem(k); } catch (_) {}
   });
+  // Profile name/photo persist; vault equip slots must not survive a wiped inventory.
+  try { clearProfileCosmetics(); } catch (_) { /* ignore */ }
   // Reset in-memory market + Fed before reload (Day 1, Pre-Market, Fed 4.50%)
   try { resetMarketForNewRun(); } catch (_) { /* ignore */ }
   try { clearDeferredNotifications(); } catch (_) { /* ignore */ }
@@ -610,6 +613,13 @@ function bindListingsViewportRefresh() {
   onViewChange((viewId) => {
     if (viewId === 'listings') startListingsViewportRefresh();
     else stopListingsViewportRefresh();
+    if (viewId === 'trade') {
+      const activeTab = document.querySelector('.chart-tab.active');
+      const key = activeTab?.dataset?.tradeTab
+        || (activeTab?.id === 'tab-news' ? 'news' : activeTab?.id === 'tab-stats' ? 'stats' : 'chart');
+      showChartTab(key);
+      requestAnimationFrame(() => resizeChart());
+    }
     maybeStartPortfolioTour(viewId, {
       state,
       saveGame,
@@ -687,6 +697,7 @@ function loadGame() {
     if (Array.isArray(data.vaultPledged)) state.vaultPledged = data.vaultPledged.slice();
     else state.vaultPledged = [];
     state.vaultPledged = sanitizeVaultPledged(state.vaultPledged, state.vaultOwned);
+    try { sanitizeProfileCosmeticsAgainstOwned(state.vaultOwned); } catch (_) { /* ignore */ }
     state.salonSpentTotal = Math.max(0, Number(data.salonSpentTotal) || 0);
     if (Array.isArray(data.salonSeenExpired)) state.salonSeenExpired = data.salonSeenExpired.slice();
     else state.salonSeenExpired = [];
@@ -1877,13 +1888,39 @@ async function init() {
       };
     });
 
-    document.querySelectorAll('.chart-tab').forEach((tab, i) => {
+    document.querySelectorAll('.chart-tab').forEach((tab) => {
       tab.onclick = () => {
-        document.querySelectorAll('.chart-tab').forEach(t => t.classList.remove('active'));
-        tab.classList.add('active');
-        showChartTab(['chart', 'news', 'stats'][i] || 'chart');
-        if (i === 0) setTimeout(() => resizeChart(), 100);
+        const key = tab.dataset.tradeTab
+          || (tab.id === 'tab-news' ? 'news' : tab.id === 'tab-stats' ? 'stats' : 'chart');
+        showChartTab(key);
+        if (key === 'chart') setTimeout(() => resizeChart(), 100);
       };
+    });
+
+    const syncTradeEst = () => updateTradeEstValue();
+    document.getElementById('quick-shares')?.addEventListener('input', syncTradeEst);
+    document.getElementById('limit-price')?.addEventListener('input', syncTradeEst);
+    document.getElementById('order-type')?.addEventListener('change', syncTradeEst);
+    document.getElementById('quick-shares-minus')?.addEventListener('click', () => {
+      const input = document.getElementById('quick-shares');
+      if (!input) return;
+      input.value = String(Math.max(1, (parseInt(input.value, 10) || 1) - 1));
+      syncTradeEst();
+    });
+    document.getElementById('quick-shares-plus')?.addEventListener('click', () => {
+      const input = document.getElementById('quick-shares');
+      if (!input) return;
+      input.value = String(Math.max(1, (parseInt(input.value, 10) || 1) + 1));
+      syncTradeEst();
+    });
+
+    window.addEventListener('resize', () => {
+      if (!document.getElementById('view-trade')?.classList.contains('active')) return;
+      const activeTab = document.querySelector('.chart-tab.active');
+      const key = activeTab?.dataset?.tradeTab
+        || (activeTab?.id === 'tab-news' ? 'news' : activeTab?.id === 'tab-stats' ? 'stats' : 'chart');
+      showChartTab(key);
+      requestAnimationFrame(() => resizeChart());
     });
 
     document.getElementById('btn-refresh').onclick = async () => {
@@ -2014,6 +2051,13 @@ async function init() {
       };
     });
 
+    document.querySelectorAll('.chart-style-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        setChartStyle(btn.dataset.chartStyle === 'wave' ? 'wave' : 'candle');
+      });
+    });
+    setChartStyle(getChartStyle());
+
     document.getElementById('chart-zoom-out')?.addEventListener('click', () => zoomChart(-1));
     document.getElementById('chart-zoom-in')?.addEventListener('click', () => zoomChart(1));
     document.getElementById('chart-zoom-reset')?.addEventListener('click', () => resetChartZoom());
@@ -2071,11 +2115,12 @@ async function init() {
       await state.onSelectSymbol(sym);
     };
 
-    document.getElementById('btn-add-watch').onclick = () => {
+    document.getElementById('btn-trade-add-watch')?.addEventListener('click', () => {
       addToWatchlist(getSelectedSym());
+      toast(`${getSelectedSym()} added to watchlist`, { type: 'success' });
       renderAll(state);
       saveGame();
-    };
+    });
 
     document.getElementById('btn-watch-symbol')?.addEventListener('click', () => {
       addToWatchlist(getSelectedSym());
@@ -2382,7 +2427,8 @@ async function init() {
     ensureSmokeStaffUnlock: () => {
       if (!state.perks.includes('scanner')) state.perks.push('scanner');
       if (!state.perks.includes('hrDept')) state.perks.push('hrDept');
-      state.portfolio.cash = Math.max(Number(state.portfolio.cash) || 0, 400);
+      // Cheapest seat is currently $450 hire — keep a cushion for smoke.
+      state.portfolio.cash = Math.max(Number(state.portfolio.cash) || 0, 2500);
       renderAll(state);
       return { perks: [...state.perks], cash: state.portfolio.cash };
     },

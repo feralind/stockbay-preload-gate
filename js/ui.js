@@ -47,7 +47,7 @@ export {
 import { configurePortfolioUi, renderPortfolio } from './ui/portfolio.js';
 import {
   closeModal, closeOrderConfirm, getModalShares, getSelectedListing, openOrderConfirm,
-  refreshOpenOptionsPanel, renderPendingOrders, renderTradePanel,
+  refreshOpenOptionsPanel, renderPendingOrders, renderTradePanel, updateTradeEstValue,
 } from './ui/trade.js';
 import { configureEventsUi, eventSourceUrl, renderEvents } from './ui/events.js';
 import { configureDashboardUi, renderDashboard } from './ui/dashboard.js';
@@ -56,6 +56,7 @@ export {
   getSelectedListing, openOrderConfirm, openTradeModal, orderShareLimits, orderVerb,
   refreshOpenOptionsPanel, renderOrderConfirm, renderPendingOrders, renderPositionSummary,
   renderRecentTradesStrip, renderTradePanel, riskText, showOptionsPanel, updateModalTotal,
+  updateTradeEstValue,
 } from './ui/trade.js';
 import { getSelectedSym, setSelectedSym } from './ui/selection.js';
 export { getSelectedSym } from './ui/selection.js';
@@ -131,6 +132,7 @@ export function renderAll(state) {
   renderLog(state);
   renderPendingOrders(state);
   renderStats(state);
+  renderNews();
   renderProfileUI(state);
   renderAi(state);
   } catch (err) {
@@ -535,6 +537,7 @@ function renderStats(state) {
   ];
   grid.innerHTML = stats.map(s => `
     <div class="stat-card"><div class="stat-card-lbl">${s.lbl}</div><div class="stat-card-val">${s.val}</div></div>
+    <div class="stat-kv-row"><span class="stat-kv-lbl">${s.lbl}</span><span class="stat-kv-val">${s.val}</span></div>
   `).join('');
 }
 

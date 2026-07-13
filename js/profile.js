@@ -80,6 +80,39 @@ export function setProfileCosmetic(slot, value) {
   });
 }
 
+/** Clear vault equip slots only — keeps display name + avatar across desk resets. */
+export function clearProfileCosmetics() {
+  profile.cosmetics = { ...DEFAULT_COSMETICS };
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+  } catch (e) {
+    console.warn('Profile cosmetics clear failed', e);
+  }
+  return getProfile();
+}
+
+/**
+ * Drop equip ids not present in owned vault/salon inventory (ghost equips after reset/save edits).
+ * @param {string[]} [vaultOwned]
+ */
+export function sanitizeProfileCosmeticsAgainstOwned(vaultOwned = []) {
+  const owned = new Set(Array.isArray(vaultOwned) ? vaultOwned : []);
+  const next = { ...DEFAULT_COSMETICS };
+  let changed = false;
+  Object.keys(DEFAULT_COSMETICS).forEach((slot) => {
+    const id = profile.cosmetics?.[slot];
+    if (typeof id === 'string' && id && owned.has(id)) next[slot] = id;
+    else if (id) changed = true;
+  });
+  if (changed || JSON.stringify(sanitizeCosmetics(profile.cosmetics)) !== JSON.stringify(next)) {
+    profile.cosmetics = next;
+    try {
+      localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    } catch (_) { /* ignore */ }
+  }
+  return getProfile();
+}
+
 export function clearAvatar() {
   return saveProfile({ avatar: null });
 }

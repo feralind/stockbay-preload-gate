@@ -71,14 +71,19 @@ export function listingConviction(listing) {
 }
 
 export const STAFF_TIERS = {
-  newbie: { id: 'newbie', name: 'Newbie', efficiency: 0.7, mistakeRate: 0.22, next: 'veteran', trainCost: 150 },
-  veteran: { id: 'veteran', name: 'Veteran', efficiency: 1.0, mistakeRate: 0.10, next: 'expert', trainCost: 400 },
+  newbie: { id: 'newbie', name: 'Newbie', efficiency: 0.7, mistakeRate: 0.22, next: 'veteran', trainCost: 450 },
+  veteran: { id: 'veteran', name: 'Veteran', efficiency: 1.0, mistakeRate: 0.10, next: 'expert', trainCost: 1200 },
   expert: { id: 'expert', name: 'Expert', efficiency: 1.35, mistakeRate: 0.03, next: null, trainCost: 0 },
 };
+
+/** Lanes that count toward buy / sell coverage on the Overview desk. */
+export const STAFF_BUY_LANES = new Set(['buy', 'short']);
+export const STAFF_SELL_LANES = new Set(['sell']);
 
 /**
  * Role catalog — save key is `roleId`. New fields are display/logic only.
  * lane: ops | insight | buy | sell | short | lead
+ * Wages are game-day burn (not wall-clock hourly) — tuned to resist AFK spam.
  */
 export const STAFF_ROLES = {
   intern: {
@@ -88,8 +93,8 @@ export const STAFF_ROLES = {
     mark: 'IN',
     color: '#8b949e',
     lane: 'ops',
-    salary: 8,
-    hireCost: 120,
+    salary: 45,
+    hireCost: 450,
     desc: 'Keeps listings fresh and the desk organized — no trading authority.',
     does: 'Refreshes market listings and files routine desk work.',
     never: 'Never buys, sells, shorts, or sizes positions.',
@@ -105,8 +110,8 @@ export const STAFF_ROLES = {
     mark: 'SC',
     color: '#58a6ff',
     lane: 'buy',
-    salary: 18,
-    hireCost: 350,
+    salary: 95,
+    hireCost: 1200,
     desc: 'Snipes GREAT DEAL listings only when conviction and size rules clear.',
     does: 'Buys GREAT DEAL names when conviction ≥ 70 and cash is free.',
     never: 'Never chases non-deals, never adds past the size cap, never shorts.',
@@ -122,8 +127,8 @@ export const STAFF_ROLES = {
     mark: 'CO',
     color: '#79c0ff',
     lane: 'ops',
-    salary: 22,
-    hireCost: 450,
+    salary: 110,
+    hireCost: 1400,
     desc: 'Suppresses firm mistake rate and flags underwater longs for review.',
     does: 'Audits the book and flags longs ≤ −5% vs cost.',
     never: 'Never places trades or changes position size.',
@@ -139,8 +144,8 @@ export const STAFF_ROLES = {
     mark: 'RA',
     color: '#56d4dd',
     lane: 'insight',
-    salary: 32,
-    hireCost: 600,
+    salary: 145,
+    hireCost: 1800,
     desc: 'Promotes near-deals and lifts Scout / Junior Trader hit quality.',
     does: 'Marks undervalued listings as GREAT DEAL and writes AI pick notes.',
     never: 'Never executes orders or overrides the size rule for others.',
@@ -156,8 +161,8 @@ export const STAFF_ROLES = {
     mark: 'TR',
     color: '#3fb950',
     lane: 'buy',
-    salary: 28,
-    hireCost: 550,
+    salary: 130,
+    hireCost: 1600,
     desc: 'Buys AI BUY picks only when confidence clears the desk bar.',
     does: `Buys AI BUY signals with confidence ≥ ${STAFF_AI_MIN_CONFIDENCE}.`,
     never: 'Never buys HOLD/SHORT, never averages into losers, never shorts.',
@@ -173,8 +178,8 @@ export const STAFF_ROLES = {
     mark: 'RK',
     color: '#f0883e',
     lane: 'sell',
-    salary: 35,
-    hireCost: 700,
+    salary: 165,
+    hireCost: 2000,
     desc: 'Hard exits on longs — full take-profit or stop, never opens risk.',
     does: 'Fully exits longs at +12% take-profit or −7% stop.',
     never: 'Never buys, never shorts, never adds size.',
@@ -190,8 +195,8 @@ export const STAFF_ROLES = {
     mark: 'EX',
     color: '#d2a8ff',
     lane: 'sell',
-    salary: 30,
-    hireCost: 620,
+    salary: 140,
+    hireCost: 1750,
     desc: 'Trims winners and cuts early losers — the firm’s dedicated seller.',
     does: 'Sells ~half of a long at +8% trim or −5% early cut.',
     never: 'Never buys, never shorts, never opens new names.',
@@ -207,8 +212,8 @@ export const STAFF_ROLES = {
     mark: 'SH',
     color: '#f85149',
     lane: 'short',
-    salary: 40,
-    hireCost: 850,
+    salary: 185,
+    hireCost: 2400,
     desc: 'Opens small shorts only on extended upside prints.',
     does: 'Shorts overbought names (day change > +3%) with tight size.',
     never: 'Never longs, never stacks into existing shorts, never ignores margin.',
@@ -224,8 +229,8 @@ export const STAFF_ROLES = {
     mark: 'QT',
     color: '#a371f7',
     lane: 'buy',
-    salary: 55,
-    hireCost: 1200,
+    salary: 240,
+    hireCost: 3200,
     desc: 'Momentum buys with size caps; covers shorts that blow through stops.',
     does: 'Buys mild breakouts; covers shorts ≤ −6% vs entry.',
     never: 'Never ignores the size cap, never averages losers, never chase >5%.',
@@ -241,8 +246,8 @@ export const STAFF_ROLES = {
     mark: 'MP',
     color: '#e3b341',
     lane: 'lead',
-    salary: 90,
-    hireCost: 2500,
+    salary: 420,
+    hireCost: 8000,
     desc: 'Raises floor efficiency and occasional firm cash bonuses.',
     does: 'Boosts all staff efficiency; small periodic firm bonuses.',
     never: 'Never personally snipes or overrides buy/sell risk rules.',
@@ -325,6 +330,96 @@ export function getDailySalary(staff) {
     const tierMult = s.tier === 'expert' ? 1.25 : s.tier === 'veteran' ? 1.1 : 1;
     return sum + Math.round((role?.salary || 0) * tierMult);
   }, 0);
+}
+
+/** One-time hire cash sunk into the current roster (catalog hireCost × headcount). */
+export function getHireSunk(staff) {
+  return (staff || []).reduce((sum, s) => sum + (STAFF_ROLES[s.roleId]?.hireCost || 0), 0);
+}
+
+/** Amortize hire sunk over this many game days for Overview burn. */
+export const STAFF_HIRE_AMORT_DAYS = 30;
+
+export function getStaffCoverage(state) {
+  const staff = (state?.staff || []).filter((s) => s.active);
+  const max = getMaxStaff(state);
+  const buyRequired = Math.max(2, Math.ceil(max * 0.5));
+  const sellRequired = Math.max(2, Math.ceil(max * 0.4));
+  const buyActive = staff.filter((s) => STAFF_BUY_LANES.has(STAFF_ROLES[s.roleId]?.lane)).length;
+  const sellActive = staff.filter((s) => STAFF_SELL_LANES.has(STAFF_ROLES[s.roleId]?.lane)).length;
+  const pct = (active, required) =>
+    required <= 0 ? 0 : Math.min(100, Math.round((100 * active) / required));
+  return {
+    buy: { active: buyActive, required: buyRequired, pct: pct(buyActive, buyRequired) },
+    sell: { active: sellActive, required: sellRequired, pct: pct(sellActive, sellRequired) },
+  };
+}
+
+/**
+ * Next hire recommendation for Overview — prefer filling sell gap, then buy, then ops.
+ * @returns {{ roleId: string, reason: string, impact: string } | null}
+ */
+export function getNextHireRecommendation(state) {
+  const coverage = getStaffCoverage(state);
+  const staff = state?.staff || [];
+  const hasHr = state?.perks?.includes('hrDept');
+  if (!hasHr) {
+    return {
+      roleId: 'intern',
+      reason: 'HR Department locked',
+      impact: 'Unlock HR in Perks, then hire your first seat.',
+    };
+  }
+
+  const candidates = [
+    {
+      when: coverage.sell.active === 0,
+      roleId: 'exitSpec',
+      reason: 'No seller on desk.',
+      impact: 'Improve sell coverage to at least 50%.',
+    },
+    {
+      when: coverage.sell.pct < 50,
+      roleId: 'risk',
+      reason: 'Sell coverage below 50%.',
+      impact: `Raise sell coverage toward ${coverage.sell.required} seats.`,
+    },
+    {
+      when: coverage.buy.active === 0,
+      roleId: 'scout',
+      reason: 'No buyer on desk.',
+      impact: 'Open a buy lane so the firm can enter names.',
+    },
+    {
+      when: coverage.buy.pct < 50,
+      roleId: 'trader',
+      reason: 'Buy coverage below 50%.',
+      impact: `Raise buy coverage toward ${coverage.buy.required} seats.`,
+    },
+    {
+      when: !staff.some((s) => s.roleId === 'compliance'),
+      roleId: 'compliance',
+      reason: 'No compliance seat.',
+      impact: 'Lower desk mistake rate while staff act.',
+    },
+  ];
+
+  for (const c of candidates) {
+    if (c.when) return { roleId: c.roleId, reason: c.reason, impact: c.impact };
+  }
+
+  const open = Object.values(STAFF_ROLES).find((role) => {
+    const missing = (role.requires || []).filter((r) => r !== 'hrDept' && !state.perks?.includes(r));
+    return missing.length === 0;
+  });
+  if (open) {
+    return {
+      roleId: open.id,
+      reason: 'Desk balanced.',
+      impact: `Optional deepen with ${open.name}.`,
+    };
+  }
+  return null;
 }
 
 export function payDailySalaries(state) {

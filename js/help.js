@@ -129,7 +129,7 @@ Start with Scanner, then HR. Save Insider / AI / Legend for late game — they a
     title: 'Staff &amp; HR',
     body: `Requires <strong>HR Department</strong>. Cap: <strong>6</strong> seats (<strong>8</strong> with Trading Floor, <strong>10</strong> with Legend Desk). Salaries deduct each new day (Hedge Fund covers 50%; Legend Desk adds another 10%). Click ✎ to rename; Fire removes them.
 <br><br>
-<strong>Training:</strong> Newbie → Veteran ($150) → Expert ($400). Higher tiers act more often and make fewer mistakes. Win rate also nudges efficiency.
+<strong>Training:</strong> Newbie → Veteran ($450) → Expert ($1200). Higher tiers act more often and make fewer mistakes. Win rate also nudges efficiency.
 <br><br>
 <strong>Roles</strong> (hire · $/day · job):
 <ul>
@@ -227,8 +227,8 @@ export const GLOSSARY = [
   { cat: 'MARKET', term: 'Fed funds (sim)', def: 'Simulated policy rate — nudges loan APRs and Fed hike/cut event impact. Not a live Fed quote.', glossId: 'fed-rate' },
   { cat: 'STAFF', term: 'HR Department', def: 'Perk required before any hire ($400 · Newcomer, needs Scanner).' },
   { cat: 'STAFF', term: 'Newbie', def: 'Entry tier — more mistakes, slower actions.' },
-  { cat: 'STAFF', term: 'Veteran', def: 'Trained staff — fewer mistakes ($150 upgrade).' },
-  { cat: 'STAFF', term: 'Expert', def: 'Top tier — rare mistakes ($400 upgrade).' },
+  { cat: 'STAFF', term: 'Veteran', def: 'Trained staff — fewer mistakes ($450 upgrade).' },
+  { cat: 'STAFF', term: 'Expert', def: 'Top tier — rare mistakes ($1200 upgrade).' },
   { cat: 'STAFF', term: 'Payroll', def: 'Daily salary deducted at the start of each new day (Hedge Fund pays half).', glossId: 'payroll' },
   { cat: 'STAFF', term: 'Size cap', def: 'Most buy automation respects max ~5% of total portfolio equity per name.' },
   { cat: 'STAFF', term: 'Compliance', def: 'Officer role that suppresses firm-wide mistake rate and flags risk — never trades.' },

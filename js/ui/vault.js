@@ -378,6 +378,7 @@ export function renderVault(state) {
   const bookValue = getVaultBookValue(state);
   const profile = getProfile();
   const cosmetics = profile?.cosmetics || {};
+  const ownedSetForEquip = new Set(ownedIds);
   const aura = getVaultDeskAura({ cosmetics, vaultOwned: ownedIds, perks: state.perks });
   const auraUsed = Math.max(0, Math.floor(Number(state.meta?.vaultAuraRepToday) || 0));
   const equippedSummary = [
@@ -385,10 +386,11 @@ export function renderVault(state) {
     { slot: 'background', label: VAULT_EQUIP_SLOT_LABELS.background },
     { slot: 'badge', label: VAULT_EQUIP_SLOT_LABELS.badge },
     { slot: 'title', label: VAULT_EQUIP_SLOT_LABELS.title },
-  ].map((entry) => ({
-    ...entry,
-    item: getVaultItem(cosmetics[entry.slot]),
-  }));
+  ].map((entry) => {
+    const id = cosmetics[entry.slot];
+    const item = (typeof id === 'string' && ownedSetForEquip.has(id)) ? getVaultItem(id) : null;
+    return { ...entry, item };
+  });
 
   const allItems = Object.values(VAULT_ITEMS).slice().sort((a, b) => {
     const aStarter = (a.repRequired || 0) === 0 ? 0 : 1;

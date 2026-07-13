@@ -85,11 +85,30 @@ export function renderTradePanel(state) {
   }
   renderPositionSummary(state);
   renderRecentTradesStrip(state);
+  updateTradeEstValue(q.price);
   const sl = document.getElementById('stop-loss');
   const tp = document.getElementById('take-profit');
   const pos = state.portfolio.longs[selectedSym] || state.portfolio.shorts[selectedSym];
   if (sl) sl.value = pos?.stopLoss || '';
   if (tp) tp.value = pos?.takeProfit || '';
+}
+
+/** Presentation-only notional preview for the trade ticket. */
+export function updateTradeEstValue(priceOverride) {
+  const el = document.getElementById('trade-est-value');
+  if (!el) return;
+  const shares = Math.max(1, parseInt(document.getElementById('quick-shares')?.value, 10) || 1);
+  let px = Number(priceOverride);
+  if (!Number.isFinite(px) || px <= 0) {
+    const ot = document.getElementById('order-type')?.value;
+    const limit = parseFloat(document.getElementById('limit-price')?.value);
+    if (ot === 'limit' && Number.isFinite(limit) && limit > 0) px = limit;
+    else {
+      const q = quoteForDisplay(getSelectedSym());
+      px = q?.price || 0;
+    }
+  }
+  el.textContent = px > 0 ? `$${(shares * px).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '$0.00';
 }
 
 export function renderPositionSummary(state) {

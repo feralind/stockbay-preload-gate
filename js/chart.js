@@ -3,6 +3,7 @@ import { syncQuoteToPrice, shouldRejectLiveCandleTick, LIVE_CANDLE_MAX_JUMP_PCT,
 
 let chart = null;
 let candleSeries = null;
+let waveSeries = null;
 let volumeSeries = null;
 let ma20Series = null;
 let ma50Series = null;
@@ -19,6 +20,9 @@ let lastCandle = null;
 let lastLiveUpdateAt = 0;
 /** After −/+/wheel zoom, skip auto-fit until Reset or new symbol/TF data. */
 let userZoomed = false;
+/** @type {'candle' | 'wave'} */
+let chartStyle = 'candle';
+let fitRetryTimer = null;
 const LIVE_UPDATE_MS = 100;
 /** Skip a live tick that would move the last bar by more than this fraction. */
 const LIVE_MAX_JUMP_PCT = LIVE_CANDLE_MAX_JUMP_PCT;
@@ -30,6 +34,7 @@ const MIN_VISIBLE_BARS = 36;
 const MAX_VISIBLE_BARS = 120;
 const TARGET_BAR_PX = 7;
 const INTRADAY_RANGES = new Set(['1D', '5D', '1M', '1', '5', '15', '60']);
+const CHART_STYLE_KEY = 'stockway_chart_style_v1';
 
 function rangeBarMinutes(range) {
   const key = String(range || '1D').toUpperCase();
@@ -112,23 +117,39 @@ function rebuildChart(container) {
   lastBarCount = 0;
   userZoomed = false;
   srPriceLines = [];
+  if (fitRetryTimer) {
+    clearTimeout(fitRetryTimer);
+    fitRetryTimer = null;
+  }
 
-  const bg = themeColors?.chartBg || getCss('--chart-bg') || '#09090b';
-  const grid = themeColors?.chartGrid || getCss('--chart-grid') || '#1a1a1f';
-  const green = themeColors?.green || getCss('--green') || '#00c805';
-  const red = themeColors?.red || getCss('--red') || '#ef4444';
+  try {
+    const saved = localStorage.getItem(CHART_STYLE_KEY);
+    if (saved === 'wave' || saved === 'candle') chartStyle = saved;
+  } catch { /* ignore */ }
+
+  const bg = 'rgba(0,0,0,0)';
+  const grid = themeColors?.chartGrid || getCss('--chart-grid') || 'rgba(255,255,255,0.06)';
+  const green = themeColors?.green || getCss('--accent-trade') || getCss('--green') || '#3b82f6';
+  const red = themeColors?.red || getCss('--rose') || getCss('--red') || '#f43f5e';
   const muted = themeColors?.muted || getCss('--muted') || '#a1a1aa';
-  const border = themeColors?.border || getCss('--border') || '#27272a';
+  const border = themeColors?.border || getCss('--glass-stroke') || 'rgba(255,255,255,0.14)';
   const blue = themeColors?.blue || getCss('--blue') || '#60a5fa';
   const orange = '#f59e0b';
 
   const w = container.clientWidth || 400;
   const h = container.clientHeight || 280;
 
+  const layoutBg = (typeof LightweightCharts !== 'undefined' && LightweightCharts.ColorType)
+    ? { type: LightweightCharts.ColorType.Solid, color: bg }
+    : { color: bg };
+
   chart = LightweightCharts.createChart(container, {
     width: w,
     height: h,
-    layout: { background: { color: bg }, textColor: muted },
+    layout: {
+      background: layoutBg,
+      textColor: muted,
+    },
     grid: { vertLines: { color: grid }, horzLines: { color: grid } },
     crosshair: {
       mode: LightweightCharts.CrosshairMode.Normal,
@@ -148,12 +169,12 @@ function rebuildChart(container) {
       barSpacing: TARGET_BAR_PX,
       minBarSpacing: 3,
       maxBarSpacing: 18,
-      // false so sparse series can keep empty left logical space (no giant candles)
       fixLeftEdge: false,
-      lockVisibleTimeRangeOnResize: true,
+      // false: layout changes (Trade dual pane) must re-fit, not freeze a broken range
+      lockVisibleTimeRangeOnResize: false,
     },
     handleScale: {
-      mouseWheel: false, // custom wheel handler below (matches ± buttons)
+      mouseWheel: false,
       pinch: true,
       axisPressedMouseMove: { time: true, price: true },
     },
@@ -174,6 +195,16 @@ function rebuildChart(container) {
     wickDownColor: red,
   });
 
+  waveSeries = chart.addAreaSeries({
+    lineColor: green,
+    topColor: `${green}55`,
+    bottomColor: `${green}05`,
+    lineWidth: 2,
+    priceLineVisible: true,
+    lastValueVisible: true,
+    crosshairMarkerVisible: true,
+  });
+
   volumeSeries = chart.addHistogramSeries({
     priceFormat: { type: 'volume' },
     priceScaleId: 'volume',
@@ -183,15 +214,56 @@ function rebuildChart(container) {
   ma20Series = chart.addLineSeries({ color: blue, lineWidth: 2, title: 'MA20', priceLineVisible: false, lastValueVisible: true });
   ma50Series = chart.addLineSeries({ color: orange, lineWidth: 2, title: 'MA50', priceLineVisible: false, lastValueVisible: true });
 
+  applyChartStyleVisibility();
+
   resizeObserver = new ResizeObserver(() => {
-    if (chart && container.clientWidth > 0 && container.clientHeight > 0) {
-      chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    if (!chart || container.clientWidth <= 0 || container.clientHeight <= 0) return;
+    chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+    if (!userZoomed && lastBarCount > 0) {
+      // Defer fit until after layout settles (fixes empty-left until TF click)
+      scheduleFitChart();
     }
   });
   resizeObserver.observe(container);
 
   wheelAbort = new AbortController();
   container.addEventListener('wheel', onChartWheel, { passive: false, signal: wheelAbort.signal });
+}
+
+function applyChartStyleVisibility() {
+  const isWave = chartStyle === 'wave';
+  try { candleSeries?.applyOptions({ visible: !isWave }); } catch { /* ignore */ }
+  try { waveSeries?.applyOptions({ visible: isWave }); } catch { /* ignore */ }
+}
+
+export function getChartStyle() {
+  return chartStyle;
+}
+
+/** @param {'candle' | 'wave'} style */
+export function setChartStyle(style) {
+  const next = style === 'wave' ? 'wave' : 'candle';
+  chartStyle = next;
+  try { localStorage.setItem(CHART_STYLE_KEY, next); } catch { /* ignore */ }
+  applyChartStyleVisibility();
+  document.querySelectorAll('.chart-style-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.chartStyle === next);
+  });
+  if (!userZoomed) scheduleFitChart();
+}
+
+function scheduleFitChart() {
+  if (fitRetryTimer) clearTimeout(fitRetryTimer);
+  requestAnimationFrame(() => {
+    resizeChart();
+    if (!userZoomed) fitChartToData();
+    // Second pass after Dual Pane / flex layout finishes
+    fitRetryTimer = setTimeout(() => {
+      fitRetryTimer = null;
+      resizeChart();
+      if (!userZoomed) fitChartToData();
+    }, 80);
+  });
 }
 
 function onChartWheel(e) {
@@ -208,14 +280,34 @@ function isIntradayRange(range) {
   return INTRADAY_RANGES.has(String(range || '1D').toUpperCase());
 }
 
-function toChartTime(ts, useBusinessDay) {
-  if (!useBusinessDay) return ts;
-  const d = new Date(ts * 1000);
-  return {
-    year: d.getUTCFullYear(),
-    month: d.getUTCMonth() + 1,
-    day: d.getUTCDate(),
-  };
+/**
+ * Normalize OHLC for Lightweight Charts: unix seconds only, ascending, unique times.
+ * Business-day objects were abandoned — collapsing intraday bars onto calendar days
+ * (bad proxy data) left 2 logical bars while fit assumed N≈100+ → left crush.
+ */
+export function normalizeChartCandles(candles) {
+  if (!Array.isArray(candles) || !candles.length) return [];
+  const byTime = new Map();
+  for (const c of candles) {
+    let t = Number(c?.time);
+    if (!Number.isFinite(t) || t <= 0) continue;
+    // ms → seconds if a provider ever sends millis
+    if (t > 1e12) t = Math.floor(t / 1000);
+    const open = Number(c.open);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const close = Number(c.close);
+    if (![open, high, low, close].every(Number.isFinite)) continue;
+    byTime.set(t, {
+      time: t,
+      open,
+      high,
+      low,
+      close,
+      volume: Number(c.volume) || 0,
+    });
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time);
 }
 
 /** Visible bar count for a sensible default density (width-aware, clamped). */
@@ -228,18 +320,30 @@ function targetVisibleBars() {
 
 /**
  * Default view: last N bars + small right pad.
- * Always uses at least N logical slots so few bars stay normal-sized (empty left),
- * and never packs thousands of bars into one pane (microscopic).
+ * When there are fewer bars than the width target, fit to content instead of
+ * leaving a huge empty left void (looked "broken" until TF re-click).
  */
 export function fitChartToData() {
   if (!chart || lastBarCount <= 0) return;
   const ts = chart.timeScale();
   const last = lastBarCount - 1;
   const want = targetVisibleBars();
-  // Reserve `want` slots even when lastBarCount < want → empty left, stable bar width
-  const from = last - want + 1;
-  const to = last + RIGHT_PAD_BARS;
-  ts.setVisibleLogicalRange({ from, to });
+  if (lastBarCount < want) {
+    try {
+      ts.fitContent();
+      // Keep a tiny right pad after fitContent
+      const lr = ts.getVisibleLogicalRange();
+      if (lr) {
+        ts.setVisibleLogicalRange({ from: Math.max(-0.5, lr.from), to: last + RIGHT_PAD_BARS });
+      }
+    } catch {
+      ts.setVisibleLogicalRange({ from: -0.5, to: last + RIGHT_PAD_BARS });
+    }
+  } else {
+    const from = last - want + 1;
+    const to = last + RIGHT_PAD_BARS;
+    ts.setVisibleLogicalRange({ from, to });
+  }
   userZoomed = false;
 }
 
@@ -334,8 +438,8 @@ function applySrPriceLines(formatted, showSR) {
   clearSrPriceLines();
   if (!showSR || !candleSeries || !formatted?.length) return;
   const { support, resistance } = findSupportResistance(formatted);
-  const green = themeColors?.green || getCss('--green') || '#00c805';
-  const red = themeColors?.red || getCss('--red') || '#ef4444';
+  const green = themeColors?.green || getCss('--accent-trade') || getCss('--green') || '#3b82f6';
+  const red = themeColors?.red || getCss('--rose') || getCss('--red') || '#f43f5e';
   const dashed = typeof LightweightCharts !== 'undefined' && LightweightCharts.LineStyle
     ? LightweightCharts.LineStyle.Dashed
     : 2;
@@ -366,10 +470,11 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
 
   lastRange = String(range || '1D').toUpperCase();
   const intraday = isIntradayRange(lastRange);
-  const useBusinessDay = !intraday;
+  const sanitized = normalizeChartCandles(candles);
+  if (!sanitized.length) return;
 
-  const formatted = candles.map(c => ({
-    time: toChartTime(c.time, useBusinessDay),
+  const formatted = sanitized.map((c) => ({
+    time: c.time,
     open: c.open,
     high: c.high,
     low: c.low,
@@ -382,10 +487,11 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
   userZoomed = false;
 
   candleSeries.setData(formatted);
-  const green = themeColors?.green || getCss('--green');
-  const red = themeColors?.red || getCss('--red');
-  volumeSeries.setData(candles.map((c, i) => ({
-    time: formatted[i].time,
+  waveSeries?.setData(formatted.map((c) => ({ time: c.time, value: c.close })));
+  const green = themeColors?.green || getCss('--accent-trade') || getCss('--green');
+  const red = themeColors?.red || getCss('--rose') || getCss('--red');
+  volumeSeries.setData(sanitized.map((c) => ({
+    time: c.time,
     value: c.volume || 0,
     color: c.close >= c.open ? `${green}66` : `${red}66`,
   })));
@@ -399,23 +505,20 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
   }
 
   applySrPriceLines(formatted, !!showSR);
+  applyChartStyleVisibility();
 
   chart?.timeScale().applyOptions({
     timeVisible: intraday,
     secondsVisible: false,
     rightOffset: RIGHT_PAD_BARS,
     fixLeftEdge: false,
-    lockVisibleTimeRangeOnResize: true,
+    lockVisibleTimeRangeOnResize: false,
     barSpacing: TARGET_BAR_PX,
     minBarSpacing: 3,
     maxBarSpacing: 18,
   });
 
-  // One fit after layout — do not re-fit on ticks, resize, or live quote updates.
-  requestAnimationFrame(() => {
-    resizeChart();
-    if (!userZoomed) fitChartToData();
-  });
+  scheduleFitChart();
 }
 
 /**
@@ -468,6 +571,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
       low: lastCandle.low,
       close: lastCandle.close,
     });
+    waveSeries?.update({ time: lastCandle.time, value: lastCandle.close });
   } catch {
     return false;
   }
@@ -505,6 +609,10 @@ export function setCurrentSym(sym) {
 }
 
 export function destroyChart() {
+  if (fitRetryTimer) {
+    clearTimeout(fitRetryTimer);
+    fitRetryTimer = null;
+  }
   if (wheelAbort) {
     wheelAbort.abort();
     wheelAbort = null;
@@ -512,6 +620,7 @@ export function destroyChart() {
   if (resizeObserver) resizeObserver.disconnect();
   if (chart) { chart.remove(); chart = null; }
   candleSeries = null;
+  waveSeries = null;
   volumeSeries = null;
   ma20Series = null;
   ma50Series = null;

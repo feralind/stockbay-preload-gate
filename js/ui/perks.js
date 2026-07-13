@@ -1,6 +1,6 @@
 // @ts-check
 import { PERKS, REP_RANKS, getRepRank, getNextRepRank, canPurchasePerk } from '../config.js';
-import { bindPerkTooltips } from '../perk-tooltips.js';
+import { buildPerkInlineHtml, teardownPerkTooltips } from '../perk-tooltips.js';
 import { fmt } from './shared.js';
 
 /**
@@ -133,9 +133,9 @@ function perksRenderSignature(statusById, rep, isFull, header) {
     const need = REP_RANKS[t - 1]?.minRep ?? 0;
     return `${t}:${rep >= need ? 1 : 0}`;
   }).join('|');
-  if (!isFull) return `shop|${board}|${tiers}`;
+  if (!isFull) return `shop-v2|${board}|${tiers}`;
   return [
-    'full',
+    'full-v2',
     board,
     tiers,
     header.cash,
@@ -210,11 +210,6 @@ export function renderPerks(state, containerId) {
   const sig = perksRenderSignature(statusById, rep, isFull, header);
   const hasDom = !!container.querySelector(isFull ? '.perks-view' : '.perk[data-perk]');
   if (hasDom && lastPerksRenderSig.get(containerId) === sig) {
-    // Still refresh tip status labels (no DOM wipe).
-    bindPerkTooltips(container, {
-      getStatus: (id) => statusById[id]?.status || '',
-      rebind: false,
-    });
     return;
   }
 
@@ -223,7 +218,7 @@ export function renderPerks(state, containerId) {
       <div class="perks-hero-copy">
         <p class="perks-eyebrow">Institutional upgrades</p>
         <h3 class="perks-title">Desk Perks</h3>
-        <p class="perks-sub">Permanent unlocks gated by cash and <strong>REP rank</strong>. Hover a perk for half a second to read its full effect sheet. Early Scanner and HR remain affordable.</p>
+        <p class="perks-sub">Permanent unlocks gated by cash and <strong>REP rank</strong>. Each card shows purpose, effects, and requirements. Early Scanner and HR remain affordable.</p>
       </div>
       <div class="perks-rank-chip">
         <span class="perks-rank-lbl">Your rank</span>
@@ -264,8 +259,7 @@ export function renderPerks(state, containerId) {
 
       return `
         <div class="perk perk-t${t} ${owned ? 'owned' : ''} ${canBuy ? 'available' : ''} ${!owned && !canBuy ? 'is-locked' : ''}"
-             data-perk="${p.id}" role="${canBuy ? 'button' : 'group'}" ${canBuy ? 'tabindex="0"' : ''}
-             aria-describedby="perk-tooltip-root">
+             data-perk="${p.id}" role="${canBuy ? 'button' : 'group'}" ${canBuy ? 'tabindex="0"' : ''}>
           ${perkMarkHtml(p)}
           <div class="perk-body">
             <div class="perk-name-row">
@@ -273,6 +267,7 @@ export function renderPerks(state, containerId) {
               <span class="perk-status ${statusCls}">${status}</span>
             </div>
             <div class="perk-desc">${p.desc}</div>
+            ${buildPerkInlineHtml(p.id)}
             <div class="perk-cost">${costLine}</div>
           </div>
         </div>`;
@@ -306,9 +301,10 @@ export function renderPerks(state, containerId) {
         return `
         <div class="perk perk-t${p.tier || 1} ${owned ? 'owned' : ''} ${canBuy ? 'available' : ''} ${!owned && !canBuy ? 'is-locked' : ''}" data-perk="${p.id}">
           ${perkMarkHtml(p)}
-          <div>
+          <div class="perk-body">
             <div class="perk-name">${p.name}</div>
             <div class="perk-desc">${p.desc}</div>
+            ${buildPerkInlineHtml(p.id)}
             <div class="perk-cost">${owned ? 'OWNED' : `${fmt(p.cost)}${p.repRequired ? ` · ${p.repRequired} REP` : ''}`}</div>
           </div>
         </div>`;
@@ -326,8 +322,6 @@ export function renderPerks(state, containerId) {
     };
   });
 
-  bindPerkTooltips(container, {
-    getStatus: (id) => statusById[id]?.status || '',
-  });
+  teardownPerkTooltips();
   lastPerksRenderSig.set(containerId, sig);
 }
