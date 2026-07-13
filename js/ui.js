@@ -78,6 +78,7 @@ import {
 } from './profile.js';
 import { getCollectionPrestigeScore } from './collection-log.js';
 import { BLACKMARKET_ITEM_POOL } from './blackmarket.js';
+import { PRIVATE_SALON_POOL } from './private-salon.js';
 import { getVaultItem, getVaultBookValue } from './vault.js';
 import { THE_SEAT } from './the-seat.js';
 import { resyncGlossaryHover } from './glossary-tooltips.js';
@@ -633,7 +634,11 @@ function updatePlayerTier(state, profile = getProfile()) {
   const el = document.getElementById('player-tier');
   if (!el) return;
   const rep = state.meta?.reputation ?? 0;
-  const prestige = getCollectionPrestigeScore(state, { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT });
+  const prestige = getCollectionPrestigeScore(state, {
+    blackMarketPool: BLACKMARKET_ITEM_POOL,
+    seatItem: THE_SEAT,
+    salonPool: PRIVATE_SALON_POOL,
+  });
   const titleItem = getProfileCosmeticItem(profile, 'title');
   const seatSuffix = state.seatOwned ? ` · ${THE_SEAT.name}` : '';
   if (titleItem || state.seatOwned) {

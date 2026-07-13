@@ -8,6 +8,7 @@ import {
   maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers, utilizationRatio,
   bankDebt, otherBanksDebt,
 } from '../finance.js';
+import { getVaultPledgedAppraisal } from '../vault.js';
 import { domainLogoHtml } from '../logos.js';
 import { formatMarketClock } from '../market.js';
 import { toast } from '../notify.js';
@@ -15,6 +16,10 @@ import { fmt } from './shared.js';
 
 /** Draft loan amounts per bank — survives renderFinance rebuilds so wheel scroll doesn't snap to 250 */
 const loanDraftAmounts = new Map();
+
+function vaultCollateralOpts(state) {
+  return { collateralValue: getVaultPledgedAppraisal(state || {}) };
+}
 
 export function setLoanDraftAmount(bankId, val) {
   if (!bankId || !Number.isFinite(val)) return;
@@ -103,12 +108,12 @@ function liveLoanAmtInput(bankList) {
   return hovered || null;
 }
 
-function syncLiveLoanInputs(bankList, finance, gameDay = 1) {
+function syncLiveLoanInputs(bankList, finance, gameDay = 1, collatOpts = {}) {
   bankList.querySelectorAll('.loan-amt').forEach(input => {
     const bankId = input.dataset.bank;
     const bank = BANKS.find(b => b.id === bankId);
-    const offers = quoteBankOffers(bankId, finance, gameDay);
-    const ceil = maxBorrowableForBank(bankId, finance, 50, gameDay);
+    const offers = quoteBankOffers(bankId, finance, gameDay, collatOpts);
+    const ceil = maxBorrowableForBank(bankId, finance, 50, gameDay, collatOpts);
     const eligible = ceil >= 100;
     input.min = '100';
     input.max = String(Math.max(eligible ? ceil : 5000, 100));
@@ -150,7 +155,7 @@ function syncLiveLoanInputs(bankList, finance, gameDay = 1) {
       if (cBtn) cBtn.textContent = `${offers.companyApr}% APR`;
     }
     bankList.querySelectorAll(`.borrow-btn[data-bank="${bankId}"]`).forEach(btn => {
-      const typeMax = maxBorrowableAmount(bankId, btn.dataset.type, finance, 50, gameDay);
+      const typeMax = maxBorrowableAmount(bankId, btn.dataset.type, finance, 50, gameDay, collatOpts);
       btn.disabled = false;
       btn.classList.toggle('is-tight', typeMax < 100);
       btn.title = typeMax >= 100
@@ -162,6 +167,7 @@ function syncLiveLoanInputs(bankList, finance, gameDay = 1) {
 
 function bindBankListActions(bankList, state, finance) {
   const gameDay = formatMarketClock()?.day || 1;
+  const collatOpts = vaultCollateralOpts(state);
   bankList.querySelectorAll('.loan-amt').forEach(input => {
     const persist = () => {
       const v = parseFloat(input.value);
@@ -178,7 +184,7 @@ function bindBankListActions(bankList, state, finance) {
       const input = bankList.querySelector(`.loan-amt[data-bank="${btn.dataset.bank}"]`);
       let amount = parseFloat(input?.value) || 0;
       setLoanDraftAmount(input?.dataset.bank, amount);
-      const typeMax = maxBorrowableAmount(btn.dataset.bank, btn.dataset.type, finance, 50, gameDay);
+      const typeMax = maxBorrowableAmount(btn.dataset.bank, btn.dataset.type, finance, 50, gameDay, collatOpts);
       if (typeMax >= 100 && amount > typeMax) {
         // Soft hint only — final underwriting still runs after confirm
         toast(`Heads up: ${btn.dataset.type} max here is about $${typeMax.toLocaleString()}`, { type: 'info' });
@@ -193,6 +199,8 @@ export function renderFinance(state) {
   const finance = state.finance;
   if (!finance) return;
   const gameDay = formatMarketClock()?.day || 1;
+  const collatOpts = vaultCollateralOpts(state);
+  const pledged = getVaultPledgedAppraisal(state);
   const pUtil = Math.round(utilizationRatio(finance, 'personal') * 100);
   const bUtil = Math.round(utilizationRatio(finance, 'company') * 100);
 
@@ -215,6 +223,11 @@ export function renderFinance(state) {
         <span class="credit-pill-lbl">Total debt</span>
         <span class="credit-pill-val down">${fmt(getTotalDebt(finance))}</span>
         <span class="credit-tier">Outstanding</span>
+      </div>
+      <div class="credit-pill">
+        <span class="credit-pill-lbl">Vault pledged</span>
+        <span class="credit-pill-val">${fmt(pledged)}</span>
+        <span class="credit-tier">50% LTV collateral</span>
       </div>`;
   }
 
@@ -223,13 +236,13 @@ export function renderFinance(state) {
     const live = liveLoanAmtInput(bankList);
     if (live && bankList.childElementCount) {
       // Keep the focused/hovered input alive so wheel scroll isn't wiped by tick re-renders
-      syncLiveLoanInputs(bankList, finance, gameDay);
+      syncLiveLoanInputs(bankList, finance, gameDay, collatOpts);
       bindBankListActions(bankList, state, finance);
     } else {
       snapLoanDrafts(bankList);
       const groups = ['National banks', 'Credit union'];
       const lenderRows = BANKS.map((bank) => {
-        const offers = quoteBankOffers(bank.id, finance, gameDay);
+        const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
         return {
           id: bank.id,
           personalApr: offers?.personalApr ?? bank.personalApr,
@@ -243,8 +256,8 @@ export function renderFinance(state) {
         return `<div class="bank-section">
           <div class="bank-section-label">${group}</div>
           ${banks.map(bank => {
-            const offers = quoteBankOffers(bank.id, finance, gameDay);
-            const ceil = maxBorrowableForBank(bank.id, finance, 50, gameDay);
+            const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
+            const ceil = maxBorrowableForBank(bank.id, finance, 50, gameDay, collatOpts);
             const personalMax = offers?.personalMax || 0;
             const companyMax = offers?.companyMax || 0;
             const eligible = ceil >= 100;

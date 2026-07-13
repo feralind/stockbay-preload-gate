@@ -8,11 +8,13 @@ import { KNOWN_VAULT_IDS, VAULT_COST_BY_ID } from './vault.js';
 import {
   BLACKMARKET_COST_BY_ID, BLACKMARKET_ITEM_POOL, BLACKMARKET_SEEN_EXPIRED_MAX, KNOWN_BLACKMARKET_IDS,
 } from './blackmarket.js';
+import { PRIVATE_SALON_POOL, SALON_SEEN_EXPIRED_MAX } from './private-salon.js';
 import { sanitizeEquippedRelics } from './relics.js';
 import { THE_SEAT } from './the-seat.js';
 import {
   getCollectionClaimedCashTotal,
   sanitizeCollectionClaims,
+  COLLECTION_MILESTONE_BY_ID,
 } from './collection-log.js';
 
 const MAX_CASH = 1e12;
@@ -186,6 +188,24 @@ export function sanitizeRunData(run) {
     });
   }
 
+  if (Array.isArray(out.vaultPledged)) {
+    out.vaultPledged = [...new Set(out.vaultPledged.filter((id) => (
+      KNOWN_VAULT_IDS.has(id) && out.vaultOwned.includes(id)
+    )))];
+  } else {
+    out.vaultPledged = [];
+  }
+
+  const rawSalonSpend = Number(out.salonSpentTotal);
+  out.salonSpentTotal = Number.isFinite(rawSalonSpend) ? clamp(rawSalonSpend, 0, MAX_CASH) : 0;
+  if (Array.isArray(out.salonSeenExpired)) {
+    out.salonSeenExpired = out.salonSeenExpired
+      .filter((id) => PRIVATE_SALON_POOL.some((item) => item.id === id))
+      .slice(-SALON_SEEN_EXPIRED_MAX);
+  } else {
+    out.salonSeenExpired = [];
+  }
+
   if (Array.isArray(out.blackMarketOwned)) {
     out.blackMarketOwned = [...new Set(out.blackMarketOwned.filter((id) => KNOWN_BLACKMARKET_IDS.has(id)))];
   } else {
@@ -227,7 +247,11 @@ export function sanitizeRunData(run) {
     seatOwned: out.seatOwned,
   });
 
-  const collectionOpts = { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT };
+  const collectionOpts = {
+    blackMarketPool: BLACKMARKET_ITEM_POOL,
+    seatItem: THE_SEAT,
+    salonPool: PRIVATE_SALON_POOL,
+  };
   out.collectionClaims = sanitizeCollectionClaims(out.collectionClaims, out, collectionOpts);
   out.collectionRewardCashTotal = getCollectionClaimedCashTotal(out.collectionClaims);
 
@@ -241,9 +265,13 @@ export function sanitizeRunData(run) {
     m.simStatusCoachShown = !!m.simStatusCoachShown;
     m.blackMarketLegendCoachShown = !!m.blackMarketLegendCoachShown;
     m.vaultAuraRepToday = Math.max(0, Math.floor(Number(m.vaultAuraRepToday) || 0));
-    const flairOk = out.collectionClaims.includes('pct100');
+    const claimedFlairs = new Set(
+      out.collectionClaims
+        .map((id) => COLLECTION_MILESTONE_BY_ID.get(id)?.flair)
+        .filter(Boolean),
+    );
     const flair = typeof m.collectionFlair === 'string' ? m.collectionFlair.trim().slice(0, 40) : '';
-    m.collectionFlair = flairOk && flair ? flair : null;
+    m.collectionFlair = flair && claimedFlairs.has(flair) ? flair : null;
     out.meta = m;
   }
 

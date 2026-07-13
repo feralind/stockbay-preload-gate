@@ -4,7 +4,8 @@
  */
 
 import { getBlackMarketItem, BLACKMARKET_ITEM_POOL } from '../blackmarket.js';
-import { getCollectionPrestigeScore } from '../collection-log.js';
+import { getCollectionPrestigeScore, getFlagshipEquippedVaultItem } from '../collection-log.js';
+import { PRIVATE_SALON_POOL } from '../private-salon.js';
 import { getTotalDebt } from '../finance.js';
 import { getLeaderboard } from '../leaderboard.js';
 import { repTitle } from '../meta.js';
@@ -120,10 +121,13 @@ export function renderDashboard(state) {
   if (firm) {
     const staffN = state.staff?.length || 0;
     const perksN = state.perks?.length || 0;
+    const profile = getProfile();
+    const flagship = getFlagshipEquippedVaultItem(profile?.cosmetics, state.vaultOwned);
     firm.innerHTML = `
       <div class="dash-row"><span>Staff</span><span>${staffN}</span></div>
       <div class="dash-row"><span>Perks</span><span>${perksN}</span></div>
       ${buildFirmRelicRowHtml(state)}
+      ${flagship ? `<div class="dash-row" title="Highest-appraisal equipped collectible"><span>Flagship</span><span>${escapeHtml(flagship.name)} · ${fmt(flagship.cost)}</span></div>` : ''}
       <div class="dash-row"><span>Personal credit</span><span>${state.finance?.personalCredit ?? 680}</span></div>
       <div class="dash-row"><span>Business credit</span><span>${state.finance?.businessCredit ?? 700}</span></div>
       <div class="dash-row"><span>Title</span><span>${repTitle(meta.reputation ?? 0)}</span></div>
@@ -135,7 +139,11 @@ export function renderDashboard(state) {
     const runs = getLeaderboard();
     const profile = getProfile();
     const titleItem = getVaultItem(profile?.cosmetics?.title);
-    const prestige = getCollectionPrestigeScore(state, { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT });
+    const prestige = getCollectionPrestigeScore(state, {
+      blackMarketPool: BLACKMARKET_ITEM_POOL,
+      seatItem: THE_SEAT,
+      salonPool: PRIVATE_SALON_POOL,
+    });
     const flair = [];
     if (titleItem) flair.push(titleItem.name);
     if (meta.collectionFlair) flair.push(String(meta.collectionFlair));

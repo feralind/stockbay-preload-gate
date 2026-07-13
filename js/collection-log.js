@@ -1,10 +1,10 @@
 // @ts-check
-import { VAULT_ITEMS } from './vault.js';
+import { VAULT_ITEMS, getVaultItem, VAULT_COST_BY_ID } from './vault.js';
 import { isRelicItem } from './relics.js';
 
 function normalizeRarity(item, fallback = 'common') {
   const r = String(item?.rarity || '').toLowerCase();
-  if (r === 'common' || r === 'rare' || r === 'legendary') return r;
+  if (r === 'common' || r === 'rare' || r === 'legendary' || r === 'masterwork' || r === 'crown') return r;
   return fallback;
 }
 
@@ -77,7 +77,46 @@ export const COLLECTION_MILESTONES = [
     flair: null,
     blurb: 'A Seat on the Trading Floor is yours.',
   },
+  {
+    id: 'masterwork3',
+    label: 'Master Collector',
+    kind: 'masterwork_n',
+    threshold: 3,
+    rep: 100,
+    cash: 5000,
+    flair: 'Master Collector',
+    blurb: 'Own three masterwork-tier Trophy Vault pieces.',
+  },
+  {
+    id: 'crownSecured',
+    label: 'Crown Provenance',
+    kind: 'crown_any',
+    rep: 150,
+    cash: 10000,
+    flair: 'Crown Provenance',
+    blurb: 'Acquire any Private Salon crown jewel.',
+  },
 ];
+
+/** Highest-appraisal equipped vault piece (masterwork/crown flex). */
+export function getFlagshipEquippedVaultItem(cosmetics = {}, vaultOwned = []) {
+  const owned = new Set(Array.isArray(vaultOwned) ? vaultOwned : []);
+  const slots = ['dashboard', 'background', 'badge', 'title'];
+  let best = null;
+  let bestCost = 0;
+  for (const slot of slots) {
+    const id = cosmetics?.[slot];
+    if (!id || !owned.has(id)) continue;
+    const item = getVaultItem(id);
+    if (!item) continue;
+    const cost = Number(VAULT_COST_BY_ID.get(id) || item.cost || 0);
+    if (cost > bestCost) {
+      bestCost = cost;
+      best = item;
+    }
+  }
+  return best;
+}
 
 export const KNOWN_COLLECTION_MILESTONE_IDS = new Set(COLLECTION_MILESTONES.map((m) => m.id));
 export const COLLECTION_MILESTONE_BY_ID = new Map(COLLECTION_MILESTONES.map((m) => [m.id, m]));
@@ -85,9 +124,9 @@ export const COLLECTION_MILESTONE_BY_ID = new Map(COLLECTION_MILESTONES.map((m) 
 /**
  * Build collection entries from all registered sources.
  * @param {object} state
- * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any, salonPool?: Array<any> }} [opts]
  */
-export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seatItem = null } = {}) {
+export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seatItem = null, salonPool = [] } = {}) {
   const vaultOwned = new Set(Array.isArray(state.vaultOwned) ? state.vaultOwned : []);
   const blackOwned = new Set(Array.isArray(state.blackMarketOwned) ? state.blackMarketOwned : []);
   const entries = [];
@@ -97,9 +136,23 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       id: item.id,
       name: item.name,
       category: item.category,
-      icon: item.icon || '',
+      icon: '',
       source: 'vault',
       rarity: normalizeRarity(item, 'common'),
+      owned: vaultOwned.has(item.id),
+      cost: Number(item.cost) || 0,
+    });
+  });
+
+  (Array.isArray(salonPool) ? salonPool : []).forEach((item) => {
+    if (!item?.id) return;
+    entries.push({
+      id: item.id,
+      name: item.name || item.id,
+      category: item.category || 'salon',
+      icon: '',
+      source: 'salon',
+      rarity: normalizeRarity(item, 'crown'),
       owned: vaultOwned.has(item.id),
       cost: Number(item.cost) || 0,
     });
@@ -157,9 +210,9 @@ export function getCollectionCompletion(state = {}, opts = {}) {
 /**
  * Late-game progression score for leaderboard/profile flex.
  * @param {object} state
- * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
+ * @param {{ blackMarketPool?: Array<any>, seatItem?: any, salonPool?: Array<any> }} [opts]
  */
-export function getCollectionPrestigeScore(state = {}, { blackMarketPool = [], seatItem = null } = {}) {
+export function getCollectionPrestigeScore(state = {}, { blackMarketPool = [], seatItem = null, salonPool = [] } = {}) {
   const vaultOwned = new Set(Array.isArray(state.vaultOwned) ? state.vaultOwned : []);
   const blackOwned = new Set(Array.isArray(state.blackMarketOwned) ? state.blackMarketOwned : []);
   const equippedRelics = new Set(
@@ -168,7 +221,13 @@ export function getCollectionPrestigeScore(state = {}, { blackMarketPool = [], s
   );
   let score = 0;
 
-  score += vaultOwned.size * 8;
+  for (const id of vaultOwned) {
+    const item = getVaultItem(id);
+    const rarity = normalizeRarity(item, 'common');
+    if (rarity === 'crown') score += 400;
+    else if (rarity === 'masterwork') score += 120;
+    else score += 8;
+  }
 
   (Array.isArray(blackMarketPool) ? blackMarketPool : []).forEach((item) => {
     if (!item?.id || !blackOwned.has(item.id)) return;
@@ -204,6 +263,13 @@ function isMilestoneEarned(milestone, state, opts) {
   if (milestone.kind === 'seat') {
     return !!state.seatOwned;
   }
+  if (milestone.kind === 'masterwork_n') {
+    const ownedMasterworks = entries.filter((e) => e.source === 'vault' && e.rarity === 'masterwork' && e.owned);
+    return ownedMasterworks.length >= (milestone.threshold || 3);
+  }
+  if (milestone.kind === 'crown_any') {
+    return entries.some((e) => e.source === 'salon' && e.rarity === 'crown' && e.owned);
+  }
   return false;
 }
 
@@ -232,8 +298,8 @@ export function getCollectionMilestones(state = {}, opts = {}) {
  */
 export function getCollectionHuntTargets(state = {}, opts = {}) {
   const limit = Math.max(1, Math.min(6, Math.floor(Number(opts.limit) || 3)));
-  const rarityRank = { legendary: 3, rare: 2, common: 1 };
-  const sourceRank = { seat: 4, blackmarket: 3, vault: 2 };
+  const rarityRank = { crown: 5, masterwork: 4, legendary: 3, rare: 2, common: 1 };
+  const sourceRank = { salon: 5, seat: 4, blackmarket: 3, vault: 2 };
   return getCollectionLogEntries(state, opts)
     .filter((entry) => !entry.owned)
     .slice()

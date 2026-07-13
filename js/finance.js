@@ -2,6 +2,7 @@
 /** Financing — personal & company loans scaled for $500 home-desk start */
 
 import { macroAprAdjustment } from './macro.js';
+import { VAULT_COLLATERAL_LTV } from './vault.js';
 
 export const BANKS = [
   {
@@ -174,9 +175,21 @@ export function otherBanksDebt(finance, bankId, type) {
  * Max new principal this bank will underwrite right now (before step snap).
  * Shared by quoteLoan + maxBorrowableAmount so UI and approval never disagree.
  */
-export function underwriteMaxAmount(bankId, type, finance) {
+/**
+ * Max new principal this bank will underwrite right now (before step snap).
+ * Optional vault collateral is a separate additive term (capped), never a multiplier
+ * on tier.limitMult / util / credit math.
+ *
+ * @param {string} bankId
+ * @param {'personal'|'company'} type
+ * @param {object} finance
+ * @param {{ collateralValue?: number }} [opts]
+ */
+export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0 } = {}) {
   const bank = BANKS.find((b) => b.id === bankId);
-  if (!bank || !finance) return { max: 0, bankMax: 0, outstanding: 0, util: 0, reason: 'Unknown bank' };
+  if (!bank || !finance) {
+    return { max: 0, bankMax: 0, outstanding: 0, util: 0, collateralBonus: 0, reason: 'Unknown bank' };
+  }
   const isPersonal = type === 'personal';
   const credit = isPersonal ? finance.personalCredit : finance.businessCredit;
   if (credit < bank.minCredit) {
@@ -185,6 +198,7 @@ export function underwriteMaxAmount(bankId, type, finance) {
       bankMax: 0,
       outstanding: typeDebt(finance, type),
       util: utilizationRatio(finance, type),
+      collateralBonus: 0,
       reason: `Need ${bank.minCredit}+ ${isPersonal ? 'personal' : 'business'} credit (you have ${credit})`,
     };
   }
@@ -196,7 +210,10 @@ export function underwriteMaxAmount(bankId, type, finance) {
   const util = utilizationRatio(finance, type);
   if (util >= 0.8) raw *= 0.5;
   else if (util >= 0.6) raw *= 0.75;
-  const max = Math.floor(raw);
+  // 50% LTV on pledged appraisal, hard-capped so bonus never exceeds bankMax.
+  const pledged = Math.max(0, Number(collateralValue) || 0);
+  const collateralBonus = Math.floor(Math.min(pledged, bankMax) * VAULT_COLLATERAL_LTV);
+  const max = Math.floor(raw) + collateralBonus;
   let reason = null;
   if (max < 100) {
     const elsewhere = otherBanksDebt(finance, bankId, type);
@@ -208,7 +225,7 @@ export function underwriteMaxAmount(bankId, type, finance) {
       reason = `No ${type} room left at ${bank.short} right now`;
     }
   }
-  return { max, bankMax, outstanding, util, reason };
+  return { max, bankMax, outstanding, util, collateralBonus, reason };
 }
 
 /** Aggregate bank ceilings for a loan type (utilization denominator). */
@@ -294,21 +311,21 @@ export function effectiveApr(baseApr, creditScore, minCredit) {
 }
 
 /** Live personal + company quotes for UI chips (refreshes with finance render). */
-export function quoteBankOffers(bankId, finance, gameDay = 1) {
+export function quoteBankOffers(bankId, finance, gameDay = 1, opts = {}) {
   const bank = BANKS.find(b => b.id === bankId);
   if (!bank || !finance) return null;
   return {
     bank,
     personalApr: priceApr(bank, 'personal', finance, gameDay),
     companyApr: priceApr(bank, 'company', finance, gameDay),
-    personalMax: maxBorrowableAmount(bankId, 'personal', finance, 50, gameDay),
-    companyMax: maxBorrowableAmount(bankId, 'company', finance, 50, gameDay),
+    personalMax: maxBorrowableAmount(bankId, 'personal', finance, 50, gameDay, opts),
+    companyMax: maxBorrowableAmount(bankId, 'company', finance, 50, gameDay, opts),
     personalOk: finance.personalCredit >= bank.minCredit,
     companyOk: finance.businessCredit >= bank.minCredit,
   };
 }
 
-export function quoteLoan(bankId, type, amount, finance, gameDay = 1) {
+export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {}) {
   const bank = BANKS.find(b => b.id === bankId);
   if (!bank) return { ok: false, msg: 'Unknown bank' };
   const isPersonal = type === 'personal';
@@ -344,7 +361,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1) {
     };
   }
 
-  const uw = underwriteMaxAmount(bankId, type, finance);
+  const uw = underwriteMaxAmount(bankId, type, finance, opts);
   if (amount > uw.max) {
     const elsewhere = otherBanksDebt(finance, bankId, type);
     let msg = uw.reason || `Max ${isPersonal ? 'personal' : 'company'} loan at ${bank.short} right now: $${Math.max(0, uw.max).toLocaleString()}`;
@@ -363,6 +380,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1) {
       amount,
       credit,
       maxApproved: uw.max,
+      collateralBonus: uw.collateralBonus || 0,
       debtHere: bankDebt(finance, bankId, type),
       debtElsewhere: elsewhere,
       totalTypeDebt: uw.outstanding,
@@ -394,23 +412,24 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1) {
     debtElsewhere: otherBanksDebt(finance, bankId, type),
     totalTypeDebt: outstanding,
     maxApproved: uw.max,
+    collateralBonus: uw.collateralBonus || 0,
   };
 }
 
 /** Highest amount this bank will approve right now for a loan type (step-aligned). */
-export function maxBorrowableAmount(bankId, type, finance, step = 50, gameDay = 1) {
+export function maxBorrowableAmount(bankId, type, finance, step = 50, gameDay = 1, opts = {}) {
   void gameDay; // reserved for future day-sensitive caps; underwrite uses live finance state
-  const uw = underwriteMaxAmount(bankId, type, finance);
+  const uw = underwriteMaxAmount(bankId, type, finance, opts);
   if (uw.max < 100) return 0;
   const snapped = Math.floor(uw.max / step) * step;
   return Math.max(0, snapped);
 }
 
 /** Shared amount field serves both Personal + Company — use the higher eligible ceiling. */
-export function maxBorrowableForBank(bankId, finance, step = 50, gameDay = 1) {
+export function maxBorrowableForBank(bankId, finance, step = 50, gameDay = 1, opts = {}) {
   return Math.max(
-    maxBorrowableAmount(bankId, 'personal', finance, step, gameDay),
-    maxBorrowableAmount(bankId, 'company', finance, step, gameDay),
+    maxBorrowableAmount(bankId, 'personal', finance, step, gameDay, opts),
+    maxBorrowableAmount(bankId, 'company', finance, step, gameDay, opts),
   );
 }
 
@@ -457,9 +476,14 @@ function recordBorrowInquiry(finance, gameDay) {
   finance.recentBorrowDays = finance.recentBorrowDays.filter(d => day - d < 14);
 }
 
-export function takeLoan(bankId, type, amount, finance, portfolio, gameDay = 1) {
-  const q = quoteLoan(bankId, type, amount, finance, gameDay);
+export function takeLoan(bankId, type, amount, finance, portfolio, gameDay = 1, opts = {}) {
+  const q = quoteLoan(bankId, type, amount, finance, gameDay, opts);
   if (!q.ok) return q;
+
+  const collateralIds = [...new Set(
+    (Array.isArray(opts.collateralIds) ? opts.collateralIds : [])
+      .filter((id) => typeof id === 'string' && id),
+  )];
 
   const loan = {
     id: `loan_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -476,6 +500,8 @@ export function takeLoan(bankId, type, amount, finance, portfolio, gameDay = 1) 
     interestTicks: 0,
     lastPartialCreditDay: 0,
     status: 'active',
+    /** Vault item ids pledged when this loan was underwritten (locks unpledge). */
+    collateralIds,
   };
 
   finance.loans.push(loan);
@@ -638,7 +664,12 @@ export function processDailyLoans(finance, portfolio, gameDay = 1) {
       // Payment history is the heaviest real-life factor — asymmetric damage
       if (loan.type === 'personal') applyCreditHit(finance, 'personal', 28);
       else applyCreditHit(finance, 'business', 22);
-      events.push({ type: 'late', msg: `LATE: ${loan.bankName} — missed $${due.toFixed(2)}, fee $${fee.toFixed(2)}, credit hit`, rep: -35 });
+      events.push({
+        type: 'late',
+        loanId: loan.id,
+        msg: `LATE: ${loan.bankName} — missed $${due.toFixed(2)}, fee $${fee.toFixed(2)}, credit hit`,
+        rep: -35,
+      });
     }
 
     if (loan.daysLeft <= 0 && loan.balance > 0) {

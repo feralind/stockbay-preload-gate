@@ -180,7 +180,7 @@ async function main() {
   const {
     createFinanceState, takeLoan, makeLoanPayment, processDailyLoans, getTotalDebt,
     DAILY_CREDIT_GAIN_CAP, quoteLoan, BANKS, priceApr, maxBorrowableAmount,
-    bankDebt, otherBanksDebt,
+    bankDebt, otherBanksDebt, underwriteMaxAmount,
   } = fin;
 
   test('rapid same-day borrow→repay does not raise credit', () => {
@@ -566,7 +566,48 @@ async function main() {
   const cfg = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
   const { PERKS, REP_RANKS, getRepRank, getNextRepRank, canPurchasePerk, CONFIG } = cfg;
   const vaultMod = await import(pathToFileURL(path.join(__dirname, '../js/vault.js')).href);
-  const { VAULT_ITEMS, canPurchaseVaultItem, purchaseVaultItem, getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose } = vaultMod;
+  const {
+    VAULT_ITEMS, KNOWN_VAULT_IDS, VAULT_CATEGORY_LABELS, VAULT_EQUIP_SLOT_LABELS,
+    VAULT_COLLATERAL_LTV, MASTERWORK_ITEM_BONUS_CAPS,
+    canPurchaseVaultItem, purchaseVaultItem, getVaultItem, isMasterworkVaultItem,
+    getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose,
+    getCategoryDisplayLabel, getVaultPledgedAppraisal, sanitizeVaultPledged,
+    togglePledgedVaultItem, repossessVaultForLoan, loanLocksVaultPledge,
+  } = vaultMod;
+  /** Stable save-key ids — rename/reflavor must never change these. */
+  const STABLE_VAULT_IDS = [
+    'goldTerminal', 'tungstenDial', 'obsidianTicker', 'glassTickerWall',
+    'yachtBackground', 'penthouseNight', 'bullMarble', 'auroraDeck',
+    'crashDayTape', 'apexBadge', 'halcyonPin', 'bronzeBullBust',
+    'floorLegendTitle', 'volatilityWhisperer', 'closingBellRoyalty', 'deskSovereign',
+  ];
+  /** Phase A authenticity display names — regression guard against silent renames. */
+  const EXPECTED_VAULT_NAMES = {
+    goldTerminal: 'Gilded Astrolabe',
+    tungstenDial: 'Sundial Fragment, Weathered',
+    obsidianTicker: 'Obsidian Mirror',
+    glassTickerWall: 'Murano Glass Cabinet',
+    yachtBackground: 'Study of the Tide',
+    penthouseNight: 'Nocturne No. 7',
+    bullMarble: 'The Gilded Bull, Attributed',
+    auroraDeck: 'Aurora Study',
+    crashDayTape: 'First Edition Ticker Tape, 1929',
+    apexBadge: 'Signet Ring, Unknown House',
+    halcyonPin: 'Gold Coin, Byzantine Mint',
+    bronzeBullBust: 'Bronze Figurine, Bronze Age',
+    floorLegendTitle: 'Recognized Collector',
+    volatilityWhisperer: 'Provenance: Verified',
+    closingBellRoyalty: 'Honorary Curator',
+    deskSovereign: 'Master Collector',
+  };
+  const MASTERWORK_IDS = [
+    'imperialTriptych', 'augustusLaurel', 'gutenbergFolio', 'rothkoField', 'diademProvenance',
+  ];
+  const salonMod = await import(pathToFileURL(path.join(__dirname, '../js/private-salon.js')).href);
+  const {
+    PRIVATE_SALON_POOL, PRIVATE_SALON_ITEMS,
+    getTodaysSalonListing, getActiveSalonListing, purchaseSalonItem,
+  } = salonMod;
   const blackMarketMod = await import(pathToFileURL(path.join(__dirname, '../js/blackmarket.js')).href);
   const {
     BLACKMARKET_ITEM_POOL,
@@ -908,6 +949,291 @@ async function main() {
       assert.ok(resistance != null && resistance > 100);
     });
   }
+
+  test('VAULT_ITEMS core 16 save-key ids unchanged from Phase A rename', () => {
+    for (const id of STABLE_VAULT_IDS) {
+      assert.ok(VAULT_ITEMS[id], `missing core vault id ${id}`);
+      assert.ok(KNOWN_VAULT_IDS.has(id), `KNOWN_VAULT_IDS missing ${id}`);
+      assert.equal(VAULT_ITEMS[id].id, id);
+      assert.equal(VAULT_ITEMS[id].name, EXPECTED_VAULT_NAMES[id], `display name drift for ${id}`);
+      assert.ok(typeof VAULT_ITEMS[id].desc === 'string' && VAULT_ITEMS[id].desc.length > 0);
+      assert.ok(Number.isFinite(VAULT_ITEMS[id].cost) && VAULT_ITEMS[id].cost > 0);
+      assert.ok(['dashboard', 'background', 'trophy', 'title'].includes(VAULT_ITEMS[id].category));
+      assert.equal(VAULT_ITEMS[id].icon, undefined, `dead icon key should be removed for ${id}`);
+    }
+  });
+
+  test('VAULT_ITEMS catalog includes five masterworks and KNOWN_VAULT_IDS covers salon crowns', () => {
+    const ids = Object.keys(VAULT_ITEMS).sort();
+    assert.equal(ids.length, 21);
+    for (const id of MASTERWORK_IDS) {
+      assert.ok(VAULT_ITEMS[id], `missing masterwork ${id}`);
+      assert.equal(VAULT_ITEMS[id].rarity, 'masterwork');
+      assert.ok(VAULT_ITEMS[id].prestigeBonus);
+    }
+    assert.equal(KNOWN_VAULT_IDS.size, 23);
+    for (const item of PRIVATE_SALON_POOL) {
+      assert.ok(KNOWN_VAULT_IDS.has(item.id));
+      assert.equal(item.rarity, 'crown');
+      assert.equal(item.salonOnly, true);
+    }
+  });
+
+  test('vault category and equip-slot labels match authenticity theming', () => {
+    assert.equal(VAULT_CATEGORY_LABELS.dashboard, 'Desk Curio');
+    assert.equal(VAULT_CATEGORY_LABELS.background, 'Gallery');
+    assert.equal(VAULT_CATEGORY_LABELS.trophy, 'Relic');
+    assert.equal(VAULT_CATEGORY_LABELS.title, 'Recognition');
+    assert.equal(VAULT_EQUIP_SLOT_LABELS.badge, 'Relic');
+    assert.equal(getCategoryDisplayLabel('trophy'), 'Relic');
+    assert.equal(getCategoryDisplayLabel('seat'), 'The Seat');
+    assert.equal(getCategoryDisplayLabel('dashboard'), 'Desk Curio');
+  });
+
+  test('getVaultDeskAura ignores unequipped cosmetics and forged slot mismatches', () => {
+    const owned = ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'];
+    const empty = getVaultDeskAura({ cosmetics: {}, vaultOwned: owned });
+    assert.equal(empty.tier, 0);
+    assert.match(empty.summary, /collectible/i);
+    // Wrong slot: trophy item parked in dashboard must not count
+    const forged = getVaultDeskAura({
+      cosmetics: { dashboard: 'apexBadge', background: 'yachtBackground' },
+      vaultOwned: owned,
+    });
+    assert.equal(forged.equipped, 1);
+    assert.equal(forged.tier, 1);
+  });
+
+  test('underwriteMaxAmount with collateral raises the ceiling by exactly 50% of pledged value, capped at bankMax', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 750;
+    const base = underwriteMaxAmount('chase', 'personal', finance);
+    const pledged = 10000;
+    const withCollat = underwriteMaxAmount('chase', 'personal', finance, { collateralValue: pledged });
+    const expectedBonus = Math.floor(Math.min(pledged, base.bankMax) * VAULT_COLLATERAL_LTV);
+    assert.equal(withCollat.collateralBonus, expectedBonus);
+    assert.equal(withCollat.max, base.max + expectedBonus);
+    assert.equal(VAULT_COLLATERAL_LTV, 0.5);
+  });
+
+  test('underwriteMaxAmount collateral bonus never exceeds bankMax regardless of collateral value', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 750;
+    const base = underwriteMaxAmount('chase', 'personal', finance);
+    const huge = underwriteMaxAmount('chase', 'personal', finance, { collateralValue: 1e9 });
+    assert.ok(huge.collateralBonus <= base.bankMax);
+    assert.equal(huge.collateralBonus, Math.floor(base.bankMax * VAULT_COLLATERAL_LTV));
+  });
+
+  test('collateral bonus does not change credit score, APR tier, or utilization ratio math', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 700;
+    const creditBefore = finance.personalCredit;
+    const aprBefore = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 1);
+    const utilBefore = underwriteMaxAmount('chase', 'personal', finance).util;
+    underwriteMaxAmount('chase', 'personal', finance, { collateralValue: 50000 });
+    assert.equal(finance.personalCredit, creditBefore);
+    assert.equal(priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 1), aprBefore);
+    assert.equal(underwriteMaxAmount('chase', 'personal', finance, { collateralValue: 50000 }).util, utilBefore);
+  });
+
+  test('togglePledgedVaultItem rejects pledging an unowned item', () => {
+    const state = {
+      vaultOwned: [],
+      vaultPledged: [],
+      finance: createFinanceState(),
+    };
+    const result = togglePledgedVaultItem(state, 'goldTerminal');
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'unowned');
+  });
+
+  test('togglePledgedVaultItem rejects unpledging while an active loan depends on it', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 750;
+    const state = {
+      vaultOwned: ['goldTerminal'],
+      vaultPledged: ['goldTerminal'],
+      finance,
+      portfolio: createPortfolio(50000),
+    };
+    const borrowed = takeLoan('chase', 'personal', 200, finance, state.portfolio, 1, {
+      collateralValue: getVaultPledgedAppraisal(state),
+      collateralIds: ['goldTerminal'],
+    });
+    assert.equal(borrowed.ok, true, borrowed.msg);
+    assert.deepEqual(borrowed.loan.collateralIds, ['goldTerminal']);
+    assert.equal(loanLocksVaultPledge(finance, 'goldTerminal'), true);
+    const unpledge = togglePledgedVaultItem(state, 'goldTerminal');
+    assert.equal(unpledge.ok, false);
+    assert.equal(unpledge.code, 'loan_lock');
+    assert.deepEqual(state.vaultPledged, ['goldTerminal']);
+  });
+
+  test('repossession removes only enough pledged value to cover the specific defaulted loan, cheapest items first', () => {
+    const finance = createFinanceState();
+    const state = {
+      vaultOwned: ['bronzeBullBust', 'crashDayTape', 'goldTerminal'],
+      vaultPledged: ['bronzeBullBust', 'crashDayTape', 'goldTerminal'],
+      finance,
+    };
+    // costs: bronze 6400, crash 8000, gold 5000 — cheapest first is gold then bronze
+    const loan = {
+      id: 'loan_test',
+      balance: 6000,
+      collateralIds: ['bronzeBullBust', 'crashDayTape', 'goldTerminal'],
+      status: 'active',
+    };
+    finance.loans = [loan];
+    const result = repossessVaultForLoan(state, loan);
+    assert.deepEqual(result.seized, ['goldTerminal', 'bronzeBullBust']);
+    assert.equal(result.covered, 5000 + 6400);
+    assert.ok(!state.vaultOwned.includes('goldTerminal'));
+    assert.ok(!state.vaultOwned.includes('bronzeBullBust'));
+    assert.ok(state.vaultOwned.includes('crashDayTape'));
+    assert.ok(!state.vaultPledged.includes('goldTerminal'));
+  });
+
+  test('repossession clears the item from an equipped cosmetic slot if active', () => {
+    const finance = createFinanceState();
+    const state = {
+      vaultOwned: ['goldTerminal'],
+      vaultPledged: ['goldTerminal'],
+      cosmetics: { dashboard: 'goldTerminal', background: null, title: null, trophy: null },
+      finance,
+    };
+    const loan = {
+      id: 'loan_equip',
+      balance: 5000,
+      collateralIds: ['goldTerminal'],
+      status: 'active',
+    };
+    finance.loans = [loan];
+    const result = repossessVaultForLoan(state, loan);
+    assert.deepEqual(result.seized, ['goldTerminal']);
+    assert.equal(state.cosmetics.dashboard, null);
+    assert.ok(!state.vaultOwned.includes('goldTerminal'));
+  });
+
+  test('sanitizeVaultPledged strips pledged ids not present in vaultOwned', () => {
+    const cleaned = sanitizeVaultPledged(['goldTerminal', 'yachtBackground', 'forged'], ['goldTerminal']);
+    assert.deepEqual(cleaned, ['goldTerminal']);
+  });
+
+  {
+    const vaultUi = await import(pathToFileURL(path.join(__dirname, '../js/ui/vault.js')).href);
+    const { VAULT_MOTIF_BY_ID, renderVaultFoilArt } = vaultUi;
+    const ALLOWED_MOTIFS = new Set(['painting', 'coin', 'instrument', 'vessel', 'relic', 'seal']);
+
+    test('vault foil motif map covers every known vault and salon id with a known template', () => {
+      for (const id of KNOWN_VAULT_IDS) {
+        const item = getVaultItem(id);
+        const motif = VAULT_MOTIF_BY_ID[id];
+        assert.ok(ALLOWED_MOTIFS.has(motif), `${id} missing/unknown motif: ${motif}`);
+        const svg = renderVaultFoilArt(item);
+        assert.ok(typeof svg === 'string' && svg.includes('<svg'), `${id} foil art missing`);
+      }
+    });
+  }
+
+  test('masterwork equipped prestige bonus raises aura REP/close and daily cap', () => {
+    const auraBase = getVaultDeskAura({
+      cosmetics: { dashboard: 'goldTerminal', background: 'yachtBackground', badge: 'apexBadge', title: 'floorLegendTitle' },
+      vaultOwned: ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'],
+    });
+    const auraMw = getVaultDeskAura({
+      cosmetics: { dashboard: 'goldTerminal', background: 'imperialTriptych', badge: 'apexBadge', title: 'diademProvenance' },
+      vaultOwned: ['goldTerminal', 'imperialTriptych', 'apexBadge', 'diademProvenance'],
+    });
+    assert.equal(auraBase.tier, 3);
+    assert.equal(auraBase.repPerClose, 3);
+    assert.equal(auraBase.dailyCap, 9);
+    assert.equal(auraMw.repPerClose, 3 + 2);
+    assert.equal(auraMw.dailyCap, 9 + 1);
+    assert.ok(auraMw.itemBonuses.repPerClose >= 2);
+  });
+
+  test('masterwork prestige bonuses clamp at MASTERWORK_ITEM_BONUS_CAPS', () => {
+    const aura = getVaultDeskAura({
+      cosmetics: {
+        dashboard: 'gutenbergFolio',
+        background: 'rothkoField',
+        badge: 'augustusLaurel',
+        title: 'diademProvenance',
+      },
+      vaultOwned: ['gutenbergFolio', 'rothkoField', 'augustusLaurel', 'diademProvenance'],
+    });
+    assert.ok(aura.itemBonuses.repPerClose <= MASTERWORK_ITEM_BONUS_CAPS.repPerClose);
+    assert.ok(aura.itemBonuses.dailyCap <= MASTERWORK_ITEM_BONUS_CAPS.dailyCap);
+    assert.equal(aura.itemBonuses.repPerClose, MASTERWORK_ITEM_BONUS_CAPS.repPerClose);
+  });
+
+  test('masterwork purchase books exact cost into vault book value', () => {
+    const state = {
+      portfolio: createPortfolio(2_000_000),
+      meta: { reputation: 1500 },
+      vaultOwned: [],
+      vaultSpentTotal: 0,
+    };
+    const result = purchaseVaultItem(state, 'imperialTriptych');
+    assert.equal(result.ok, true, result.msg);
+    assert.equal(state.portfolio.cash, 2_000_000 - VAULT_ITEMS.imperialTriptych.cost);
+    assert.equal(getVaultBookValue(state), VAULT_ITEMS.imperialTriptych.cost);
+  });
+
+  test('canPurchaseVaultItem rejects salon-only crown ids from standard vault shop', () => {
+    const crown = PRIVATE_SALON_POOL[0];
+    const gate = canPurchaseVaultItem(crown, { cash: 9e9, vaultOwned: [], reputation: 9999 });
+    assert.equal(gate.ok, false);
+    assert.equal(gate.code, 'salon');
+  });
+
+  test('getTodaysSalonListing never includes an owned crown', () => {
+    const owned = ['vermeerAttribution'];
+    for (let day = 1; day <= 400; day++) {
+      const listing = getTodaysSalonListing(day, { ownedIds: owned });
+      if (listing.item) assert.notEqual(listing.item.id, 'vermeerAttribution');
+    }
+  });
+
+  test('purchaseSalonItem adds crown to vaultOwned and debits exact cost', () => {
+    let activeDay = null;
+    for (let day = 1; day <= 500 && !activeDay; day++) {
+      const listing = getActiveSalonListing(day, { ownedIds: [] });
+      if (listing.item?.id === 'vermeerAttribution') activeDay = day;
+    }
+    assert.ok(activeDay, 'expected vermeerAttribution window within 500 days');
+    const item = PRIVATE_SALON_ITEMS.vermeerAttribution;
+    const state = {
+      portfolio: createPortfolio(item.cost + 50000),
+      meta: { reputation: 2000 },
+      vaultOwned: [],
+      vaultSpentTotal: 0,
+      salonSpentTotal: 0,
+    };
+    const result = purchaseSalonItem(state, item, activeDay);
+    assert.equal(result.ok, true, result.msg);
+    assert.ok(state.vaultOwned.includes('vermeerAttribution'));
+    assert.equal(state.portfolio.cash, 50000);
+    assert.equal(getVaultBookValue(state), item.cost);
+  });
+
+  test('collection prestige score weights masterworks and crowns above commons', () => {
+    const commonOnly = getCollectionPrestigeScore({
+      vaultOwned: ['goldTerminal'],
+    }, { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT, salonPool: PRIVATE_SALON_POOL });
+    const masterworkOnly = getCollectionPrestigeScore({
+      vaultOwned: ['imperialTriptych'],
+    }, { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT, salonPool: PRIVATE_SALON_POOL });
+    const crownOnly = getCollectionPrestigeScore({
+      vaultOwned: ['vermeerAttribution'],
+    }, { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT, salonPool: PRIVATE_SALON_POOL });
+    assert.ok(masterworkOnly > commonOnly);
+    assert.ok(crownOnly > masterworkOnly);
+    assert.equal(commonOnly, 8);
+    assert.equal(masterworkOnly, 120);
+    assert.equal(crownOnly, 400);
+  });
 
   test('canPurchaseVaultItem rejects when already owned', () => {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.goldTerminal, {
@@ -2034,6 +2360,18 @@ async function main() {
     assert.equal(clean.vaultSpentTotal, cost);
   });
 
+  test('sanitizeRunData strips vaultPledged ids not present in vaultOwned', () => {
+    const clean = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 500, holdings: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      perks: [],
+      vaultOwned: ['goldTerminal'],
+      vaultPledged: ['goldTerminal', 'yachtBackground', 'forgedItem'],
+      vaultSpentTotal: VAULT_ITEMS.goldTerminal.cost,
+    });
+    assert.deepEqual(clean.vaultPledged, ['goldTerminal']);
+  });
+
   test('sanitizeRunData preserves valid owned vault IDs across load', () => {
     const owned = ['goldTerminal', 'crashDayTape'];
     const spend = owned.reduce((sum, id) => sum + (VAULT_ITEMS[id].cost || 0), 0);
@@ -2045,6 +2383,23 @@ async function main() {
       vaultSpentTotal: spend,
     });
     assert.deepEqual(clean.vaultOwned, owned);
+    assert.equal(clean.vaultSpentTotal, spend);
+  });
+
+  test('sanitizeRunData still accepts pre-rename saves with all known vaultOwned ids', () => {
+    // Pre-rename saves key ownership by id (not display name); Phase A rename must remain save-safe.
+    const owned = [...STABLE_VAULT_IDS];
+    const spend = owned.reduce((sum, id) => sum + (VAULT_ITEMS[id].cost || 0), 0);
+    const clean = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 5000, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      perks: [],
+      vaultOwned: owned,
+      vaultSpentTotal: spend,
+    });
+    assert.ok(clean);
+    assert.deepEqual([...clean.vaultOwned].sort(), [...owned].sort());
+    assert.equal(clean.vaultOwned.length, 16);
     assert.equal(clean.vaultSpentTotal, spend);
   });
 

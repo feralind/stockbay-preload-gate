@@ -66,7 +66,7 @@ import {
   createMetaState, adjustReputation, recordEquityPoint, rollDailyChallenge,
   updateChallengeProgress, claimChallenge, resetDayCounters, recordClosedTrade, repTitle, repFromPnL,
 } from './meta.js';
-import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose } from './vault.js';
+import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
 import {
   getBlackMarketItem, getTodaysBlackMarketListing, maybeShowBlackMarketLegendaryCoach, purchaseBlackMarketItem,
   recordExpiredBlackMarketSeen, BLACKMARKET_ITEM_POOL,
@@ -77,6 +77,9 @@ import {
   tryAutoEquipRelic,
 } from './relics.js';
 import { isSeatListingActive, purchaseSeat, THE_SEAT } from './the-seat.js';
+import {
+  getActiveSalonListing, purchaseSalonItem, PRIVATE_SALON_POOL, collectExpiredSalonIds,
+} from './private-salon.js';
 import { claimCollectionMilestone } from './collection-log.js';
 import {
   renderAll, generateListings, closeModal, getModalShares,
@@ -123,6 +126,9 @@ const state = {
   meta: createMetaState(),
   vaultOwned: [],
   vaultSpentTotal: 0,
+  vaultPledged: [],
+  salonSpentTotal: 0,
+  salonSeenExpired: [],
   blackMarketOwned: [],
   blackMarketEquippedRelics: [],
   blackMarketSeenExpired: [],
@@ -180,6 +186,9 @@ function buildSaveData() {
     meta: state.meta,
     vaultOwned: state.vaultOwned,
     vaultSpentTotal: state.vaultSpentTotal,
+    vaultPledged: state.vaultPledged,
+    salonSpentTotal: state.salonSpentTotal,
+    salonSeenExpired: state.salonSeenExpired,
     blackMarketOwned: state.blackMarketOwned,
     blackMarketEquippedRelics: state.blackMarketEquippedRelics,
     blackMarketSeenExpired: state.blackMarketSeenExpired,
@@ -521,6 +530,12 @@ function loadGame() {
     if (data.meta) state.meta = { ...createMetaState(), ...data.meta };
     if (Array.isArray(data.vaultOwned)) state.vaultOwned = data.vaultOwned.slice();
     state.vaultSpentTotal = Math.max(0, Number(data.vaultSpentTotal) || 0);
+    if (Array.isArray(data.vaultPledged)) state.vaultPledged = data.vaultPledged.slice();
+    else state.vaultPledged = [];
+    state.vaultPledged = sanitizeVaultPledged(state.vaultPledged, state.vaultOwned);
+    state.salonSpentTotal = Math.max(0, Number(data.salonSpentTotal) || 0);
+    if (Array.isArray(data.salonSeenExpired)) state.salonSeenExpired = data.salonSeenExpired.slice();
+    else state.salonSeenExpired = [];
     if (Array.isArray(data.blackMarketOwned)) state.blackMarketOwned = data.blackMarketOwned.slice();
     if (Array.isArray(data.blackMarketEquippedRelics)) state.blackMarketEquippedRelics = data.blackMarketEquippedRelics.slice();
     if (Array.isArray(data.blackMarketSeenExpired)) state.blackMarketSeenExpired = data.blackMarketSeenExpired.slice();
@@ -788,10 +803,14 @@ function bindState() {
   state.onBuyVaultItem = async (itemId) => {
     const item = getVaultItem(itemId);
     if (!item || state.vaultOwned.includes(item.id)) return;
+    const isMasterwork = String(item.rarity || '').toLowerCase() === 'masterwork';
+    const confirmNote = isMasterwork
+      ? 'Masterwork collectible — books into Net Worth with extra Desk Prestige when equipped. Not buying power.'
+      : 'Collectible appraisal books into Net Worth. Equip for Desk Prestige (capped REP on profitable closes). Not buying power.';
     if (item.cost >= CONFIG.CONFIRM_NOTIONAL_USD) {
       const ok = await showConfirm(
-        `Purchase <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">Cosmetic only. No gameplay effect.</span>`,
-        { title: 'Confirm vault purchase', label: 'VAULT', okText: `Buy $${item.cost.toLocaleString()}`, cancelText: 'Cancel' },
+        `Purchase <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">${confirmNote}</span>`,
+        { title: isMasterwork ? 'Confirm masterwork purchase' : 'Confirm vault purchase', label: 'VAULT', okText: `Buy $${item.cost.toLocaleString()}`, cancelText: 'Cancel' },
       );
       if (!ok) return;
     }
@@ -804,6 +823,30 @@ function bindState() {
     sfxSuccess();
     toast(`Unlocked ${item.name}`, { type: 'success' });
     saveGame();
+    renderAll(state);
+  };
+
+  state.onBuySalonItem = async (itemId) => {
+    const listing = getActiveSalonListing(getDayCount(), { ownedIds: state.vaultOwned });
+    const item = listing.item?.id === itemId ? listing.item : null;
+    if (!item) {
+      showAlert('This crown listing is no longer active.', { title: 'Private Salon', label: 'SALON' });
+      return;
+    }
+    const ok = await showConfirm(
+      `Acquire <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">Ultra-rare salon window — crown jewel books into Net Worth with flagship Desk Prestige. Not buying power. Late loan default can repossess pledged pieces.</span>`,
+      { title: 'Confirm crown purchase', label: 'SALON', okText: `Acquire $${item.cost.toLocaleString()}`, cancelText: 'Cancel' },
+    );
+    if (!ok) return;
+    const result = purchaseSalonItem(state, item, getDayCount());
+    if (!result.ok) {
+      sfxError();
+      showAlert(result.msg, { title: 'Private Salon', label: 'SALON' });
+      return;
+    }
+    sfxSuccess();
+    toast(`Acquired crown jewel: ${item.name}`, { type: 'success' });
+    saveGame({ immediate: true });
     renderAll(state);
   };
 
@@ -827,10 +870,29 @@ function bindState() {
   };
   state.onEquipVaultItem = state.onEquipCosmeticItem;
 
+  state.onToggleVaultPledge = (itemId) => {
+    const result = togglePledgedVaultItem(state, itemId);
+    if (!result.ok) {
+      sfxError();
+      showAlert(result.msg || 'Cannot change pledge.', { title: 'Vault collateral', label: 'VAULT' });
+      return;
+    }
+    const item = getVaultItem(itemId);
+    toast(
+      result.pledged
+        ? `Pledged ${item?.name || itemId} as loan collateral`
+        : `Unpledged ${item?.name || itemId}`,
+      { type: result.pledged ? 'success' : 'info' },
+    );
+    saveGame();
+    renderAll(state);
+  };
+
   state.onClaimCollectionMilestone = (milestoneId) => {
     const result = claimCollectionMilestone(state, milestoneId, {
       blackMarketPool: BLACKMARKET_ITEM_POOL,
       seatItem: THE_SEAT,
+      salonPool: PRIVATE_SALON_POOL,
     });
     if (!result.ok) {
       sfxError();
@@ -998,7 +1060,13 @@ function bindState() {
     const day = getDayCount();
     const bank = BANKS.find((b) => b.id === bankId);
     const amt = Math.max(0, Math.round(Number(amount) || 0));
-    const preview = quoteLoan(bankId, type, amt, state.finance, day);
+    state.vaultPledged = sanitizeVaultPledged(state.vaultPledged, state.vaultOwned);
+    const collateralValue = getVaultPledgedAppraisal(state);
+    const collateralOpts = {
+      collateralValue,
+      collateralIds: state.vaultPledged.slice(),
+    };
+    const preview = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
     const debtHere = preview.debtHere ?? bankDebt(state.finance, bankId, type);
     const debtElsewhere = preview.debtElsewhere ?? otherBanksDebt(state.finance, bankId, type);
     const totalType = preview.totalTypeDebt ?? typeDebt(state.finance, type);
@@ -1016,6 +1084,7 @@ function bindState() {
          Amount: <strong>$${amt.toLocaleString()}</strong><br>
          Your APR: <strong>${preview.apr}%</strong> (${preview.tier}, credit ${preview.credit})<br>
          Term: ${preview.termDays} game days · est. interest ~$${Math.round(preview.estimatedInterest).toLocaleString()}
+         ${collateralValue > 0 ? `<br><span style="color:var(--muted);font-size:12px">Vault collateral bonus: +$${Math.round(preview.collateralBonus || 0).toLocaleString()} ceiling (50% LTV)</span>` : ''}
          ${debtLine}<br>
          <span style="color:var(--muted);font-size:12px">Confirm to submit. Banks review your total debt across lenders.</span>`
       : `<strong>${bankLabel} — ${type} application</strong><br>
@@ -1032,7 +1101,7 @@ function bindState() {
     if (!ok) return;
 
     // Underwrite only after the player confirms — deny with a clear reason
-    const decision = quoteLoan(bankId, type, amt, state.finance, day);
+    const decision = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
     if (!decision.ok) {
       sfxError();
       const denyDebt = `
@@ -1044,7 +1113,7 @@ function bindState() {
       return;
     }
 
-    const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day);
+    const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day, collateralOpts);
     if (r.ok) {
       adjustReputation(state.meta, -3, 'loan_inquiry');
       sfxSuccess();
@@ -1176,6 +1245,15 @@ function handleDayEnd(day) {
   const result = runDayEndSettlement(state, day);
 
   if (result.bestRun?.isRecord) toast('New personal best equity!', { type: 'success' });
+
+  for (const repo of result.repossessions || []) {
+    const names = (repo.names || []).join(', ') || 'collectibles';
+    showAlert(
+      `Late on a collateralized loan — the bank repossessed: <strong>${names}</strong>.`,
+      { title: 'Vault repossession', label: 'FINANCE' },
+    );
+    toast(`Repossessed: ${names}`, { type: 'warn' });
+  }
 
   for (const ex of result.expiredOpts || []) {
     const label = ex.intrinsic > 0 ? `settled ITM +$${Math.round(ex.payout)}` : 'expired worthless';

@@ -7,8 +7,9 @@ import {
   getCollectionPrestigeScore,
 } from '../collection-log.js';
 import { BLACKMARKET_ITEM_POOL } from '../blackmarket.js';
+import { PRIVATE_SALON_POOL } from '../private-salon.js';
 import { THE_SEAT } from '../the-seat.js';
-import { VAULT_ITEMS } from '../vault.js';
+import { VAULT_ITEMS, getCategoryDisplayLabel, getVaultItem } from '../vault.js';
 import { escapeHtml, fmt } from './shared.js';
 import { renderVaultFoilArt } from './vault.js';
 
@@ -19,41 +20,48 @@ const RARITY_TIER_CLASS = {
   common: 'tier-bronze',
   rare: 'tier-gold',
   legendary: 'tier-diamond',
+  masterwork: 'tier-masterwork',
+  crown: 'tier-crown',
 };
 
 const RARITY_LABEL = {
   common: 'Common',
   rare: 'Rare',
   legendary: 'Legendary',
+  masterwork: 'Masterwork',
+  crown: 'Crown',
 };
 
 const SOURCE_LABEL = {
   vault: 'Trophy Vault',
+  salon: 'Private Salon',
   blackmarket: 'Black Market',
   seat: 'The Seat',
 };
 
-const COLLECTION_OPTS = { blackMarketPool: BLACKMARKET_ITEM_POOL, seatItem: THE_SEAT };
+const COLLECTION_OPTS = {
+  blackMarketPool: BLACKMARKET_ITEM_POOL,
+  seatItem: THE_SEAT,
+  salonPool: PRIVATE_SALON_POOL,
+};
 
 function chipButtons(active, values, attr) {
   return values.map((value) => {
-    const label = value === 'all'
-      ? 'All'
-      : value === 'owned'
-        ? 'Owned'
-        : value === 'missing'
-          ? 'Missing'
-          : value;
+    let label = value;
+    if (value === 'all') label = 'All';
+    else if (value === 'owned') label = 'Owned';
+    else if (value === 'missing') label = 'Missing';
+    else if (attr === 'collection-category') label = getCategoryDisplayLabel(value);
     const cls = active === value ? 'active' : '';
     return `<button type="button" class="collection-filter ${cls}" data-${attr}="${value}">${escapeHtml(label)}</button>`;
   }).join('');
 }
 
 function artForEntry(entry) {
-  if (entry.source === 'vault') {
-    const item = VAULT_ITEMS[entry.id];
-    if (item) return renderVaultFoilArt(item, `col-${entry.id}`);
-  }
+  const item = entry.source === 'vault'
+    ? VAULT_ITEMS[entry.id]
+    : getVaultItem(entry.id);
+  if (item) return renderVaultFoilArt(item, `col-${entry.id}`);
   return renderVaultFoilArt({
     id: entry.id,
     name: entry.name,
@@ -167,7 +175,7 @@ export function renderCollectionLog(state) {
               </div>
               <div class="collection-meta">
                 <span class="collection-chip">${escapeHtml(SOURCE_LABEL[entry.source] || entry.source)}</span>
-                <span class="collection-chip">${escapeHtml(entry.category)}</span>
+                <span class="collection-chip">${escapeHtml(getCategoryDisplayLabel(entry.category))}</span>
                 <span class="collection-chip">${escapeHtml(rarityLabel)}</span>
               </div>
             </article>

@@ -13,6 +13,8 @@ import {
   adjustReputation,
 } from './meta.js';
 import { recordBestRun } from './leaderboard.js';
+import { repossessVaultForLateLoans, getVaultSlotForItem, getVaultItem } from './vault.js';
+import { setProfileCosmetic } from './profile.js';
 
 /** Soft-taper loan auto-pay REP so late ranks don't farm as fast as early Desk Hand. */
 export function taperLoanRep(rep, currentReputation) {
@@ -74,6 +76,14 @@ export function runDayEndSettlement(state, day) {
   };
 
   const loanEvents = processDailyLoans(state.finance, state.portfolio, day);
+  const repossessions = repossessVaultForLateLoans(state, loanEvents);
+  for (const repo of repossessions) {
+    for (const id of repo.seized) {
+      const item = getVaultItem(id);
+      const slot = getVaultSlotForItem(item);
+      if (slot) setProfileCosmetic(slot, null);
+    }
+  }
   for (const ev of loanEvents) {
     if (!ev.rep) continue;
     const rep = taperLoanRep(ev.rep, state.meta.reputation || 0);
@@ -122,6 +132,7 @@ export function runDayEndSettlement(state, day) {
     repDelta: dayRepDelta,
     loanEvents,
     optionsExpired: expiredOpts.length,
+    repossessions,
   };
 
   return {
@@ -133,6 +144,7 @@ export function runDayEndSettlement(state, day) {
     challengeReward,
     dayRepDelta,
     loanEvents,
+    repossessions,
     payroll,
     bestRun,
     expiredOpts,

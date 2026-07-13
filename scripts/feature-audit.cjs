@@ -55,6 +55,16 @@ const checks = [
   ['AI locked card shared', 'js/ui/ai-advisor.js', [/export function buildAiLockedCardHtml/, /data-ai-locked-card/, /ai-locked-host/]],
   ['AI locked card wired once', 'js/ui/ai-advisor.js', [/buildAiLockedCardHtml\(\)/, /lockedHost\.innerHTML = card/, /ai-chat-log-side/]],
   ['Dashboard relic row', 'js/ui/dashboard.js', [/export function buildFirmRelicRowHtml/, /blackMarketEquippedRelics/, /data-goto="blackmarket"/, /getRelicSlotLimit/, /getBlackMarketItem/]],
+  ['Vault authenticity rename', 'js/vault.js', [/Gilded Astrolabe/, /Study of the Tide/, /Master Collector/, /export function getCategoryDisplayLabel/]],
+  ['Vault purchase confirms Desk Prestige', 'js/app.js', [/Desk Prestige \(capped REP/, /Not buying power/, /Collectible appraisal books into Net Worth/]],
+  ['Collection Log category labels', 'js/ui/collection-log.js', [/getCategoryDisplayLabel/, /VAULT_ITEMS/]],
+  ['Vault equip slot labels', 'js/ui/vault.js', [/VAULT_EQUIP_SLOT_LABELS/, /getSpendableCash/]],
+  ['Vault foil motifs', 'js/ui/vault.js', [/VAULT_MOTIF_BY_ID/, /foilMotif/, /painting|coin|instrument/]],
+  ['Vault collateral LTV', 'js/vault.js', [/VAULT_COLLATERAL_LTV = 0\.5/, /togglePledgedVaultItem/, /repossessVaultForLoan/]],
+  ['Vault collateral underwrite', 'js/finance.js', [/collateralBonus/, /VAULT_COLLATERAL_LTV/, /collateralIds/]],
+  ['Vault masterwork aura caps', 'js/vault.js', [/MASTERWORK_ITEM_BONUS_CAPS/, /prestigeBonus/, /itemBonuses/]],
+  ['Private Salon module', 'js/private-salon.js', [/PRIVATE_SALON_POOL/, /getActiveSalonListing/, /purchaseSalonItem/]],
+  ['Vault masterworks UI', 'js/ui/vault.js', [/vault-salon-panel/, /masterworks/, /data-salon-buy/]],
 ];
 
 let failed = 0;
