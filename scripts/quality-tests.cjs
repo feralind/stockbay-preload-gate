@@ -1115,16 +1115,18 @@ async function main() {
           open: px, high: px + 0.25, low: px - 0.2, close: px + 0.05, volume: 1000,
         });
       }
+      // Forming bar: sane close, absurd spear high (bad Yahoo wick)
       bars[bars.length - 1] = {
-        time: now, open: 311, high: 316.58, low: 311, close: 316.4, volume: 9000,
+        time: now, open: 311.2, high: 380, low: 311, close: 316.4, volume: 9000,
       };
       const completedMax = Math.max(...bars.slice(0, -1).map((b) => b.high));
       const axis = computePriceAxisRange(bars, '1D');
       assert.ok(axis);
-      // Must not adopt the spear high/close as the top of the pane
-      assert.ok(axis.max < 316.4, `axis.max adopted spear close: ${axis.max}`);
-      assert.ok(axis.max < bars[bars.length - 1].high, `axis.max adopted spear high: ${axis.max}`);
-      assert.ok(axis.max - completedMax < 4, `axis stretched too far past session: ${axis.max - completedMax}`);
+      // Live close must stay on-screen
+      assert.ok(axis.max >= 316.4, `axis.max clipped live close: ${axis.max}`);
+      // Spear high must not own the pane
+      assert.ok(axis.max < 360, `axis.max adopted spear high: ${axis.max}`);
+      assert.ok(axis.max - completedMax < 12, `axis stretched too far past session: ${axis.max - completedMax}`);
       assert.ok(axis.max - axis.min >= 311 * 0.018, 'min span too tight');
 
       const peer = peerMedianRange(bars);
@@ -1132,6 +1134,75 @@ async function main() {
       const maxR = Math.max(peer * 2.2, 311 * 0.0025);
       assert.ok(clamped.high - clamped.low <= maxR + 0.02, `peer clamp still tall: ${clamped.high - clamped.low}`);
       assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
+    });
+
+    test('applyLiveCandleTick keeps close glued to live quote price', () => {
+      const { applyLiveCandleTick } = chartMod;
+      const bar = { time: 1, open: 310, high: 311, low: 309.5, close: 310.2, volume: 100 };
+      const next = applyLiveCandleTick(bar, 318.52, 0.02);
+      assert.ok(next);
+      assert.equal(next.close, 318.52, 'forming close must equal HUD quote');
+      assert.ok(next.high >= 318.52, 'high must include quote');
+      assert.ok(next.low <= 310, 'low keeps session floor');
+      assert.equal(next.open, 310, 'session open is preserved');
+    });
+
+    test('1D axis keeps a drifted live close on-screen (no soft-pin clip)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 300 + (i % 4) * 0.2;
+        bars.push({
+          time: now - (39 - i) * 300,
+          open: px, high: px + 0.3, low: px - 0.25, close: px, volume: 1000,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 300.4, high: 300.5, low: 300.2, close: 312.8, volume: 2000,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      assert.ok(axis.max >= 312.8, `live close clipped after drift: ${axis.max}`);
+      assert.ok(axis.min <= 300, `session lows clipped: ${axis.min}`);
+    });
+
+    test('computePriceAxisRange keeps MAX / 5D highs on-screen (no hard maxSpan recenter)', () => {
+      const { computePriceAxisRange, sliceBarsForAxis } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const maxBars = [];
+      for (let i = 0; i < 80; i++) {
+        const px = 80 + i * 4; // ~80 → ~396
+        maxBars.push({
+          time: now - (79 - i) * 86400 * 30,
+          open: px - 1, high: px + 2, low: px - 3, close: px, volume: 1e6,
+        });
+      }
+      const maxAxis = computePriceAxisRange(maxBars, 'MAX');
+      assert.ok(maxAxis);
+      assert.ok(maxAxis.max >= 396, `MAX clipped ATH: max=${maxAxis.max}`);
+      assert.ok(maxAxis.min <= 80, `MAX clipped early lows: min=${maxAxis.min}`);
+
+      const fiveDay = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 100 + (i < 20 ? -i * 0.6 : (i - 20) * 0.9); // ~8%+ swing
+        fiveDay.push({
+          time: now - (39 - i) * 900,
+          open: px, high: px + 0.4, low: px - 0.4, close: px + 0.1, volume: 1000,
+        });
+      }
+      const d5 = computePriceAxisRange(fiveDay, '5D');
+      const hi = Math.max(...fiveDay.map((b) => b.high));
+      const lo = Math.min(...fiveDay.map((b) => b.low));
+      assert.ok(d5.max >= hi, `5D clipped high ${hi} vs axis ${d5.max}`);
+      assert.ok(d5.min <= lo, `5D clipped low ${lo} vs axis ${d5.min}`);
+
+      const visible = sliceBarsForAxis(maxBars, 75, 100);
+      assert.ok(visible.length >= 10);
+      assert.ok(visible[0].close > 200, 'visible slice should be the recent high band');
+      const visAxis = computePriceAxisRange(visible, 'MAX');
+      assert.ok(visAxis.max >= visible[visible.length - 1].close);
+      assert.ok(visAxis.min > 150, 'visible-window axis should not span the whole multi-year history');
     });
   }
 
@@ -3011,6 +3082,70 @@ async function main() {
     assert.equal(store.stockway_leaderboard_v1, '[]', 'Best Runs untouched');
     assert.equal(store[baselineKey], '{"AAPL":{"price":123.45}}', 'quote baselines preserved');
   });
+
+  {
+    const wipeMod = await import(pathToFileURL(path.join(__dirname, '../js/save-wipe.js')).href);
+    const {
+      DESK_WIPE_FLAG_KEY,
+      DESK_WIPE_SESSION_KEY,
+      markDeskWipe,
+      isDeskWipePending,
+      shouldBlockSaveAfterForeignWipe,
+      consumeDeskWipeOnBoot,
+      clearDeskWipeFlags,
+      wipeRunSaveKeys,
+    } = wipeMod;
+
+    function memStorage(seed = {}) {
+      const d = { ...seed };
+      return {
+        _d: d,
+        getItem(k) { return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : null; },
+        setItem(k, v) { d[k] = String(v); },
+        removeItem(k) { delete d[k]; },
+      };
+    }
+
+    test('desk wipe flag blocks foreign-tab saves and consumes slot revival on boot', () => {
+      const storage = memStorage({
+        stockway_save_v1: '{"v":2,"portfolio":{"cash":999999}}',
+        stockway_save_v1_slot: JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]),
+        stockway_save_v1__tmp: '{"v":2}',
+        stockway_alert_history_v1: '[]',
+      });
+      const session = memStorage();
+      const otherSession = memStorage();
+
+      markDeskWipe(storage, session);
+      assert.equal(isDeskWipePending(storage, session), true);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), true, 'other tab must not rewrite wiped desk');
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, session), false, 'wiping tab may write fresh Day 1');
+
+      wipeRunSaveKeys({
+        storage,
+        also: ['stockway_alert_history_v1'],
+      });
+      // Simulate late slot rewrite (race / other tab before it notices wipe)
+      storage.setItem('stockway_save_v1_slot', JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]));
+      storage.setItem('stockway_save_v1', '{"v":2,"portfolio":{"cash":999999}}');
+
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), true, 'boot must honor wipe');
+      assert.equal(storage.getItem('stockway_save_v1'), null, 'primary cleared on boot');
+      assert.equal(storage.getItem('stockway_save_v1_slot'), null, 'slot cleared — no revival');
+      assert.equal(storage.getItem('stockway_save_v1__tmp'), null);
+      assert.equal(isDeskWipePending(storage, session), true, 'flag stays until fresh save');
+
+      // Fresh Day-1 write then clear sentinel
+      storage.setItem('stockway_save_v1', JSON.stringify({ v: 2, portfolio: { cash: 500 } }));
+      clearDeskWipeFlags(storage, session);
+      assert.equal(isDeskWipePending(storage, session), false);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), false);
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), false);
+      assert.ok(storage.getItem('stockway_save_v1'), 'fresh save kept after sentinel clear');
+      assert.equal(storage.getItem(DESK_WIPE_FLAG_KEY), null);
+      assert.equal(session.getItem(DESK_WIPE_SESSION_KEY), null);
+    });
+  }
 
   test('needsOnboarding / markOnboarded still gate first boot only', () => {
     const key = 'stockway_onboarded_v1';
