@@ -47,7 +47,7 @@ Example: Short 1 TSLA @ $250 → cover @ $220 = <strong>+$30</strong>.
   {
     id: 'trade-ticket',
     title: 'Chart, Ticket &amp; Limit Orders',
-    body: `Chart ranges: <strong>1D · 5D · 1M · 6M · YTD · 1Y · 5Y · MAX</strong> (hotkeys 1–8). Tabs: Chart, News, Stats. With <strong>Analyst Reports</strong>, overlays and support/resistance hints appear.
+    body: `Chart ranges: <strong>1D · 5D · 1M · 6M · 1Y · MAX</strong> (hotkeys 1–6). Tabs: Chart, News, Stats. With <strong>Analyst Reports</strong>, overlays and support/resistance hints appear.
 <br><br>
 <strong>Trade bar:</strong> shares · Market or Limit · optional Stop Loss (SL) / Take Profit (TP) · Buy Long · Short · Sell/Cover.
 <br><br>

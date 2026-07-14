@@ -11,10 +11,8 @@ const RANGE_KEYS = {
   '2': '5D',
   '3': '1M',
   '4': '6M',
-  '5': 'YTD',
-  '6': '1Y',
-  '7': '5Y',
-  '8': 'MAX',
+  '5': '1Y',
+  '6': 'MAX',
 };
 
 function isTypingTarget(el) {

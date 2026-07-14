@@ -2000,7 +2000,14 @@ async function init() {
         const chartSym = getSelectedSym();
         if (chartSym) {
           const q = getCachedQuote(chartSym);
-          if (q?.price) updateLastCandleFromQuote(chartSym, q.price);
+          if (q?.price) {
+            updateLastCandleFromQuote(chartSym, q.price);
+            // Keep Trade header print locked to the same tape the candle tracks
+            const priceEl = document.getElementById('chart-price');
+            if (priceEl && document.getElementById('view-trade')?.classList.contains('active')) {
+              priceEl.textContent = `$${Number(q.price).toFixed(2)}`;
+            }
+          }
         }
       }
       // Throttle full paints — rebinding every tick breaks buttons at 5x speed

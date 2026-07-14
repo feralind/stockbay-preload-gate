@@ -1134,6 +1134,17 @@ async function main() {
       assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
     });
 
+    test('applyLiveCandleTick keeps close glued to live quote price', () => {
+      const { applyLiveCandleTick } = chartMod;
+      const bar = { time: 1, open: 310, high: 311, low: 309.5, close: 310.2, volume: 100 };
+      const next = applyLiveCandleTick(bar, 318.52, 0.02);
+      assert.ok(next);
+      assert.equal(next.close, 318.52, 'forming close must equal HUD quote');
+      assert.ok(next.high >= 318.52, 'high must include quote');
+      assert.ok(next.low <= 310, 'low keeps session floor');
+      assert.equal(next.open, 310, 'session open is preserved');
+    });
+
     test('computePriceAxisRange keeps MAX / 5D highs on-screen (no hard maxSpan recenter)', () => {
       const { computePriceAxisRange, sliceBarsForAxis } = chartMod;
       const now = Math.floor(Date.now() / 1000);

@@ -204,17 +204,16 @@ function sanitizeLastBarInPlace() {
   }
 }
 
+/**
+ * Live forming bar must track the HUD quote. Cap absurd wicks, but never move close off `price`.
+ */
 export function applyLiveCandleTick(bar, price, maxRangePct) {
   if (!bar) return null;
   const px = Number(price);
   if (!(px > 0)) return null;
   let open = Number(bar.open);
   if (!(open > 0)) open = px;
-  const mid = (open + px) / 2 || px;
-  const cap = mid * (Number(maxRangePct) > 0 ? maxRangePct : 0.02);
-  if (Math.abs(px - open) > cap) {
-    open = px - Math.sign(px - open || 1) * cap * 0.9;
-  }
+  // Keep the bar's session open — rewriting open made candles fight the tape.
   const next = {
     time: bar.time,
     open,
@@ -222,15 +221,38 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
     high: Math.max(Number(bar.high) || px, open, px),
     low: Math.min(Number(bar.low) || px, open, px),
   };
-  if (next.high - next.low > cap) {
+  const mid = (open + px) / 2 || px;
+  const cap = mid * Math.max(0.004, Number(maxRangePct) > 0 ? Number(maxRangePct) : 0.02);
+  // Trim only extreme leftover spears; close stays glued to the quote.
+  if (next.high - next.low > cap * 2.5) {
     const bodyHigh = Math.max(open, px);
     const bodyLow = Math.min(open, px);
     const bodySpan = bodyHigh - bodyLow;
-    const room = Math.max(0, cap - bodySpan);
+    const room = Math.max(cap * 1.2 - bodySpan, mid * 0.001);
     next.high = bodyHigh + room * 0.55;
     next.low = Math.max(0.01, bodyLow - room * 0.45);
+    next.high = Math.max(next.high, open, px);
+    next.low = Math.min(next.low, open, px);
   }
   return next;
+}
+
+/** After wick hygiene, force last close back to the live quote (HUD ↔ candle lock). */
+function pinLastBarClose(price) {
+  const px = Number(price);
+  if (!(px > 0) || !lastBars.length) return;
+  const i = lastBars.length - 1;
+  const bar = lastBars[i];
+  const open = Number(bar.open) > 0 ? Number(bar.open) : px;
+  const high = Math.max(Number(bar.high) || px, open, px);
+  const low = Math.min(Number(bar.low) || px, open, px);
+  lastBars[i] = { ...bar, open, high, low, close: px };
+  if (lastCandle) {
+    lastCandle.open = open;
+    lastCandle.high = high;
+    lastCandle.low = low;
+    lastCandle.close = px;
+  }
 }
 
 export function sanitizeOhlcBar(open, high, low, close, maxRangePct = 0.08) {
@@ -963,28 +985,39 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
   }));
 
   const lastIdx = formatted.length - 1;
-  if (lastIdx >= 0 && currentSym) {
-    const q = getCachedQuote(currentSym);
-    const px = Number(q?.price);
+  const liveQuotePx = currentSym ? Number(getCachedQuote(currentSym)?.price) : 0;
+  if (lastIdx >= 0 && liveQuotePx > 0) {
     const bar = formatted[lastIdx];
-    if (px > 0 && bar?.close > 0 && !shouldRejectLiveCandleTick(bar.close, px)) {
-      const capped = applyLiveCandleTick(bar, px, maxLiveBarRangePct(lastRange));
+    // Prefer pinning the forming bar to the HUD quote. Large gaps rebase via loadChart path.
+    if (bar?.close > 0 && !shouldRejectLiveCandleTick(bar.close, liveQuotePx, 0.12)) {
+      const capped = applyLiveCandleTick(bar, liveQuotePx, maxLiveBarRangePct(lastRange));
       if (capped) {
         formatted[lastIdx] = {
           time: bar.time,
           open: capped.open,
           high: capped.high,
           low: capped.low,
-          close: capped.close,
+          close: liveQuotePx,
           volume: bar.volume || 0,
         };
       }
     }
   }
 
-  if (lastIdx >= 1) {
+  if (lastIdx >= 1 && !(liveQuotePx > 0)) {
+    // Historical hygiene only when we don't have a live quote to pin to
     const mid = Number(formatted[lastIdx - 1]?.close) || Number(formatted[lastIdx]?.close) || 0;
     formatted[lastIdx] = clampBarToPeers(formatted[lastIdx], peerMedianRange(formatted), mid);
+  } else if (lastIdx >= 0 && liveQuotePx > 0) {
+    // Wick trim vs peers is fine — close must stay on the quote
+    const mid = Number(formatted[Math.max(0, lastIdx - 1)]?.close) || liveQuotePx;
+    const clamped = clampBarToPeers(formatted[lastIdx], peerMedianRange(formatted), mid);
+    formatted[lastIdx] = {
+      ...clamped,
+      close: liveQuotePx,
+      high: Math.max(clamped.high, clamped.open, liveQuotePx),
+      low: Math.min(clamped.low, clamped.open, liveQuotePx),
+    };
   }
 
   lastBars = formatted;
@@ -1006,11 +1039,26 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
 
   const anchor = Number(lastCandle.close);
   if (anchor > 0) {
-    const maxJump = opts.maxJumpPct ?? LIVE_MAX_JUMP_PCT;
+    const maxJump = opts.maxJumpPct ?? (isSimulationMode() ? 0.15 : LIVE_MAX_JUMP_PCT);
     if (shouldRejectLiveCandleTick(anchor, px, maxJump)) {
-      if (!isSimulationMode()) {
-        try { syncQuoteToPrice(want, anchor, { source: 'candle' }); } catch { /* ignore */ }
+      if (isSimulationMode()) {
+        // Sim tape is authoritative — snap the forming bar instead of freezing the chart.
+        pinLastBarClose(px);
+        lastLiveUpdateAt = Date.now();
+        try {
+          const axis = axisRangeForView();
+          const isWave = chartStyle === 'wave';
+          chart.setOption({
+            yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
+            series: [
+              { id: 'candles', data: isWave ? [] : toOhlc(lastBars) },
+              { id: 'wave', data: isWave ? lastBars.map((b) => b.close) : [] },
+            ],
+          });
+        } catch { return false; }
+        return true;
       }
+      try { syncQuoteToPrice(want, anchor, { source: 'candle' }); } catch { /* ignore */ }
       return false;
     }
   }
@@ -1027,7 +1075,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   lastCandle.open = next.open;
   lastCandle.high = next.high;
   lastCandle.low = next.low;
-  lastCandle.close = next.close;
+  lastCandle.close = px;
 
   const i = lastBars.length - 1;
   lastBars[i] = {
@@ -1035,9 +1083,9 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
     open: next.open,
     high: next.high,
     low: next.low,
-    close: next.close,
+    close: px,
   };
-  sanitizeLastBarInPlace();
+  // Do NOT peer-clamp close here — that was desyncing the chart from the HUD price.
 
   try {
     const axis = axisRangeForView();
