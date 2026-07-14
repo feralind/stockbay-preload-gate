@@ -913,6 +913,12 @@ export function switchView(viewId) {
       if (root) root.dataset.collectionForce = '1';
     } catch (_) { /* ignore */ }
   }
+  if (next === 'vault' && prev !== 'vault') {
+    try {
+      const root = document.getElementById('vault-root');
+      if (root) root.dataset.vaultForce = '1';
+    } catch (_) { /* ignore */ }
+  }
   if (prev === 'achievements' && next !== 'achievements') {
     const tip = document.getElementById('ach-cursor-tip');
     if (tip) {
