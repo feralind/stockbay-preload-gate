@@ -144,10 +144,30 @@ async function yahooCandles(sym, resolution, count) {
   const data = await fetchJson(url);
   const r = data?.chart?.result?.[0];
   if (!r?.timestamp) return null;
-  const q = r.indicators.quote[0];
-  const candles = r.timestamp.map((t, i) => ({
-    time: t, open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i] || 0,
-  })).filter(c => [c.open, c.high, c.low, c.close].every(Number.isFinite));
+  const q = r.indicators?.quote?.[0];
+  if (!q) return null;
+  const adj = r.indicators?.adjclose?.[0]?.adjclose;
+  const candles = r.timestamp.map((t, i) => {
+    const open = q.open?.[i];
+    const high = q.high?.[i];
+    const low = q.low?.[i];
+    const close = q.close?.[i];
+    const volume = q.volume?.[i] || 0;
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+    const adjClose = Array.isArray(adj) ? Number(adj[i]) : NaN;
+    if (Number.isFinite(adjClose) && adjClose > 0 && close > 0) {
+      const scale = adjClose / close;
+      return {
+        time: t,
+        open: open * scale,
+        high: high * scale,
+        low: low * scale,
+        close: adjClose,
+        volume,
+      };
+    }
+    return { time: t, open, high, low, close, volume };
+  }).filter(Boolean);
   return count > 0 ? candles.slice(-count) : candles;
 }
 
@@ -223,7 +243,7 @@ function createRequestHandler(root) {
         const sym = (url.searchParams.get('symbol') || 'AAPL').toUpperCase().slice(0, 16);
         if (!isValidSymbol(sym)) { sendJson(res, 400, { error: 'Invalid symbol' }); return; }
         const resolution = url.searchParams.get('range') || url.searchParams.get('resolution') || '1D';
-        const count = Math.min(500, Math.max(1, parseInt(url.searchParams.get('count') || '120', 10) || 120));
+        const count = Math.min(3600, Math.max(1, parseInt(url.searchParams.get('count') || '120', 10) || 120));
         try {
           const candles = await yahooCandles(sym, resolution, count);
           sendJson(res, candles ? 200 : 502, { candles: candles || [] });

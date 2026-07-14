@@ -32,7 +32,10 @@ let fitRaf = 0;
 const LIVE_UPDATE_MS = 100;
 const LIVE_MAX_JUMP_PCT = LIVE_CANDLE_MAX_JUMP_PCT;
 const MIN_VISIBLE_BARS = 40;
-const MAX_VISIBLE_BARS = 110;
+const MAX_VISIBLE_BARS = 120;
+/** Single-session clock ranges — time-only axis labels + tight spear defense. */
+const SESSION_RANGES = new Set(['1D', '1', '5', '15', '60']);
+/** Multi-bar ranges that still use intraday Yahoo intervals (need date+time labels). */
 const INTRADAY_RANGES = new Set(['1D', '5D', '1M', '1', '5', '15', '60']);
 const LONG_RANGES = new Set(['6M', 'YTD', '1Y', '5Y', 'MAX', 'D']);
 const CHART_STYLE_KEY = 'stockway_chart_style_v1';
@@ -104,11 +107,17 @@ export function clampBarToPeers(bar, peerRange, mid) {
 }
 
 /**
- * Broker-style Y window: pad the real session range.
- * Last-bar spears are ignored for high/low; last close is soft-pinned.
+ * Broker-style Y window for the bars in view.
+ * - 1D: soft-pin last close (ignore forming spears), modest floor/ceiling
+ * - Multi-day / long: fit real H/L + last close — never re-center with a hard maxSpan
+ *   (that was clipping ATH on MAX / 1Y and making 5D look disjoint)
  */
 export function computePriceAxisRange(bars, range = '1D') {
   if (!Array.isArray(bars) || !bars.length) return null;
+  const key = String(range || '1D').toUpperCase();
+  const session = isSessionRange(key);
+  const longRange = LONG_RANGES.has(key);
+
   const completed = bars.length > 1 ? bars.slice(0, -1) : bars;
   const highs = completed.map((b) => Number(b.high)).filter((v) => Number.isFinite(v) && v > 0);
   const lows = completed.map((b) => Number(b.low)).filter((v) => Number.isFinite(v) && v > 0);
@@ -118,26 +127,43 @@ export function computePriceAxisRange(bars, range = '1D') {
   const sortedLow = [...lows].sort((a, b) => a - b);
   const pick = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * p)))];
 
-  // Light winsorize so one bad completed wick doesn't own the pane
-  let minV = pick(sortedLow, completed.length >= 16 ? 0.05 : 0);
-  let maxV = pick(sortedHigh, completed.length >= 16 ? 0.95 : 1);
-  const sessionMid = (minV + maxV) / 2 || 1;
+  let minV;
+  let maxV;
+  if (session && completed.length >= 16) {
+    // Light winsorize so one bad completed wick doesn't own the pane
+    minV = pick(sortedLow, 0.05);
+    maxV = pick(sortedHigh, 0.95);
+  } else if (longRange && completed.length >= 40) {
+    // Tiny trim for a single corrupt Yahoo wick — keep real multi-year range
+    minV = pick(sortedLow, 0.01);
+    maxV = pick(sortedHigh, 0.99);
+  } else {
+    minV = sortedLow[0];
+    maxV = sortedHigh[sortedHigh.length - 1];
+  }
 
-  const lastClose = Number(bars[bars.length - 1]?.close) || 0;
+  const sessionMid = (minV + maxV) / 2 || 1;
+  const last = bars[bars.length - 1];
+  const lastClose = Number(last?.close) || 0;
   if (lastClose > 0) {
-    const soft = Math.max((maxV - minV) * 0.15, sessionMid * 0.002);
-    const pinned = Math.min(maxV + soft, Math.max(minV - soft, lastClose));
-    minV = Math.min(minV, pinned);
-    maxV = Math.max(maxV, pinned);
+    if (session) {
+      const soft = Math.max((maxV - minV) * 0.15, sessionMid * 0.002);
+      const pinned = Math.min(maxV + soft, Math.max(minV - soft, lastClose));
+      minV = Math.min(minV, pinned);
+      maxV = Math.max(maxV, pinned);
+    } else {
+      // Hard-include last print so current price never sits off-screen
+      const lastHigh = Number(last?.high);
+      const lastLow = Number(last?.low);
+      minV = Math.min(minV, lastClose, Number.isFinite(lastLow) && lastLow > 0 ? lastLow : lastClose);
+      maxV = Math.max(maxV, lastClose, Number.isFinite(lastHigh) && lastHigh > 0 ? lastHigh : lastClose);
+    }
   }
 
   const mid = (minV + maxV) / 2 || sessionMid;
   let span = Math.max(maxV - minV, mid * 0.001);
-  const key = String(range || '1D').toUpperCase();
-  const intraday = isIntradayRange(key);
 
-  // Quiet day floor — enough air that normal bars don't look gigantic
-  const minSpan = mid * (intraday ? 0.018 : LONG_RANGES.has(key) ? 0.08 : 0.03);
+  const minSpan = mid * (session ? 0.018 : longRange ? 0.06 : 0.028);
   if (span < minSpan) {
     const extra = (minSpan - span) / 2;
     minV -= extra;
@@ -145,14 +171,18 @@ export function computePriceAxisRange(bars, range = '1D') {
     span = maxV - minV;
   }
 
-  // Hard ceiling only for absurd leftover outliers
-  const maxSpan = mid * (intraday ? 0.06 : LONG_RANGES.has(key) ? 0.6 : 0.22);
-  if (span > maxSpan) {
-    minV = mid - maxSpan / 2;
-    maxV = mid + maxSpan / 2;
+  // Hard ceiling only on single-session charts (leftover spear defense).
+  // Never clamp 5D/1M/6M/1Y/MAX — that recenters mid and clips real highs/lows.
+  if (session) {
+    const maxSpan = mid * 0.08;
+    if (span > maxSpan) {
+      minV = mid - maxSpan / 2;
+      maxV = mid + maxSpan / 2;
+    }
   }
 
-  const pad = Math.max((maxV - minV) * 0.1, mid * 0.002);
+  const padRatio = session ? 0.1 : longRange ? 0.1 : 0.12;
+  const pad = Math.max((maxV - minV) * padRatio, mid * 0.003);
   return {
     min: Math.max(0.01, minV - pad),
     max: maxV + pad,
@@ -322,6 +352,10 @@ function getCss(name) {
   }
 }
 
+function isSessionRange(range) {
+  return SESSION_RANGES.has(String(range || '1D').toUpperCase());
+}
+
 function isIntradayRange(range) {
   return INTRADAY_RANGES.has(String(range || '1D').toUpperCase());
 }
@@ -339,13 +373,23 @@ function theme() {
   };
 }
 
-function formatAxisLabel(ts, intraday) {
+function formatAxisLabel(ts, range = lastRange) {
   const d = new Date(Number(ts) * 1000);
   if (!Number.isFinite(d.getTime())) return '';
-  if (intraday) {
+  const key = String(range || '1D').toUpperCase();
+  if (isSessionRange(key)) {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   }
-  if (lastRange === 'MAX' || lastRange === '5Y') {
+  // 5D / 1M: date + time so day boundaries don't look like the clock jumped backward
+  if (key === '5D' || key === '1M') {
+    return d.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+  if (key === 'MAX' || key === '5Y') {
     return d.toLocaleDateString([], { month: 'short', year: '2-digit' });
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -398,16 +442,20 @@ function calcMA(data, period) {
 
 function targetVisibleBars() {
   const width = chartHost?.clientWidth || 400;
-  const byWidth = Math.floor(width / 8);
+  const byWidth = Math.floor(width / 7);
   const base = Math.min(MAX_VISIBLE_BARS, Math.max(MIN_VISIBLE_BARS, byWidth || MIN_VISIBLE_BARS));
-  if (lastRange === 'MAX') return Math.min(64, Math.max(40, Math.floor(base * 0.7)));
-  if (lastRange === '5Y') return Math.min(90, Math.max(48, base));
+  // Long history: show more of the recent window so candles aren't a single-pixel scribble
+  if (lastRange === 'MAX') return Math.min(96, Math.max(48, Math.floor(base * 0.85)));
+  if (lastRange === '5Y') return Math.min(110, Math.max(56, base));
+  if (lastRange === '1Y' || lastRange === '6M' || lastRange === 'YTD') {
+    return Math.min(MAX_VISIBLE_BARS, Math.max(64, base));
+  }
   return base;
 }
 
 function defaultDataZoom() {
   const n = lastBarCount;
-  const shared = { xAxisIndex: [0, 1], filterMode: 'filter' };
+  const shared = { xAxisIndex: [0, 1], filterMode: 'none' };
   if (n <= 0) {
     return [
       { type: 'inside', ...shared, start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
@@ -420,6 +468,51 @@ function defaultDataZoom() {
     { type: 'inside', ...shared, start, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
     { type: 'slider', ...shared, show: false, start, end: 100 },
   ];
+}
+
+/** Bars in the current (or default) zoom window — Y-axis must fit these, not all history. */
+export function sliceBarsForAxis(bars, startPct = 0, endPct = 100) {
+  if (!Array.isArray(bars) || !bars.length) return [];
+  const n = bars.length;
+  const lo = Math.min(100, Math.max(0, Number(startPct) || 0));
+  const hi = Math.min(100, Math.max(lo, Number(endPct) || 100));
+  const i0 = Math.max(0, Math.floor((lo / 100) * n));
+  const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((hi / 100) * n)));
+  return bars.slice(i0, i1);
+}
+
+function readZoomPercents() {
+  if (!userZoomed) {
+    const dz = defaultDataZoom()[0];
+    return { start: Number(dz.start) || 0, end: Number(dz.end) || 100 };
+  }
+  try {
+    const opt = chart?.getOption?.();
+    const dz = opt?.dataZoom?.[0];
+    return {
+      start: Number(dz?.start ?? 0) || 0,
+      end: Number(dz?.end ?? 100) || 100,
+    };
+  } catch {
+    return { start: 0, end: 100 };
+  }
+}
+
+function axisRangeForView() {
+  const { start, end } = readZoomPercents();
+  const slice = sliceBarsForAxis(lastBars, start, end);
+  return computePriceAxisRange(slice.length ? slice : lastBars, lastRange);
+}
+
+function syncPriceAxisFromView() {
+  if (!chart || !lastBars.length) return;
+  const axis = axisRangeForView();
+  if (!axis) return;
+  try {
+    chart.setOption({
+      yAxis: [{ min: axis.min, max: axis.max, scale: true }],
+    });
+  } catch { /* ignore */ }
 }
 
 function buildTooltipHtml(barIndex) {
@@ -454,11 +547,10 @@ function toOhlc(bars) {
 
 function buildOption() {
   const t = theme();
-  const intraday = isIntradayRange(lastRange);
   const isWave = chartStyle === 'wave';
   // Index categories stay unique; clock labels are formatting only.
   const cats = lastBars.map((_, i) => String(i));
-  const axis = computePriceAxisRange(lastBars, lastRange);
+  const axis = axisRangeForView();
   const ohlc = toOhlc(lastBars);
   const closes = lastBars.map((b) => b.close);
   const vols = lastBars.map((b) => ({
@@ -495,7 +587,7 @@ function buildOption() {
   const zoom = userZoomed ? undefined : defaultDataZoom();
   const labelFmt = (value) => {
     const bar = lastBars[Number(value)];
-    return bar ? formatAxisLabel(bar.time, intraday) : '';
+    return bar ? formatAxisLabel(bar.time, lastRange) : '';
   };
 
   return {
@@ -740,7 +832,10 @@ function rebuildChart(container) {
     height: h,
   });
 
-  chart.on('datazoom', () => { userZoomed = true; });
+  chart.on('datazoom', () => {
+    userZoomed = true;
+    syncPriceAxisFromView();
+  });
 
   resizeObserver = new ResizeObserver(() => {
     if (!chart || !chartHost) return;
@@ -775,6 +870,12 @@ export function setChartStyle(style) {
   const next = style === 'wave' ? 'wave' : 'candle';
   chartStyle = next;
   try { localStorage.setItem(CHART_STYLE_KEY, next); } catch { /* ignore */ }
+  try {
+    document.querySelectorAll('.chart-style-btn').forEach((btn) => {
+      const want = btn.getAttribute('data-chart-style') === 'wave' ? 'wave' : 'candle';
+      btn.classList.toggle('active', want === next);
+    });
+  } catch { /* ignore */ }
   paint(false);
 }
 
@@ -799,6 +900,7 @@ export function fitChartToData() {
   userZoomed = false;
   try {
     chart.setOption({ dataZoom: defaultDataZoom() });
+    syncPriceAxisFromView();
   } catch { /* ignore */ }
 }
 
@@ -830,6 +932,7 @@ export function zoomChart(direction) {
         { start: Math.max(0, nextStart), end: Math.min(100, nextEnd) },
       ],
     });
+    syncPriceAxisFromView();
   } catch { /* ignore */ }
 }
 
@@ -937,7 +1040,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   sanitizeLastBarInPlace();
 
   try {
-    const axis = computePriceAxisRange(lastBars, lastRange);
+    const axis = axisRangeForView();
     const isWave = chartStyle === 'wave';
     chart.setOption({
       yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],

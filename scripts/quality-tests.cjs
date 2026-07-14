@@ -1133,6 +1133,44 @@ async function main() {
       assert.ok(clamped.high - clamped.low <= maxR + 0.02, `peer clamp still tall: ${clamped.high - clamped.low}`);
       assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
     });
+
+    test('computePriceAxisRange keeps MAX / 5D highs on-screen (no hard maxSpan recenter)', () => {
+      const { computePriceAxisRange, sliceBarsForAxis } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const maxBars = [];
+      for (let i = 0; i < 80; i++) {
+        const px = 80 + i * 4; // ~80 → ~396
+        maxBars.push({
+          time: now - (79 - i) * 86400 * 30,
+          open: px - 1, high: px + 2, low: px - 3, close: px, volume: 1e6,
+        });
+      }
+      const maxAxis = computePriceAxisRange(maxBars, 'MAX');
+      assert.ok(maxAxis);
+      assert.ok(maxAxis.max >= 396, `MAX clipped ATH: max=${maxAxis.max}`);
+      assert.ok(maxAxis.min <= 80, `MAX clipped early lows: min=${maxAxis.min}`);
+
+      const fiveDay = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 100 + (i < 20 ? -i * 0.6 : (i - 20) * 0.9); // ~8%+ swing
+        fiveDay.push({
+          time: now - (39 - i) * 900,
+          open: px, high: px + 0.4, low: px - 0.4, close: px + 0.1, volume: 1000,
+        });
+      }
+      const d5 = computePriceAxisRange(fiveDay, '5D');
+      const hi = Math.max(...fiveDay.map((b) => b.high));
+      const lo = Math.min(...fiveDay.map((b) => b.low));
+      assert.ok(d5.max >= hi, `5D clipped high ${hi} vs axis ${d5.max}`);
+      assert.ok(d5.min <= lo, `5D clipped low ${lo} vs axis ${d5.min}`);
+
+      const visible = sliceBarsForAxis(maxBars, 75, 100);
+      assert.ok(visible.length >= 10);
+      assert.ok(visible[0].close > 200, 'visible slice should be the recent high band');
+      const visAxis = computePriceAxisRange(visible, 'MAX');
+      assert.ok(visAxis.max >= visible[visible.length - 1].close);
+      assert.ok(visAxis.min > 150, 'visible-window axis should not span the whole multi-year history');
+    });
   }
 
   {

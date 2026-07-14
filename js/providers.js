@@ -103,6 +103,40 @@ export function candlesLookPlausibleForRange(candles, range) {
   return true;
 }
 
+function isValidCandle(c) {
+  return [c.open, c.high, c.low, c.close].every(Number.isFinite);
+}
+
+/** Daily/weekly/monthly history: use Yahoo adjclose so splits don't zig-zag the MAX/1Y pane. */
+function mapYahooChartCandles(result, count = 0) {
+  const q = result?.indicators?.quote?.[0];
+  const ts = result?.timestamp;
+  if (!Array.isArray(ts) || !q) return null;
+  const adj = result?.indicators?.adjclose?.[0]?.adjclose;
+  const candles = ts.map((t, i) => {
+    const open = q.open?.[i];
+    const high = q.high?.[i];
+    const low = q.low?.[i];
+    const close = q.close?.[i];
+    const volume = q.volume?.[i] || 0;
+    const adjClose = Array.isArray(adj) ? Number(adj[i]) : NaN;
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+    if (Number.isFinite(adjClose) && adjClose > 0 && close > 0) {
+      const scale = adjClose / close;
+      return {
+        time: t,
+        open: open * scale,
+        high: high * scale,
+        low: low * scale,
+        close: adjClose,
+        volume,
+      };
+    }
+    return { time: t, open, high, low, close, volume };
+  }).filter(Boolean);
+  return count > 0 ? candles.slice(-count) : candles;
+}
+
 async function fetchYahooCandlesDirect(sym, range = '1D', count = 120) {
   const cfg = YAHOO_CANDLE_RANGES[String(range || '1D').toUpperCase()] || YAHOO_CANDLE_RANGES['1D'];
   const ysym = toYahooSymbol(sym);
@@ -112,22 +146,9 @@ async function fetchYahooCandlesDirect(sym, range = '1D', count = 120) {
     if (!res.ok) return null;
     const data = await res.json();
     const r = data?.chart?.result?.[0];
-    const q = r?.indicators?.quote?.[0];
-    if (!r?.timestamp?.length || !q) return null;
-    const candles = r.timestamp.map((t, i) => ({
-      time: t,
-      open: q.open?.[i],
-      high: q.high?.[i],
-      low: q.low?.[i],
-      close: q.close?.[i],
-      volume: q.volume?.[i] || 0,
-    })).filter(isValidCandle);
-    return count > 0 ? candles.slice(-count) : candles;
+    const candles = mapYahooChartCandles(r, count);
+    return candles?.length ? candles : null;
   } catch { return null; }
-}
-
-function isValidCandle(c) {
-  return [c.open, c.high, c.low, c.close].every(Number.isFinite);
 }
 
 export async function fetchYahooDirect(sym) {
