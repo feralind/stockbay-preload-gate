@@ -7,6 +7,7 @@ import {
   syncQuoteToPrice, shouldRejectLiveCandleTick, LIVE_CANDLE_MAX_JUMP_PCT,
   candleBarVolFraction, isSimulationMode, getCachedQuote,
 } from './api.js';
+import { getMarketTime } from './market.js';
 
 /** @type {any} */
 let chart = null;
@@ -108,9 +109,9 @@ export function clampBarToPeers(bar, peerRange, mid) {
 
 /**
  * Broker-style Y window for the bars in view.
- * - 1D: soft-pin last close (ignore forming spears), modest floor/ceiling
- * - Multi-day / long: fit real H/L + last close — never re-center with a hard maxSpan
- *   (that was clipping ATH on MAX / 1Y and making 5D look disjoint)
+ * - Always keep the last close on-screen (live HUD tape).
+ * - 1D: ignore forming-bar spear high/low so one bad wick doesn't own the pane.
+ * - Multi-day / long: fit real H/L — never re-center with a hard maxSpan that clips ATH.
  */
 export function computePriceAxisRange(bars, range = '1D') {
   if (!Array.isArray(bars) || !bars.length) return null;
@@ -130,11 +131,9 @@ export function computePriceAxisRange(bars, range = '1D') {
   let minV;
   let maxV;
   if (session && completed.length >= 16) {
-    // Light winsorize so one bad completed wick doesn't own the pane
     minV = pick(sortedLow, 0.05);
     maxV = pick(sortedHigh, 0.95);
   } else if (longRange && completed.length >= 40) {
-    // Tiny trim for a single corrupt Yahoo wick — keep real multi-year range
     minV = pick(sortedLow, 0.01);
     maxV = pick(sortedHigh, 0.99);
   } else {
@@ -145,19 +144,19 @@ export function computePriceAxisRange(bars, range = '1D') {
   const sessionMid = (minV + maxV) / 2 || 1;
   const last = bars[bars.length - 1];
   const lastClose = Number(last?.close) || 0;
+
+  // Live close is the HUD quote — must stay visible or the chart looks "displaced" over time.
   if (lastClose > 0) {
-    if (session) {
-      const soft = Math.max((maxV - minV) * 0.15, sessionMid * 0.002);
-      const pinned = Math.min(maxV + soft, Math.max(minV - soft, lastClose));
-      minV = Math.min(minV, pinned);
-      maxV = Math.max(maxV, pinned);
-    } else {
-      // Hard-include last print so current price never sits off-screen
-      const lastHigh = Number(last?.high);
-      const lastLow = Number(last?.low);
-      minV = Math.min(minV, lastClose, Number.isFinite(lastLow) && lastLow > 0 ? lastLow : lastClose);
-      maxV = Math.max(maxV, lastClose, Number.isFinite(lastHigh) && lastHigh > 0 ? lastHigh : lastClose);
-    }
+    minV = Math.min(minV, lastClose);
+    maxV = Math.max(maxV, lastClose);
+  }
+
+  // Non-session: also include last bar H/L. Session: ignore spear wicks on the forming bar.
+  if (!session && last) {
+    const lastHigh = Number(last.high);
+    const lastLow = Number(last.low);
+    if (Number.isFinite(lastHigh) && lastHigh > 0) maxV = Math.max(maxV, lastHigh);
+    if (Number.isFinite(lastLow) && lastLow > 0) minV = Math.min(minV, lastLow);
   }
 
   const mid = (minV + maxV) / 2 || sessionMid;
@@ -171,17 +170,20 @@ export function computePriceAxisRange(bars, range = '1D') {
     span = maxV - minV;
   }
 
-  // Hard ceiling only on single-session charts (leftover spear defense).
-  // Never clamp 5D/1M/6M/1Y/MAX — that recenters mid and clips real highs/lows.
+  // Session only: tame absurd leftover completed-bar outliers, then re-pin last close.
   if (session) {
-    const maxSpan = mid * 0.08;
+    const maxSpan = mid * 0.12;
     if (span > maxSpan) {
       minV = mid - maxSpan / 2;
       maxV = mid + maxSpan / 2;
     }
+    if (lastClose > 0) {
+      minV = Math.min(minV, lastClose);
+      maxV = Math.max(maxV, lastClose);
+    }
   }
 
-  const padRatio = session ? 0.1 : longRange ? 0.1 : 0.12;
+  const padRatio = session ? 0.12 : longRange ? 0.1 : 0.12;
   const pad = Math.max((maxV - minV) * padRatio, mid * 0.003);
   return {
     min: Math.max(0.01, minV - pad),
@@ -222,13 +224,13 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
     low: Math.min(Number(bar.low) || px, open, px),
   };
   const mid = (open + px) / 2 || px;
-  const cap = mid * Math.max(0.004, Number(maxRangePct) > 0 ? Number(maxRangePct) : 0.02);
-  // Trim only extreme leftover spears; close stays glued to the quote.
-  if (next.high - next.low > cap * 2.5) {
+  const cap = mid * Math.max(0.006, Number(maxRangePct) > 0 ? Number(maxRangePct) : 0.02);
+  // Keep wicks tight to the body so a long sit doesn't grow a monster spear candle.
+  if (next.high - next.low > cap) {
     const bodyHigh = Math.max(open, px);
     const bodyLow = Math.min(open, px);
     const bodySpan = bodyHigh - bodyLow;
-    const room = Math.max(cap * 1.2 - bodySpan, mid * 0.001);
+    const room = Math.max(0, cap - bodySpan);
     next.high = bodyHigh + room * 0.55;
     next.low = Math.max(0.01, bodyLow - room * 0.45);
     next.high = Math.max(next.high, open, px);
@@ -253,6 +255,54 @@ function pinLastBarClose(price) {
     lastCandle.low = low;
     lastCandle.close = px;
   }
+}
+
+/**
+ * Advance the forming bar when game-clock crosses the next 5m/15m/60m bucket.
+ * Without this, hours of sim drift get smashed into one candle and the pane looks wrecked.
+ * @returns {boolean} true when a new bar was appended
+ */
+export function maybeRollFormingBar(price) {
+  const px = Number(price);
+  if (!(px > 0)) return false;
+  const key = String(lastRange || '1D').toUpperCase();
+  // Only roll intraday buckets — daily+ history is refreshed via loadChart / TF change.
+  if (!INTRADAY_RANGES.has(key)) return false;
+
+  const bucketSec = Math.max(60, rangeBarMinutes(key) * 60);
+  let ts;
+  try {
+    ts = Math.floor(getMarketTime().getTime() / 1000);
+  } catch {
+    ts = Math.floor(Date.now() / 1000);
+  }
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const bucketStart = Math.floor(ts / bucketSec) * bucketSec;
+
+  if (!lastBars.length) {
+    lastBars = [{ time: bucketStart, open: px, high: px, low: px, close: px, volume: 0 }];
+    lastBarCount = 1;
+    lastCandle = { ...lastBars[0] };
+    return true;
+  }
+
+  const last = lastBars[lastBars.length - 1];
+  const lastT = Number(last.time) || 0;
+  if (bucketStart <= lastT) return false;
+
+  lastBars.push({
+    time: bucketStart,
+    open: px,
+    high: px,
+    low: px,
+    close: px,
+    volume: 0,
+  });
+  const maxKeep = key === '1D' ? 130 : key === '5D' ? 220 : 200;
+  if (lastBars.length > maxKeep) lastBars = lastBars.slice(-maxKeep);
+  lastBarCount = lastBars.length;
+  lastCandle = { ...lastBars[lastBarCount - 1] };
+  return true;
 }
 
 export function sanitizeOhlcBar(open, high, low, close, maxRangePct = 0.08) {
@@ -1036,6 +1086,15 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   if (!want || !have || want !== have) return false;
   const px = Number(price);
   if (!Number.isFinite(px) || px <= 0) return false;
+
+  // New game-time bucket → append a real bar instead of growing one forever.
+  if (maybeRollFormingBar(px)) {
+    lastLiveUpdateAt = Date.now();
+    try {
+      paint(!userZoomed);
+    } catch { return false; }
+    return true;
+  }
 
   const anchor = Number(lastCandle.close);
   if (anchor > 0) {

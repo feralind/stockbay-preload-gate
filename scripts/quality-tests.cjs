@@ -1115,16 +1115,18 @@ async function main() {
           open: px, high: px + 0.25, low: px - 0.2, close: px + 0.05, volume: 1000,
         });
       }
+      // Forming bar: sane close, absurd spear high (bad Yahoo wick)
       bars[bars.length - 1] = {
-        time: now, open: 311, high: 316.58, low: 311, close: 316.4, volume: 9000,
+        time: now, open: 311.2, high: 380, low: 311, close: 316.4, volume: 9000,
       };
       const completedMax = Math.max(...bars.slice(0, -1).map((b) => b.high));
       const axis = computePriceAxisRange(bars, '1D');
       assert.ok(axis);
-      // Must not adopt the spear high/close as the top of the pane
-      assert.ok(axis.max < 316.4, `axis.max adopted spear close: ${axis.max}`);
-      assert.ok(axis.max < bars[bars.length - 1].high, `axis.max adopted spear high: ${axis.max}`);
-      assert.ok(axis.max - completedMax < 4, `axis stretched too far past session: ${axis.max - completedMax}`);
+      // Live close must stay on-screen
+      assert.ok(axis.max >= 316.4, `axis.max clipped live close: ${axis.max}`);
+      // Spear high must not own the pane
+      assert.ok(axis.max < 360, `axis.max adopted spear high: ${axis.max}`);
+      assert.ok(axis.max - completedMax < 12, `axis stretched too far past session: ${axis.max - completedMax}`);
       assert.ok(axis.max - axis.min >= 311 * 0.018, 'min span too tight');
 
       const peer = peerMedianRange(bars);
@@ -1143,6 +1145,26 @@ async function main() {
       assert.ok(next.high >= 318.52, 'high must include quote');
       assert.ok(next.low <= 310, 'low keeps session floor');
       assert.equal(next.open, 310, 'session open is preserved');
+    });
+
+    test('1D axis keeps a drifted live close on-screen (no soft-pin clip)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 300 + (i % 4) * 0.2;
+        bars.push({
+          time: now - (39 - i) * 300,
+          open: px, high: px + 0.3, low: px - 0.25, close: px, volume: 1000,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 300.4, high: 300.5, low: 300.2, close: 312.8, volume: 2000,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      assert.ok(axis.max >= 312.8, `live close clipped after drift: ${axis.max}`);
+      assert.ok(axis.min <= 300, `session lows clipped: ${axis.min}`);
     });
 
     test('computePriceAxisRange keeps MAX / 5D highs on-screen (no hard maxSpan recenter)', () => {
