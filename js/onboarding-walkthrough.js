@@ -92,7 +92,7 @@ export const PORTFOLIO_TOUR_STEPS = [
   {
     id: 'equity',
     target: '[data-tour="equity"]',
-    text: 'Total Equity — cash plus the current value of everything you hold. Your net worth right now; size risk from this, not from one green tick.',
+    text: 'Total Equity — cash, positions, Vault, and Estates, net of loans. Your net worth right now; size risk from this, not from one green tick.',
   },
   {
     id: 'cash',

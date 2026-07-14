@@ -11,21 +11,24 @@ import { getOfficeTierIndex } from './office.js';
  * @typedef {{
  *   id: string,
  *   label: string,
- *   kind: 'netWorth' | 'office' | 'reputation' | 'collectionPct' | 'legendaryOwned',
+ *   kind: 'netWorth' | 'office' | 'reputation' | 'collectionPct' | 'legendaryOwned' | 'estateOwned' | 'estateId',
  *   target: number,
  *   blurb: string,
  *   flair: string | null,
  *   officeId?: string,
+ *   estateId?: string,
  * }} MegaGoal
  */
 
-/** Kind priority: NW → Office → REP → Collection (per Section 4 approval). */
+/** Kind priority: NW → Office → REP → Collection → Estates (per Section 4 approval). */
 const KIND_PRIORITY = {
   netWorth: 0,
   office: 1,
   reputation: 2,
   collectionPct: 3,
   legendaryOwned: 4,
+  estateOwned: 5,
+  estateId: 6,
 };
 
 /** @type {MegaGoal[]} */
@@ -79,6 +82,23 @@ export const MEGA_GOALS = [
     target: 1,
     blurb: 'Own every legendary-tier collectible on the log.',
     flair: 'Legendary Sweep',
+  },
+  {
+    id: 'firstEstate',
+    label: 'First Estate',
+    kind: 'estateOwned',
+    target: 1,
+    blurb: 'Buy your first Lifestyle estate — Coastal Residence or beyond.',
+    flair: 'Home Desk',
+  },
+  {
+    id: 'elysiumEmpire',
+    label: 'Elysium Empire',
+    kind: 'estateId',
+    target: 1,
+    estateId: 'privateIslandElysium',
+    blurb: 'Own Private Island Elysium. Endgame lifestyle secured.',
+    flair: 'Island Empire',
   },
 ];
 
@@ -153,6 +173,21 @@ export function getMegaGoalProgress(goal, state = {}, ctx = {}) {
     const complete = total > 0 && owned >= total;
     const pct = total > 0 ? Math.min(100, Math.round((owned / total) * 100)) : 100;
     return { current: owned, target: total || 1, pct, complete, unit: 'count' };
+  }
+
+  if (goal.kind === 'estateOwned') {
+    const current = Array.isArray(state.estateOwned) ? state.estateOwned.length : 0;
+    const target = Math.max(1, Number(goal.target) || 1);
+    const complete = current >= target;
+    const pct = target > 0 ? Math.min(100, Math.max(0, Math.round((current / target) * 100))) : 100;
+    return { current, target, pct, complete, unit: 'count' };
+  }
+
+  if (goal.kind === 'estateId') {
+    const needId = goal.estateId || '';
+    const have = Array.isArray(state.estateOwned) && state.estateOwned.includes(needId);
+    const complete = !!have;
+    return { current: have ? 1 : 0, target: 1, pct: complete ? 100 : 0, complete, unit: 'estate' };
   }
 
   return { current: 0, target: 1, pct: 0, complete: false, unit: 'unknown' };

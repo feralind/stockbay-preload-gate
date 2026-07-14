@@ -9,7 +9,7 @@ import { formatMarketClock } from './market.js';
 import { getMacroState } from './macro.js';
 import { evaluateMarginHealth } from './margin-call.js';
 import {
-  getEquity, getUnrealizedPnL, getBuyingPower, getEquityBreakdown,
+  getFirmNetWorth, getUnrealizedPnL, getBuyingPower, getEquityBreakdown,
 } from './portfolio.js';
 import { resizeChart } from './chart.js';
 import { renderStaff, showStaffHistory } from './ui/staff.js';
@@ -35,6 +35,7 @@ import { renderAchievements } from './ui/achievements.js';
 import { renderFinance, setLoanDraftAmount } from './ui/finance.js';
 import { renderPerks } from './ui/perks.js';
 import { renderVault } from './ui/vault.js';
+import { renderEstates } from './ui/estates.js';
 import { renderCollectionLog } from './ui/collection-log.js';
 import { renderBlackMarket } from './ui/blackmarket.js';
 import {
@@ -68,7 +69,9 @@ import {
   escapeAttr, escapeHtml, fmt, fmtPnL, fmtSignedMoney, quoteForDisplay, setText,
 } from './ui/shared.js';
 export { fmt, fmtPnL } from './ui/shared.js';
-import { getTotalDebt } from './finance.js';
+import { getFirmDebt } from './finance.js';
+import { getVaultItem, getVaultBookValue } from './vault.js';
+import { syncEstateDerived, getHighestOwnedEstate } from './estates.js';
 import { getPlayerStanding } from './meta.js';
 import { toast, showAlert } from './notify.js';
 import { sfxError } from './sfx.js';
@@ -79,7 +82,6 @@ import {
 } from './profile.js';
 import { BLACKMARKET_ITEM_POOL } from './blackmarket.js';
 import { PRIVATE_SALON_POOL } from './private-salon.js';
-import { getVaultItem, getVaultBookValue } from './vault.js';
 import { THE_SEAT } from './the-seat.js';
 import { getEffectiveOfficeTier } from './office.js';
 import { getHighestOwnedLuxury } from './luxury.js';
@@ -125,6 +127,18 @@ export function renderAll(state) {
   renderDashboard(state);
   renderFinance(state);
   renderVault(state);
+  syncEstateDerived(state);
+  {
+    const debt = state.finance
+      ? getFirmDebt(state.finance, state.estateCreditUsed)
+      : Math.max(0, Number(state.estateCreditUsed) || 0);
+    const netWorth = getFirmNetWorth(state.portfolio, {
+      debt,
+      vaultBook: getVaultBookValue(state),
+      estateEquity: state.estateEquity,
+    });
+    renderEstates(state, { netWorth });
+  }
   renderCollectionLog(state);
   renderBlackMarket(state);
   renderTradePanel(state);
@@ -207,10 +221,12 @@ function scheduleHideStatPopover() {
 }
 
 function fillEquityPopover(el, state) {
-  const debt = state.finance ? getTotalDebt(state.finance) : 0;
+  syncEstateDerived(state);
+  const debt = state.finance ? getFirmDebt(state.finance, state.estateCreditUsed) : Math.max(0, Number(state.estateCreditUsed) || 0);
   const b = getEquityBreakdown(state.portfolio, debt);
   const vaultBook = getVaultBookValue(state);
-  const displayTotal = b.total + vaultBook;
+  const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
+  const displayTotal = getFirmNetWorth(state.portfolio, { debt, vaultBook, estateEquity });
   const debtCls = b.debt ? 'down' : '';
   const shortCls = b.shortUnrealized >= 0 ? 'up' : 'down';
   const uCls = b.unrealized >= 0 ? 'up' : 'down';
@@ -223,10 +239,11 @@ function fillEquityPopover(el, state) {
     <div class="stat-popover-row"><span>Short P&amp;L</span><span class="${shortCls}">${fmtSignedMoney(b.shortUnrealized)}</span></div>
     <div class="stat-popover-row"><span>Options</span><span>${fmt(b.options)}</span></div>
     <div class="stat-popover-row"><span>Trophy Vault</span><span>${fmt(vaultBook)}</span></div>
-    <div class="stat-popover-row"><span>Loans / debt</span><span class="${debtCls}">${b.debt ? fmtSignedMoney(-b.debt) : '$0'}</span></div>
+    <div class="stat-popover-row"><span>Estate equity</span><span>${fmt(estateEquity)}</span></div>
+    <div class="stat-popover-row"><span>Loans / credit</span><span class="${debtCls}">${b.debt ? fmtSignedMoney(-b.debt) : '$0'}</span></div>
     <div class="stat-popover-sep"></div>
     <div class="stat-popover-row stat-popover-total"><span>Total</span><span class="${totalCls}">${fmt(displayTotal)}</span></div>
-    <div class="stat-popover-note">Trading equity = cash + positions − debt. Total includes Vault book (appraisal — not buying power). Unrealized P&amp;L <span class="${uCls}">${fmtPnL(b.unrealized)}</span></div>
+    <div class="stat-popover-note">Trading equity = cash + positions − debt. Total includes Vault + Estate equity. Unrealized P&amp;L <span class="${uCls}">${fmtPnL(b.unrealized)}</span></div>
   `;
 }
 
@@ -262,15 +279,20 @@ function fillStatPopover(kind, el, state) {
 
 function updateStatPopovers(state) {
   statPopoverState = state;
-  const debt = state.finance ? getTotalDebt(state.finance) : 0;
-  const net = getEquity(state.portfolio) - debt + getVaultBookValue(state);
+  syncEstateDerived(state);
+  const debt = state.finance ? getFirmDebt(state.finance, state.estateCreditUsed) : Math.max(0, Number(state.estateCreditUsed) || 0);
+  const net = getFirmNetWorth(state.portfolio, {
+    debt,
+    vaultBook: getVaultBookValue(state),
+    estateEquity: state.estateEquity,
+  });
   const rep = state.meta?.reputation ?? 0;
   const rank = getRepRank(rep);
   const next = getNextRepRank(rep);
   const equityCell = document.getElementById('equity-stat-cell');
   const repCell = document.getElementById('rep-stat-cell');
   if (equityCell) {
-    equityCell.title = `Net equity ${fmt(net)} (includes vault book) — hover for breakdown`;
+    equityCell.title = `Net worth ${fmt(net)} (vault + estates) — hover for breakdown`;
   }
   if (repCell) {
     const tip = next
@@ -318,11 +340,12 @@ export function bindStatPopovers() {
 
 function renderHeader(state) {
   const { portfolio, perks, apiStatus, meta, finance } = state;
-  const equity = getEquity(portfolio);
-  const debt = finance ? getTotalDebt(finance) : 0;
+  syncEstateDerived(state);
+  const debt = finance ? getFirmDebt(finance, state.estateCreditUsed) : Math.max(0, Number(state.estateCreditUsed) || 0);
   const vaultBook = getVaultBookValue(state);
+  const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
   setText('cash', fmt(portfolio.cash));
-  setText('equity', fmt(equity - debt + vaultBook));
+  setText('equity', fmt(getFirmNetWorth(portfolio, { debt, vaultBook, estateEquity })));
   setText('pnl', fmtPnL(getUnrealizedPnL(portfolio)));
   setText('buying-power', fmt(getBuyingPower(portfolio, perks)));
   const rep = meta?.reputation ?? 0;
@@ -633,6 +656,15 @@ function applyLuxuryAttribute(state) {
   else body.removeAttribute('data-luxury');
 }
 
+/** Estate ambient — highest owned lifestyle asset. */
+function applyEstateAttribute(state) {
+  const body = document.body;
+  if (!body) return;
+  const estate = getHighestOwnedEstate(state);
+  if (estate?.id) body.setAttribute('data-estate', estate.id);
+  else body.removeAttribute('data-estate');
+}
+
 export function renderProfileUI(state) {
   const profile = getProfile();
   const nameEl = document.getElementById('user-name');
@@ -651,6 +683,7 @@ export function renderProfileUI(state) {
   applyProfileCosmetics(profile);
   applyOfficeTierAttribute(state);
   applyLuxuryAttribute(state);
+  applyEstateAttribute(state);
   updatePlayerTier(state, profile);
 }
 
@@ -859,6 +892,32 @@ export function switchView(viewId) {
   document.getElementById('btn-settings')?.classList.toggle('active', next === 'settings');
   closeMobileNav();
   if (next === 'ai') renderAiChatLog();
+  // Estates / Achievements skip work while hidden — force a paint when entering.
+  if (next === 'estates' && prev !== 'estates') {
+    try {
+      const root = document.getElementById('estates-root');
+      if (root) root.dataset.estatesForce = '1';
+    } catch (_) { /* ignore */ }
+  }
+  if (next === 'achievements' && prev !== 'achievements') {
+    try {
+      const grid = document.getElementById('achievements-grid');
+      if (grid) grid.dataset.achForce = '1';
+    } catch (_) { /* ignore */ }
+  }
+  if (next === 'collection' && prev !== 'collection') {
+    try {
+      const root = document.getElementById('collection-log-root');
+      if (root) root.dataset.collectionForce = '1';
+    } catch (_) { /* ignore */ }
+  }
+  if (prev === 'achievements' && next !== 'achievements') {
+    const tip = document.getElementById('ach-cursor-tip');
+    if (tip) {
+      tip.hidden = true;
+      tip.classList.remove('is-on');
+    }
+  }
   if (prev !== next) {
     viewChangeListeners.forEach((fn) => {
       try { fn(next, prev); } catch { /* ignore listener errors */ }

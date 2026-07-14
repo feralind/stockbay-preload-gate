@@ -10,6 +10,7 @@ import {
   getEquippedRelicIds,
   getRelicMarginGraceMinutes,
 } from './relics.js';
+import { getEstateGraceBonus } from './estates.js';
 
 /**
  * Volume slip → relic shrink → smartRouting (~35% less adverse vs mid).
@@ -39,12 +40,13 @@ export function applyRelicAwareSlippage(state, args) {
 }
 
 /**
- * Relic grace bonus first, then primeBroker +8.
+ * Relic grace bonus first, then primeBroker +8, then estate resilience.
  * @param {object} state
  * @param {number} [baseMinutes]
  */
 export function getDeskMarginGraceMinutes(state, baseMinutes = MARGIN_CALL_GRACE_MINUTES) {
   let grace = getRelicMarginGraceMinutes(getEquippedRelicIds(state), baseMinutes);
   if (state?.perks?.includes('primeBroker')) grace += 8;
+  grace += getEstateGraceBonus(state);
   return grace;
 }

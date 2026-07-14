@@ -1,7 +1,7 @@
 // @ts-check
 /** Clamp and validate run data on load / import — blocks save-edit god-mode exploits. */
 import { CONFIG, PERKS } from './config.js';
-import { createFinanceState, getTotalDebt } from './finance.js';
+import { createFinanceState, getFirmDebt } from './finance.js';
 import { createMetaState } from './meta.js';
 import { normalizePerkCalloutsShown } from './onboarding-walkthrough.js';
 import { KNOWN_VAULT_IDS, VAULT_COST_BY_ID, getVaultBookValue } from './vault.js';
@@ -12,8 +12,9 @@ import { PRIVATE_SALON_POOL, SALON_SEEN_EXPIRED_MAX } from './private-salon.js';
 import { sanitizeEquippedRelics } from './relics.js';
 import { sanitizeOfficeProgress } from './office.js';
 import { sanitizeLuxuryProgress, getLuxuryItem } from './luxury.js';
+import { sanitizeEstateProgress, getEstateAsset } from './estates.js';
 import { sanitizeMegaGoalsClaimed, MEGA_GOALS } from './mega-goals.js';
-import { getEquity } from './portfolio.js';
+import { getFirmNetWorth } from './portfolio.js';
 import { THE_SEAT } from './the-seat.js';
 import {
   getCollectionClaimedCashTotal,
@@ -266,6 +267,26 @@ export function sanitizeRunData(run) {
   out.luxuryOwned = luxury.luxuryOwned;
   out.luxurySpentTotal = luxury.luxurySpentTotal;
 
+  const estate = sanitizeEstateProgress({
+    estateOwned: out.estateOwned,
+    estateSpentTotal: out.estateSpentTotal,
+    estateEquityExtracted: out.estateEquityExtracted,
+    estateCreditUsed: out.estateCreditUsed,
+    estateCashOutCount: out.estateCashOutCount,
+    estateLastCashOutDay: out.estateLastCashOutDay,
+  });
+  out.estateOwned = estate.estateOwned;
+  out.estateSpentTotal = estate.estateSpentTotal;
+  out.estateEquity = estate.estateEquity;
+  out.estateEquityExtracted = estate.estateEquityExtracted;
+  out.estateCreditUsed = estate.estateCreditUsed;
+  out.estateCreditMax = estate.estateCreditMax;
+  out.resilienceRating = estate.resilienceRating;
+  out.estateIncomePerDay = estate.estateIncomePerDay;
+  out.estateUpkeepPerDay = estate.estateUpkeepPerDay;
+  out.estateCashOutCount = estate.estateCashOutCount;
+  out.estateLastCashOutDay = estate.estateLastCashOutDay;
+
   const collectionOpts = {
     blackMarketPool: BLACKMARKET_ITEM_POOL,
     seatItem: THE_SEAT,
@@ -292,8 +313,12 @@ export function sanitizeRunData(run) {
     const flair = typeof m.collectionFlair === 'string' ? m.collectionFlair.trim().slice(0, 40) : '';
     m.collectionFlair = flair && claimedFlairs.has(flair) ? flair : null;
 
-    const debt = out.finance ? getTotalDebt(out.finance) : 0;
-    const netWorth = getEquity(out.portfolio) - debt + getVaultBookValue(out);
+    const debt = out.finance ? getFirmDebt(out.finance, out.estateCreditUsed) : Math.max(0, Number(out.estateCreditUsed) || 0);
+    const netWorth = getFirmNetWorth(out.portfolio, {
+      debt,
+      vaultBook: getVaultBookValue(out),
+      estateEquity: out.estateEquity,
+    });
     const megaCtx = { netWorth, ...collectionOpts };
     m.megaGoalsClaimed = sanitizeMegaGoalsClaimed(m.megaGoalsClaimed, out, megaCtx);
     const megaFlairSet = new Set(
@@ -309,6 +334,12 @@ export function sanitizeRunData(run) {
     );
     const luxFlair = typeof m.luxuryFlair === 'string' ? m.luxuryFlair.trim().slice(0, 40) : '';
     m.luxuryFlair = luxFlair && luxFlairSet.has(luxFlair) ? luxFlair : null;
+
+    const estateFlairSet = new Set(
+      (out.estateOwned || []).map((id) => getEstateAsset(id)?.flair).filter(Boolean),
+    );
+    const estateFlair = typeof m.estateFlair === 'string' ? m.estateFlair.trim().slice(0, 40) : '';
+    m.estateFlair = estateFlair && estateFlairSet.has(estateFlair) ? estateFlair : null;
 
     m.setClaims = sanitizeSetClaims(m.setClaims, out);
     const setFlairSet = new Set(

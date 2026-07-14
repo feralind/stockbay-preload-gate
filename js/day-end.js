@@ -4,7 +4,7 @@
  * UI (toasts, day-summary modal, clock/pause) stays in app.js.
  */
 import { getNetEquity, settleExpiredOptions } from './portfolio.js';
-import { getTotalDebt, processDailyLoans } from './finance.js';
+import { getFirmDebt, processDailyLoans } from './finance.js';
 import { getDayStats } from './market.js';
 import { payDailySalaries } from './staff.js';
 import {
@@ -15,6 +15,7 @@ import {
 import { recordBestRun } from './leaderboard.js';
 import { repossessVaultForLateLoans, getVaultSlotForItem, getVaultItem } from './vault.js';
 import { setProfileCosmetic } from './profile.js';
+import { processDailyEstates, syncEstateDerived } from './estates.js';
 
 /** Soft-taper loan auto-pay REP so late ranks don't farm as fast as early Desk Hand. */
 export function taperLoanRep(rep, currentReputation) {
@@ -48,7 +49,8 @@ export function taperLoanRep(rep, currentReputation) {
  * }}
  */
 export function runDayEndSettlement(state, day) {
-  const debt = getTotalDebt(state.finance);
+  syncEstateDerived(state);
+  const debt = getFirmDebt(state.finance, state.estateCreditUsed);
   const equity = getNetEquity(state.portfolio, debt);
   const stats = getDayStats(equity, state.portfolio.cash, debt);
   const staffActions = (state.staff || []).reduce((n, s) => n + (s.actionsToday || 0), 0);
@@ -76,6 +78,7 @@ export function runDayEndSettlement(state, day) {
   };
 
   const loanEvents = processDailyLoans(state.finance, state.portfolio, day);
+  const estateDay = processDailyEstates(state);
   const repossessions = repossessVaultForLateLoans(state, loanEvents);
   for (const repo of repossessions) {
     for (const id of repo.seized) {
@@ -131,6 +134,8 @@ export function runDayEndSettlement(state, day) {
     challengeReward,
     repDelta: dayRepDelta,
     loanEvents,
+    estateEvents: estateDay.events,
+    estateNetIncome: estateDay.netIncome,
     optionsExpired: expiredOpts.length,
     repossessions,
   };
@@ -144,6 +149,7 @@ export function runDayEndSettlement(state, day) {
     challengeReward,
     dayRepDelta,
     loanEvents,
+    estateEvents: estateDay.events,
     repossessions,
     payroll,
     bestRun,

@@ -159,8 +159,11 @@ function raiseCashFromLongs(portfolio, need) {
 /**
  * Liquidate until health is ok or nothing left to cut.
  * Prefer covering worst shorts; sell longs if cover needs cash.
+ * @param {object} portfolio
+ * @param {{ liquidationScale?: number }} [opts] — estate resilience softens forced sells (1 = full).
  */
-export function liquidateForMarginCall(portfolio) {
+export function liquidateForMarginCall(portfolio, { liquidationScale = 1 } = {}) {
+  const scale = Math.max(0.55, Math.min(1, Number(liquidationScale) || 1));
   const actions = [];
   for (let guard = 0; guard < 40; guard++) {
     const health = evaluateMarginHealth(portfolio);
@@ -169,10 +172,12 @@ export function liquidateForMarginCall(portfolio) {
     const worst = health.shorts[0];
     if (worst && worst.shares > 0 && portfolio.shorts[worst.sym]) {
       const pos = portfolio.shorts[worst.sym];
-      const shares = pos.shares;
+      // Soften: cover a fraction of the worst short when resilience is high.
+      const shares = Math.max(1, Math.ceil(pos.shares * scale));
       const px = worst.px;
       const pnl = (pos.avgPrice - px) * shares;
-      const marginRelease = pos.marginHeld || 0;
+      const marginHeld = Number(pos.marginHeld) || 0;
+      const marginRelease = pos.shares > 0 ? (marginHeld / pos.shares) * shares : 0;
       const cashDelta = pnl + marginRelease - CONFIG.COMMISSION;
 
       if (cashDelta < 0 && getSpendableCash(portfolio) < -cashDelta) {
@@ -203,7 +208,7 @@ export function liquidateForMarginCall(portfolio) {
     if (health.longLeverage && Object.keys(portfolio.longs || {}).length) {
       const { actions: sold } = raiseCashFromLongs(
         portfolio,
-        Math.max(50, health.longLeverage.deficit * 0.35),
+        Math.max(50, health.longLeverage.deficit * 0.35 * scale),
       );
       if (sold.length) {
         actions.push(...sold);
@@ -225,6 +230,7 @@ export function processMarginCallTick(portfolio, {
   minuteOfDay,
   paused = false,
   graceMinutes = MARGIN_CALL_GRACE_MINUTES,
+  liquidationScale = 1,
 } = {}) {
   const grace = Math.max(1, Math.floor(Number(graceMinutes) || MARGIN_CALL_GRACE_MINUTES));
   const health = evaluateMarginHealth(portfolio);
@@ -296,7 +302,7 @@ export function processMarginCallTick(portfolio, {
   }
 
   if (!paused && state.graceLeft <= 0) {
-    const result = liquidateForMarginCall(portfolio);
+    const result = liquidateForMarginCall(portfolio, { liquidationScale });
     liquidated = result.actions.length > 0;
     if (liquidated) {
       toasts.push({

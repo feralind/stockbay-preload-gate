@@ -718,6 +718,15 @@ export function getTotalDebt(finance) {
   return finance.loans.filter(l => l.balance > 0).reduce((s, l) => s + l.balance, 0);
 }
 
+/**
+ * Firm-wide debt = bank loans + drawn property-backed credit (HELOC-style).
+ * @param {object} finance
+ * @param {number} [estateCreditUsed]
+ */
+export function getFirmDebt(finance, estateCreditUsed = 0) {
+  return getTotalDebt(finance) + Math.max(0, Number(estateCreditUsed) || 0);
+}
+
 export function getActiveLoans(finance) {
   return finance.loans.filter(l => l.balance > 0);
 }

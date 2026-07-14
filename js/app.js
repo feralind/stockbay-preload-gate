@@ -21,7 +21,7 @@ import {
 import { processEarningsForDay, processDividendsForDay } from './corporate-actions.js';
 import {
   createPortfolio, buyLong, sellLong,
-  getNetEquity,
+  getNetEquity, getFirmNetWorth,
   ensurePendingOrders, ensureOrderTickets,
   markPriceCorrectedNotices,
 } from './portfolio.js';
@@ -59,7 +59,7 @@ import {
   maybeShowSimStatusCoach, showCoachmark, hideCoachmark,
 } from './onboarding-walkthrough.js';
 import {
-  createFinanceState, takeLoan, makeLoanPayment, quoteLoan, getTotalDebt,
+  createFinanceState, takeLoan, makeLoanPayment, quoteLoan, getFirmDebt,
   BANKS, bankDebt, otherBanksDebt, typeDebt,
 } from './finance.js';
 import {
@@ -79,6 +79,10 @@ import {
 import { isSeatListingActive, purchaseSeat, THE_SEAT } from './the-seat.js';
 import { purchaseOfficeUpgrade, sanitizeOfficeProgress } from './office.js';
 import { purchaseLuxury, sanitizeLuxuryProgress } from './luxury.js';
+import {
+  purchaseEstate, sanitizeEstateProgress, syncEstateDerived, drawEstateCredit, repayEstateCredit,
+  cashOutEstateEquity, getEstateLiquidationScale, getEstatePrestigeAura,
+} from './estates.js';
 import { claimMegaGoal } from './mega-goals.js';
 import {
   getActiveSalonListing, purchaseSalonItem, PRIVATE_SALON_POOL, collectExpiredSalonIds,
@@ -153,13 +157,39 @@ const state = {
   officeSpentTotal: 0,
   luxuryOwned: [],
   luxurySpentTotal: 0,
+  estateOwned: [],
+  estateSpentTotal: 0,
+  estateEquity: 0,
+  estateEquityExtracted: 0,
+  estateCreditUsed: 0,
+  estateCreditMax: 0,
+  resilienceRating: 0,
+  estateIncomePerDay: 0,
+  estateUpkeepPerDay: 0,
+  estateCashOutCount: 0,
+  estateLastCashOutDay: null,
   collectionClaims: [],
   collectionRewardCashTotal: 0,
   daySummaryPending: null,
 };
 
+/** Bank loans + drawn estate credit. */
+function firmDebt() {
+  return getFirmDebt(state.finance, state.estateCreditUsed);
+}
+
+/** Trading equity − firm debt + vault book + estate equity. */
+function firmNetWorth() {
+  syncEstateDerived(state);
+  return getFirmNetWorth(state.portfolio, {
+    debt: firmDebt(),
+    vaultBook: getVaultBookValue(state),
+    estateEquity: state.estateEquity,
+  });
+}
+
 function achievementContext() {
-  const debt = getTotalDebt(state.finance);
+  const debt = firmDebt();
   return {
     ...state,
     equity: getNetEquity(state.portfolio, debt),
@@ -351,6 +381,17 @@ function buildSaveData() {
     officeSpentTotal: state.officeSpentTotal,
     luxuryOwned: state.luxuryOwned,
     luxurySpentTotal: state.luxurySpentTotal,
+    estateOwned: state.estateOwned,
+    estateSpentTotal: state.estateSpentTotal,
+    estateEquity: state.estateEquity,
+    estateEquityExtracted: state.estateEquityExtracted,
+    estateCreditUsed: state.estateCreditUsed,
+    estateCreditMax: state.estateCreditMax,
+    resilienceRating: state.resilienceRating,
+    estateIncomePerDay: state.estateIncomePerDay,
+    estateUpkeepPerDay: state.estateUpkeepPerDay,
+    estateCashOutCount: state.estateCashOutCount,
+    estateLastCashOutDay: state.estateLastCashOutDay,
     collectionClaims: state.collectionClaims,
     collectionRewardCashTotal: state.collectionRewardCashTotal,
     aiChat: getAiChatHistory(),
@@ -394,7 +435,7 @@ function clearAllSaveData({ archive = true, keepQuoteBaseline = false } = {}) {
   if (archive) {
     try {
       archiveRun({
-        equity: getNetEquity(state.portfolio, getTotalDebt(state.finance)),
+        equity: getNetEquity(state.portfolio, firmDebt()),
         day: getDayCount(),
         rep: state.meta?.reputation || 0,
         label: 'Reset desk',
@@ -724,6 +765,17 @@ function loadGame() {
       state.luxuryOwned = luxury.luxuryOwned;
       state.luxurySpentTotal = luxury.luxurySpentTotal;
     }
+    {
+      const estate = sanitizeEstateProgress({
+        estateOwned: data.estateOwned,
+        estateSpentTotal: data.estateSpentTotal,
+        estateEquityExtracted: data.estateEquityExtracted,
+        estateCreditUsed: data.estateCreditUsed,
+        estateCashOutCount: data.estateCashOutCount,
+        estateLastCashOutDay: data.estateLastCashOutDay,
+      });
+      Object.assign(state, estate);
+    }
     state.collectionClaims = Array.isArray(data.collectionClaims) ? data.collectionClaims.slice() : [];
     state.collectionRewardCashTotal = Math.max(0, Number(data.collectionRewardCashTotal) || 0);
     state.blackMarketEquippedRelics = sanitizeEquippedRelics(state.blackMarketEquippedRelics, {
@@ -757,7 +809,13 @@ function maybeApplyVaultDeskAura(pnl = 0) {
     vaultOwned: state.vaultOwned,
     perks: state.perks,
   });
-  const result = applyVaultDeskAuraOnClose(state.meta, pnl, aura);
+  const estateAura = getEstatePrestigeAura(state);
+  const merged = {
+    ...aura,
+    repPerClose: (Number(aura.repPerClose) || 0) + (Number(estateAura.repPerClose) || 0),
+    dailyCap: (Number(aura.dailyCap) || 0) + (Number(estateAura.dailyCap) || 0),
+  };
+  const result = applyVaultDeskAuraOnClose(state.meta, pnl, merged);
   if (result.applied > 0) {
     adjustReputation(state.meta, result.applied, 'vault_aura');
     toast(`Desk Prestige +${result.applied} REP`, { type: 'info' });
@@ -1222,8 +1280,11 @@ function bindState() {
     if (r.ok) {
       adjustReputation(state.meta, 8, 'achievement');
       state.apiStatus = { mode: 'online', label: `Claimed ${r.name} (+$${r.reward.toLocaleString()})` };
+      toast(`Claimed ${r.name} (+$${r.reward.toLocaleString()})`, { type: 'success' });
       saveGame();
       renderAll(state);
+    } else {
+      toast('Cannot claim that achievement', { type: 'error' });
     }
   };
 
@@ -1238,8 +1299,7 @@ function bindState() {
   };
 
   state.onPurchaseOfficeUpgrade = () => {
-    const debt = getTotalDebt(state.finance);
-    const net = getNetEquity(state.portfolio, debt) + getVaultBookValue(state);
+    const net = firmNetWorth();
     const r = purchaseOfficeUpgrade(state, {
       netWorth: net,
       reputation: state.meta?.reputation || 0,
@@ -1255,8 +1315,7 @@ function bindState() {
   };
 
   state.onClaimMegaGoal = (goalId) => {
-    const debt = getTotalDebt(state.finance);
-    const net = getNetEquity(state.portfolio, debt) + getVaultBookValue(state);
+    const net = firmNetWorth();
     const r = claimMegaGoal(state, goalId, {
       netWorth: net,
       blackMarketPool: BLACKMARKET_ITEM_POOL,
@@ -1316,6 +1375,55 @@ function bindState() {
       renderAll(state);
     } else {
       toast(r.msg || 'Cannot buy luxury', { type: 'error' });
+    }
+  };
+
+  state.onPurchaseEstate = (assetId) => {
+    const r = purchaseEstate(state, assetId, { netWorth: firmNetWorth() });
+    if (r.ok) {
+      const flairNote = r.asset.flair ? ` · flair “${r.asset.flair}”` : '';
+      toast(`Estate acquired: ${r.asset.name}${flairNote}`, { type: 'success' });
+      state.apiStatus = { mode: 'online', label: `Estate → ${r.asset.name}` };
+      checkAchievements();
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot buy estate', { type: 'error' });
+    }
+  };
+
+  state.onDrawEstateCredit = (amount) => {
+    const r = drawEstateCredit(state, amount);
+    if (r.ok) {
+      toast(`Drew $${r.drawn.toLocaleString()} from property credit`, { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot draw credit', { type: 'error' });
+    }
+  };
+
+  state.onRepayEstateCredit = (amount) => {
+    const r = repayEstateCredit(state, amount);
+    if (r.ok) {
+      toast(`Repaid $${r.paid.toLocaleString()} property credit`, { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot repay credit', { type: 'error' });
+    }
+  };
+
+  state.onCashOutEstateEquity = () => {
+    const r = cashOutEstateEquity(state, getDayCount());
+    if (r.ok) {
+      toast(`Equity cash-out: +$${r.amount.toLocaleString()} freed`, { type: 'success' });
+      state.apiStatus = { mode: 'online', label: `Cash-out +$${Math.round(r.amount).toLocaleString()}` };
+      checkAchievements();
+      saveGame();
+      renderAll(state);
+    } else {
+      toast(r.msg || 'Cannot cash out', { type: 'error' });
     }
   };
 
@@ -1451,6 +1559,7 @@ function checkRiskOrders() {
     processMarginCallTick: (portfolio, opts) => processMarginCallTick(portfolio, {
       ...opts,
       graceMinutes: getDeskMarginGraceMinutes(state),
+      liquidationScale: getEstateLiquidationScale(state),
     }),
     getCachedQuote,
     applySlippage: (args) => applyRelicAwareSlippage(state, args),
@@ -1525,6 +1634,11 @@ function handleDayEnd(day) {
     });
   }
 
+  for (const ev of result.estateEvents || []) {
+    if (!ev?.msg) continue;
+    toast(ev.msg, { type: ev.amount >= 0 ? 'info' : 'warn' });
+  }
+
   state.daySummaryPending = result.daySummary;
   if (isCoachQuiet()) {
     deferDaySummary(() => {
@@ -1543,7 +1657,7 @@ function continueNextDay() {
   hideDaySummary();
   state.staff.forEach(s => { s.actionsToday = 0; s.progress = 0; s.status = 'Ready'; });
   resetDayCounters(state.meta);
-  const debt = getTotalDebt(state.finance);
+  const debt = firmDebt();
   snapshotDayStart(getNetEquity(state.portfolio, debt), state.portfolio.cash, debt);
   // Keep remaining grace; clear lastTickAbs so countdown resumes from next live tick
   if (state.portfolio?.marginCall?.level === 'call') {
@@ -1620,7 +1734,7 @@ async function init() {
     regenerateListingsFeed();
     // Fresh run only — loaded saves already restored dayStart* via loadMarket
     if (!hadSave) {
-      const debt = getTotalDebt(state.finance);
+      const debt = firmDebt();
       snapshotDayStart(getNetEquity(state.portfolio, debt), state.portfolio.cash, debt);
     }
     if (!state.meta.challenge) state.meta.challenge = rollDailyChallenge(getDayCount());
@@ -1782,15 +1896,7 @@ async function init() {
       }
       if (type === 'newDay') {
         const day = data?.day || getDayCount();
-        const gaps = processEarningsForDay(day);
-        for (const g of gaps.slice(0, 8)) {
-          const sign = g.gapPct >= 0 ? '+' : '';
-          toast(
-            `${g.sym} earnings ${g.outcome}: ${sign}${(g.gapPct * 100).toFixed(1)}% gap`,
-            { type: g.gapPct >= 0 ? 'success' : 'warn' },
-          );
-        }
-        if (gaps.length > 8) toast(`${gaps.length - 8} more earnings gaps overnight`, { type: 'info' });
+        processEarningsForDay(day);
         const divs = processDividendsForDay(state.portfolio, day);
         for (const d of divs) {
           toast(`Dividend ${d.sym}: +$${d.amount.toFixed(2)}`, { type: 'success' });
@@ -1825,7 +1931,7 @@ async function init() {
       }
       if (type === 'tick') {
         const clock = formatMarketClock();
-        recordEquityPoint(state.meta, getNetEquity(state.portfolio, getTotalDebt(state.finance)), clock.day, clock.phase);
+        recordEquityPoint(state.meta, getNetEquity(state.portfolio, firmDebt()), clock.day, clock.phase);
         if (isMarketOpen() || isThinSession()) {
           syncListingsFromQuotes(state);
           checkRiskOrders();
@@ -1865,7 +1971,7 @@ async function init() {
           const cash = document.getElementById('cash');
           if (cash) cash.textContent = `$${Math.round(state.portfolio.cash).toLocaleString()}`;
           const eq = document.getElementById('equity');
-          if (eq) eq.textContent = `$${Math.round(getNetEquity(state.portfolio, getTotalDebt(state.finance))).toLocaleString()}`;
+          if (eq) eq.textContent = `$${Math.round(getNetEquity(state.portfolio, firmDebt())).toLocaleString()}`;
         }
       }
     });
@@ -1875,6 +1981,7 @@ async function init() {
     document.querySelectorAll('.nav-item').forEach(btn => {
       btn.onclick = () => {
         switchView(btn.dataset.view);
+        renderAll(state);
         if (btn.dataset.view === 'trade') setTimeout(() => scheduleFitChart(), 100);
       };
     });

@@ -107,6 +107,56 @@ export function resolveColors(saved) {
   return { ...preset };
 }
 
+/**
+ * Relative luminance 0–1 from a #rgb / #rrggbb color.
+ * @param {string} hex
+ */
+export function colorLuminance(hex) {
+  const raw = String(hex || '').replace('#', '').trim();
+  if (!raw) return 0;
+  const full = raw.length === 3
+    ? raw.split('').map((c) => c + c).join('')
+    : raw.slice(0, 6);
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) return 0;
+  const n = parseInt(full, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/**
+ * Adapt glass tokens + color-scheme attribute for light vs dark desks.
+ * @param {HTMLElement} root
+ * @param {{ bg?: string, bg2?: string }} colors
+ * @param {boolean} light
+ */
+function applySchemeTokens(root, colors, light) {
+  root.dataset.colorScheme = light ? 'light' : 'dark';
+  root.style.colorScheme = light ? 'light' : 'dark';
+  root.style.setProperty('--panel', colors.bg2 || (light ? '#ffffff' : '#0f0f12'));
+
+  const glassKeys = [
+    '--glass-fill',
+    '--glass-fill-strong',
+    '--glass-stroke',
+    '--glass-stroke-soft',
+    '--glass-shadow',
+    '--glass-bg',
+  ];
+  if (!light) {
+    glassKeys.forEach((k) => root.style.removeProperty(k));
+    return;
+  }
+  // Light desks need ink strokes / soft white fills — not dark-mode white glass.
+  root.style.setProperty('--glass-fill', 'color-mix(in srgb, #ffffff 72%, transparent)');
+  root.style.setProperty('--glass-fill-strong', 'color-mix(in srgb, #ffffff 88%, transparent)');
+  root.style.setProperty('--glass-stroke', 'color-mix(in srgb, var(--text) 14%, transparent)');
+  root.style.setProperty('--glass-stroke-soft', 'color-mix(in srgb, var(--text) 8%, transparent)');
+  root.style.setProperty('--glass-shadow', '0 10px 28px color-mix(in srgb, var(--text) 8%, transparent), inset 0 1px 0 rgba(255,255,255,0.7)');
+  root.style.setProperty('--glass-bg', 'linear-gradient(155deg, var(--glass-fill-strong), var(--glass-fill))');
+}
+
 export function applyTheme(colors) {
   const root = document.documentElement;
   const map = {
@@ -126,6 +176,7 @@ export function applyTheme(colors) {
     '--chart-grid': colors.chartGrid,
   };
   Object.entries(map).forEach(([k, v]) => root.style.setProperty(k, v));
+  applySchemeTokens(root, colors, colorLuminance(colors.bg) > 0.62);
   return colors;
 }
 

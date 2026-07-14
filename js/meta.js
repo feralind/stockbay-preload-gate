@@ -37,6 +37,8 @@ export function createMetaState() {
     megaGoalsClaimed: [],
     /** Flair from luxury ownership (cosmetic sink). */
     luxuryFlair: null,
+    /** Flair from estate ownership (lifestyle assets). */
+    estateFlair: null,
     /** Claimed collection-set ids (flair only). */
     setClaims: [],
     /** Flair from claimed collection sets (cosmetic only). */
@@ -45,16 +47,17 @@ export function createMetaState() {
 }
 
 /**
- * Active Standing flair. Priority: mega → luxury → set → collection.
+ * Active Standing flair. Priority: mega → estate → luxury → set → collection.
  * @param {object} [meta]
  * @returns {string | null}
  */
 export function getActiveFlair(meta = {}) {
   const mega = typeof meta.megaGoalFlair === 'string' ? meta.megaGoalFlair.trim() : '';
+  const estate = typeof meta.estateFlair === 'string' ? meta.estateFlair.trim() : '';
   const lux = typeof meta.luxuryFlair === 'string' ? meta.luxuryFlair.trim() : '';
   const set = typeof meta.setFlair === 'string' ? meta.setFlair.trim() : '';
   const collection = typeof meta.collectionFlair === 'string' ? meta.collectionFlair.trim() : '';
-  const raw = mega || lux || set || collection;
+  const raw = mega || estate || lux || set || collection;
   return raw ? raw.slice(0, 40) : null;
 }
 

@@ -140,6 +140,21 @@ export function getNetEquity(portfolio, debt = 0) {
   return getEquity(portfolio) - (Number(debt) || 0);
 }
 
+/**
+ * Firm Total Equity / net worth used by HUD, Portfolio, mega-goals, and estate gates.
+ * Trading book (cash + positions MTM) − loans/estate credit + vault book + estate equity.
+ * Estate equity is syncEstateDerived's base (owned prices) minus cash-outs; credit drawn
+ * is subtracted via `debt` (getFirmDebt), not by shrinking estateEquity.
+ * @param {object} portfolio
+ * @param {{ debt?: number, vaultBook?: number, estateEquity?: number }} [extras]
+ */
+export function getFirmNetWorth(portfolio, extras = {}) {
+  const debt = Number(extras.debt) || 0;
+  const vaultBook = Math.max(0, Number(extras.vaultBook) || 0);
+  const estateEquity = Math.max(0, Number(extras.estateEquity) || 0);
+  return getNetEquity(portfolio, debt) + vaultBook + estateEquity;
+}
+
 export function getUnrealizedPnL(portfolio) {
   let pnl = 0;
   Object.entries(portfolio.longs).forEach(([sym, p]) => {

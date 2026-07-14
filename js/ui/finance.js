@@ -4,11 +4,12 @@
  */
 
 import {
-  BANKS, APR_CREDIT_TIERS, DAILY_CREDIT_GAIN_CAP, creditTier, getActiveLoans, getTotalDebt,
+  BANKS, APR_CREDIT_TIERS, DAILY_CREDIT_GAIN_CAP, creditTier, getActiveLoans, getFirmDebt,
   projectLoanPayoff, maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers,
   utilizationRatio, bankDebt, otherBanksDebt,
 } from '../finance.js';
 import { getVaultPledgedAppraisal } from '../vault.js';
+import { syncEstateDerived } from '../estates.js';
 import { domainLogoHtml } from '../logos.js';
 import { formatMarketClock } from '../market.js';
 import { toast } from '../notify.js';
@@ -299,16 +300,24 @@ export function renderFinance(state) {
 
   const pills = document.getElementById('credit-pills');
   if (pills) {
+    syncEstateDerived(state);
+    const estateCredit = Math.max(0, Number(state.estateCreditUsed) || 0);
+    const firmDebt = getFirmDebt(finance, estateCredit);
     pills.innerHTML = `
       <div class="credit-pill" data-gloss="credit-score">
         <span class="credit-pill-lbl">Total debt</span>
-        <span class="credit-pill-val down">${fmt(getTotalDebt(finance))}</span>
-        <span class="credit-tier">Outstanding</span>
+        <span class="credit-pill-val down">${fmt(firmDebt)}</span>
+        <span class="credit-tier">Loans${estateCredit > 0 ? ' + property credit' : ''}</span>
       </div>
       <div class="credit-pill" data-gloss="net-worth">
         <span class="credit-pill-lbl">Vault pledged</span>
         <span class="credit-pill-val">${fmt(pledged)}</span>
         <span class="credit-tier">50% LTV collateral</span>
+      </div>
+      <div class="credit-pill">
+        <span class="credit-pill-lbl">Property credit</span>
+        <span class="credit-pill-val">${fmt(estateCredit)}</span>
+        <span class="credit-tier">Drawn HELOC-style</span>
       </div>`;
   }
 

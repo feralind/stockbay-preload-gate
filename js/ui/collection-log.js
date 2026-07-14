@@ -23,6 +23,10 @@ import { renderVaultFoilArt } from './vault.js';
 let collectionViewMode = 'log';
 let collectionCategoryFilter = 'all';
 let collectionOwnedFilter = 'all';
+/** Last structure fingerprint — skip remount on every renderAll tick (scroll/hover slip). */
+let collectionSnap = '';
+/** @type {object | null} */
+let collectionUiState = null;
 
 const RARITY_TIER_CLASS = {
   common: 'tier-bronze',
@@ -267,6 +271,7 @@ function renderLogBody(state, entries, milestones, hunt) {
 export function renderCollectionLog(state) {
   const root = document.getElementById('collection-log-root');
   if (!root) return;
+  collectionUiState = state;
 
   const entries = getCollectionLogEntries(state, COLLECTION_OPTS);
   const completion = getCollectionCompletion(state, COLLECTION_OPTS);
@@ -281,6 +286,43 @@ export function renderCollectionLog(state) {
   const setReady = setSummary.claimable
     ? `<span class="collection-claim-ready">${setSummary.claimable} set flair ready</span>`
     : '';
+
+  const ownedKey = ownedEntries.map((e) => e.id).sort().join(',');
+  const claimKey = milestones.filter((m) => m.claimable).map((m) => m.id).join(',');
+  const setClaimKey = listSetProgress(state)
+    .filter((row) => canClaimSet(state, row.set.id).ok)
+    .map((row) => row.set.id)
+    .join(',');
+  const key = [
+    collectionViewMode,
+    collectionCategoryFilter,
+    collectionOwnedFilter,
+    ownedKey,
+    claimKey,
+    setClaimKey,
+    completion.owned,
+    completion.total,
+    setSummary.complete,
+    setSummary.claimable,
+    flair,
+    prestige,
+  ].join('|');
+
+  ensureCollectionInteractions(root);
+
+  const view = document.getElementById('view-collection');
+  const force = root.dataset.collectionForce === '1';
+  if (force) delete root.dataset.collectionForce;
+  if (!force && view && !view.classList.contains('active') && root.childElementCount > 0) {
+    return;
+  }
+  if (!force && key === collectionSnap && root.childElementCount > 0) {
+    return;
+  }
+
+  // Preserve scroll across intentional rebuilds (filter / claim).
+  const scrollParent = root;
+  const prevScroll = scrollParent.scrollTop;
 
   root.innerHTML = `
     <div class="collection-shell ${isMuseum ? 'is-museum' : 'is-log'}">
@@ -310,35 +352,52 @@ export function renderCollectionLog(state) {
     </div>
   `;
 
-  root.querySelectorAll('[data-collection-mode]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const mode = btn.getAttribute('data-collection-mode');
+  collectionSnap = key;
+  scrollParent.scrollTop = prevScroll;
+}
+
+/**
+ * One-time delegated clicks — survives fingerprint skips without rebinding every tick.
+ * @param {HTMLElement} root
+ */
+function ensureCollectionInteractions(root) {
+  if (root.dataset.collectionBound === '1') return;
+  root.dataset.collectionBound = '1';
+
+  root.addEventListener('click', (e) => {
+    const t = /** @type {HTMLElement} */ (e.target);
+    const modeBtn = t.closest?.('[data-collection-mode]');
+    if (modeBtn && root.contains(modeBtn)) {
+      const mode = modeBtn.getAttribute('data-collection-mode');
       collectionViewMode = mode === 'museum' ? 'museum' : 'log';
-      renderCollectionLog(state);
-    });
-  });
-  root.querySelectorAll('[data-collection-category]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      collectionCategoryFilter = btn.getAttribute('data-collection-category') || 'all';
-      renderCollectionLog(state);
-    });
-  });
-  root.querySelectorAll('[data-collection-owned]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      collectionOwnedFilter = btn.getAttribute('data-collection-owned') || 'all';
-      renderCollectionLog(state);
-    });
-  });
-  root.querySelectorAll('[data-collection-claim]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-collection-claim');
-      if (id) state.onClaimCollectionMilestone?.(id);
-    });
-  });
-  root.querySelectorAll('[data-set-claim]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.getAttribute('data-set-claim');
-      if (id) state.onClaimCollectionSet?.(id);
-    });
+      collectionSnap = '';
+      renderCollectionLog(collectionUiState || {});
+      return;
+    }
+    const catBtn = t.closest?.('[data-collection-category]');
+    if (catBtn && root.contains(catBtn)) {
+      collectionCategoryFilter = catBtn.getAttribute('data-collection-category') || 'all';
+      collectionSnap = '';
+      renderCollectionLog(collectionUiState || {});
+      return;
+    }
+    const ownedBtn = t.closest?.('[data-collection-owned]');
+    if (ownedBtn && root.contains(ownedBtn)) {
+      collectionOwnedFilter = ownedBtn.getAttribute('data-collection-owned') || 'all';
+      collectionSnap = '';
+      renderCollectionLog(collectionUiState || {});
+      return;
+    }
+    const claimBtn = t.closest?.('[data-collection-claim]');
+    if (claimBtn && root.contains(claimBtn)) {
+      const id = claimBtn.getAttribute('data-collection-claim');
+      if (id) collectionUiState?.onClaimCollectionMilestone?.(id);
+      return;
+    }
+    const setBtn = t.closest?.('[data-set-claim]');
+    if (setBtn && root.contains(setBtn)) {
+      const id = setBtn.getAttribute('data-set-claim');
+      if (id) collectionUiState?.onClaimCollectionSet?.(id);
+    }
   });
 }

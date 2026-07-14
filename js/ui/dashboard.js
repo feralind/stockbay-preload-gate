@@ -24,15 +24,17 @@ import {
   getNextNetWorthMilestone,
 } from '../mega-goals.js';
 import { PRIVATE_SALON_POOL } from '../private-salon.js';
-import { getTotalDebt } from '../finance.js';
+import { getFirmDebt } from '../finance.js';
 import { getLeaderboard } from '../leaderboard.js';
 import { getPlayerStanding } from '../meta.js';
-import { getEquity } from '../portfolio.js';
+import { getEquity, getFirmNetWorth } from '../portfolio.js';
 import { getProfile } from '../profile.js';
 import { getRelicEffect, getRelicSlotLimit } from '../relics.js';
 import { getSymbolName, getSymbolSector } from '../symbols.js';
 import { THE_SEAT } from '../the-seat.js';
 import { getVaultBookValue, getVaultDeskAura } from '../vault.js';
+import { syncEstateDerived } from '../estates.js';
+import { buildDashEstateHtml } from './estates.js';
 import { setSelectedSym } from './selection.js';
 import { escapeAttr, escapeHtml, fmt, quoteForDisplay } from './shared.js';
 
@@ -247,6 +249,16 @@ function renderDashStanding(standing, state) {
     chips.push(`<span class="dash-standing-chip dash-standing-ready"><em>Set flair</em> ${setSummary.claimable} ready</span>`);
   }
   setHtmlIfChanged(el, 'standing', chips.join(''));
+}
+
+function renderDashEstates(state) {
+  const el = document.getElementById('dash-estates');
+  if (!el) return;
+  const html = `
+    <div class="dash-card-head" data-gloss="estates"><span>Lifestyle &amp; Estates</span><span class="dash-soft-tag">Wealth</span></div>
+    ${buildDashEstateHtml(state)}
+  `;
+  setHtmlIfChanged(el, 'estates', html);
 }
 
 /**
@@ -857,9 +869,11 @@ export function renderDashboard(state) {
 
   const meta = state.meta || {};
   const equity = getEquity(state.portfolio);
-  const debt = state.finance ? getTotalDebt(state.finance) : 0;
+  const debt = state.finance ? getFirmDebt(state.finance, state.estateCreditUsed) : Math.max(0, Number(state.estateCreditUsed) || 0);
+  syncEstateDerived(state);
   const vaultBook = getVaultBookValue(state);
-  const net = equity - debt + vaultBook;
+  const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
+  const net = getFirmNetWorth(state.portfolio, { debt, vaultBook, estateEquity });
   const tradingEquity = equity - debt;
   const hist = meta.equityHistory || [];
   lastEquityHist = hist;
@@ -893,6 +907,7 @@ export function renderDashboard(state) {
   renderDashStanding(standing, state);
   renderOfficeStageCard(state, office, net, standing.rep);
   renderMegaGoalCard(state, activeMega);
+  renderDashEstates(state);
   renderDashStats(state, net, debt, meta, delta);
   renderTickerRibbon(state);
   renderDiscover(state);

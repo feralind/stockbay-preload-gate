@@ -11,6 +11,7 @@ import { BLACKMARKET_ITEM_POOL, BLACKMARKET_COST_BY_ID } from './blackmarket.js'
 import { THE_SEAT } from './the-seat.js';
 import { OFFICE_TIERS, getCumulativeOfficeSpend } from './office.js';
 import { LUXURY_ITEMS } from './luxury.js';
+import { ESTATE_ASSETS, syncEstateDerived } from './estates.js';
 import { COLLECTION_MILESTONES, getCollectionClaimedCashTotal } from './collection-log.js';
 import { COLLECTION_SETS } from './collection-flavor.js';
 import { createMetaState } from './meta.js';
@@ -217,6 +218,16 @@ export function applyGmMaxOfficeLuxury(state) {
   if (!state.meta) state.meta = createMetaState();
   const lastLux = LUXURY_ITEMS[LUXURY_ITEMS.length - 1];
   if (lastLux?.flair) state.meta.luxuryFlair = lastLux.flair;
+
+  state.estateOwned = ESTATE_ASSETS.map((a) => a.id);
+  state.estateSpentTotal = ESTATE_ASSETS.reduce((s, a) => s + (Number(a.price) || 0), 0);
+  state.estateEquityExtracted = 0;
+  state.estateCreditUsed = 0;
+  state.estateCashOutCount = 0;
+  state.estateLastCashOutDay = null;
+  const lastEstate = ESTATE_ASSETS[ESTATE_ASSETS.length - 1];
+  if (lastEstate?.flair) state.meta.estateFlair = lastEstate.flair;
+  syncEstateDerived(state);
 }
 
 /** @param {object} state */

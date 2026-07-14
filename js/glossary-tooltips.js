@@ -109,8 +109,13 @@ export const GLOSS_TIPS = {
   },
   'total-equity': {
     title: 'Total Equity',
-    blurb: 'Cash plus the current value of everything you hold, net of loans when shown on Finance.',
-    note: 'Hover Equity in the top bar for a full breakdown (includes Vault book value).',
+    blurb: 'Cash plus positions mark-to-market, plus Vault and Estate equity, net of loans and estate credit.',
+    note: 'Hover Equity in the top bar for a full breakdown. Buying an estate converts cash into estate equity — Total Equity stays whole.',
+  },
+  'estate-equity': {
+    title: 'Estate Equity',
+    blurb: 'Book value of owned lifestyle assets (residences, cars, yachts, islands), minus any equity you have cashed out.',
+    note: 'Drawn property credit is debt — it does not shrink this line; it reduces Total Equity via loans/credit.',
   },
   'trading-halted': {
     title: 'Trading Halted',

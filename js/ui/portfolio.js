@@ -5,10 +5,23 @@
 
 import { logoMarkHtml } from '../logos.js';
 import {
-  getEquity, getUnrealizedPnL, estimateOptionValue,
+  getFirmNetWorth, getPositionValue, getUnrealizedPnL, estimateOptionValue,
 } from '../portfolio.js';
+import { getFirmDebt } from '../finance.js';
+import { getEstateCategoryBookValues, syncEstateDerived } from '../estates.js';
+import { getVaultBookValue } from '../vault.js';
 import { getSymbolMeta, getSymbolName } from '../symbols.js';
 import { escapeHtml, fmt, fmtPnL, quoteForDisplay } from './shared.js';
+
+/** Estates / cash cake colors — StockWay blues/teals/ambers (not purple-on-white AI default). */
+const FIRM_ALLOC_COLORS = {
+  cash: '#10b981',
+  residences: '#f59e0b',
+  penthouses: '#60a5fa',
+  yachts: '#14b8a6',
+  cars: '#94a3b8',
+  islands: '#22c55e',
+};
 
 let portfolioSort = { key: 'value', dir: 'desc' };
 /** Selected holding on the full portfolio page (for the detail panel). */
@@ -147,9 +160,58 @@ export function renderPortfolio(state, containerId) {
   bindPositionActions(container, state);
 }
 
+function firmNetWorthFromState(state) {
+  syncEstateDerived(state);
+  const debt = state.finance
+    ? getFirmDebt(state.finance, state.estateCreditUsed)
+    : Math.max(0, Number(state.estateCreditUsed) || 0);
+  const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
+  return {
+    debt,
+    estateEquity,
+    equity: getFirmNetWorth(state.portfolio, {
+      debt,
+      vaultBook: getVaultBookValue(state),
+      estateEquity,
+    }),
+  };
+}
+
+/**
+ * Firm / estates allocation slices: liquid cash (ready to deploy) + estate category book values.
+ * Trading book / open positions are a separate stock allocation — never mixed in here.
+ * @param {object} state
+ * @returns {{ id: string, label: string, value: number, color: string }[]}
+ */
+export function buildFirmAllocationSlices(state) {
+  const cash = Math.max(0, Number(state.portfolio?.cash) || 0);
+  /** @type {{ id: string, label: string, value: number, color: string }[]} */
+  const slices = [];
+  if (cash > 0) {
+    slices.push({
+      id: 'cash',
+      label: 'Cash',
+      value: cash,
+      color: FIRM_ALLOC_COLORS.cash,
+    });
+  }
+  for (const cat of getEstateCategoryBookValues(state)) {
+    if (cat.value <= 0) continue;
+    slices.push({
+      id: cat.id,
+      label: cat.name,
+      value: cat.value,
+      color: FIRM_ALLOC_COLORS[cat.id] || '#8b949e',
+    });
+  }
+  return slices;
+}
+
 function renderPortfolioFull(container, rows, state) {
   const portfolio = state.portfolio;
-  const equity = Math.max(1, getEquity(portfolio));
+  const tradingBook = Math.max(0, getPositionValue(portfolio));
+  const { equity: firmEquity, estateEquity } = firmNetWorthFromState(state);
+  const equity = Math.max(1, firmEquity);
   const cash = portfolio.cash || 0;
   const realized = portfolio.realizedPnL || 0;
   const unrealized = getUnrealizedPnL(portfolio);
@@ -159,6 +221,7 @@ function renderPortfolioFull(container, rows, state) {
   const winRate = closed ? Math.round((wins / closed) * 100) : 0;
   const maxDrawdown = calcMaxDrawdown(hist);
   const dayMove = rows.reduce((s, r) => s + (Number(r.dayChg) || 0), 0);
+  const firmSlices = buildFirmAllocationSlices(state);
   const sorted = [...rows].sort((a, b) => {
     const dir = portfolioSort.dir === 'asc' ? 1 : -1;
     const key = portfolioSort.key;
@@ -183,6 +246,18 @@ function renderPortfolioFull(container, rows, state) {
   )) || sorted[0] || null;
 
   const recent = (portfolio.history || []).slice(0, 8);
+  const estateMetric = estateEquity > 0
+    ? `<div class="metric-card" data-tour="estates" data-gloss="estate-equity"><span class="stat-lbl">Estates</span><span class="stat-num">${fmt(estateEquity)}</span></div>`
+    : '';
+  const allocHead = rows.length
+    ? `${rows.length} holding${rows.length === 1 ? '' : 's'}`
+    : 'No positions';
+  const stockBlockBody = focusRow
+    ? portfolioDetailHtml(focusRow, {
+      equity,
+      holdingsTotal: rows.reduce((s, r) => s + Math.max(0, Number(r.val) || 0), 0),
+    })
+    : portfolioStockEmptyHtml({ tradingBook, cash });
 
   container.innerHTML = `
     <div class="portfolio-page">
@@ -201,6 +276,7 @@ function renderPortfolioFull(container, rows, state) {
       </div>
       <div class="portfolio-metrics">
         <div class="metric-card" data-tour="cash" data-gloss="cash"><span class="stat-lbl">Cash</span><span class="stat-num">${fmt(cash)}</span></div>
+        ${estateMetric}
         <div class="metric-card" data-tour="openPnl" data-gloss="open-pnl"><span class="stat-lbl">Open P&amp;L</span><span class="stat-num ${unrealized >= 0 ? 'up' : 'down'}">${fmtPnL(unrealized)}</span></div>
         <div class="metric-card" data-tour="realized" data-gloss="realized"><span class="stat-lbl">Realized</span><span class="stat-num ${realized >= 0 ? 'up' : 'down'}">${fmtPnL(realized)}</span></div>
         <div class="metric-card" data-tour="winRate" data-gloss="win-rate"><span class="stat-lbl">Win rate</span><span class="stat-num">${closed ? `${winRate}%` : '—'}</span></div>
@@ -209,12 +285,17 @@ function renderPortfolioFull(container, rows, state) {
       </div>
       <div class="portfolio-layout">
         <div class="allocation-card">
-          <div class="dash-card-head"><span>Allocation</span><span>${rows.length} holding${rows.length === 1 ? '' : 's'}</span></div>
-          <canvas id="allocation-pie" width="280" height="220"></canvas>
-          ${focusRow ? portfolioDetailHtml(focusRow, {
-            equity,
-            holdingsTotal: rows.reduce((s, r) => s + Math.max(0, Number(r.val) || 0), 0),
-          }) : portfolioEmptyDetailHtml(cash)}
+          <div class="dash-card-head"><span>Allocation</span><span>${allocHead}</span></div>
+          <div class="alloc-block alloc-block-stocks">
+            <div class="alloc-block-label">Stocks</div>
+            <canvas id="allocation-pie" width="280" height="180"></canvas>
+            ${stockBlockBody}
+          </div>
+          <div class="alloc-block alloc-block-firm">
+            <div class="alloc-block-label">Estates &amp; cash</div>
+            <canvas id="firm-allocation-pie" width="280" height="150"></canvas>
+            ${firmAllocLegendHtml(firmSlices)}
+          </div>
         </div>
         <div class="holdings-card">
           <div class="dash-card-head">
@@ -223,7 +304,7 @@ function renderPortfolioFull(container, rows, state) {
           </div>
           ${rows.length
             ? holdingsTable(sorted, equity, focusRow)
-            : portfolioEmptyHoldingsHtml()}
+            : portfolioEmptyHoldingsHtml(estateEquity)}
         </div>
       </div>
       <div class="portfolio-activity">
@@ -254,25 +335,61 @@ function renderPortfolioFull(container, rows, state) {
       renderPortfolioFull(container, rows, state);
     };
   });
-  drawAllocationPie(rows);
+  drawStockAllocationPie(rows);
+  drawFirmAllocationCake(firmSlices);
   bindPortfolioFullActions(container, rows, state);
 }
 
-function portfolioEmptyHoldingsHtml() {
+function portfolioEmptyHoldingsHtml(estateEquity = 0) {
+  const blurb = estateEquity > 0
+    ? 'No open stock positions — estate equity still counts in Total Equity above. Open a long, short, or option from the trade desk when you are ready.'
+    : 'Your book is cash-only right now. Open a long, short, or option from the trade desk — then sell or cover from this page.';
   return `
     <div class="port-empty">
       <div class="port-empty-title">No open positions</div>
-      <p class="muted-text">Your book is cash-only right now. Open a long, short, or option from the trade desk — then sell or cover from this page.</p>
+      <p class="muted-text">${blurb}</p>
       <button type="button" class="btn btn-accent port-goto-trade">Open Trade Desk</button>
     </div>`;
 }
 
-function portfolioEmptyDetailHtml(cash) {
+function portfolioStockEmptyHtml({ tradingBook = 0, cash = 0 } = {}) {
   return `
-    <div class="port-detail port-detail-empty">
-      <div class="port-detail-label">Ready to deploy</div>
-      <div class="port-detail-cash">${fmt(cash)} cash</div>
-      <p class="muted-text">Pick a symbol on Trade to build your first position. Day % and P&amp;L details appear here once you hold something.</p>
+    <div class="port-detail port-detail-empty port-detail-stock">
+      <div class="port-detail-label">Trading book</div>
+      <div class="port-detail-cash">${fmt(tradingBook)}</div>
+      <p class="muted-text port-alloc-tip">No open positions — ${fmt(cash)} cash sits ready to deploy in Estates &amp; cash below. Trade from the desk to fill this book.</p>
+    </div>`;
+}
+
+/**
+ * @param {{ id: string, label: string, value: number, color: string }[]} slices
+ */
+function firmAllocLegendHtml(slices = []) {
+  const total = slices.reduce((s, x) => s + Math.max(0, Number(x.value) || 0), 0);
+  if (!slices.length || total <= 0) {
+    return `<div class="port-detail port-detail-empty port-detail-alloc">
+      <p class="muted-text port-alloc-tip">Cash and owned estate categories will show here once you have deployable cash or holdings in Estates.</p>
+    </div>`;
+  }
+  return `
+    <div class="port-detail port-detail-empty port-detail-alloc">
+      <div class="port-alloc-legend" role="list">
+        ${slices.map((s) => {
+          const pct = total > 0 ? (s.value / total) * 100 : 0;
+          const hint = s.id === 'cash' ? 'Ready to deploy' : 'Owned book value';
+          return `<div class="port-alloc-row" role="listitem" data-alloc="${escapeHtml(s.id)}">
+            <span class="port-alloc-swatch" style="background:${escapeHtml(s.color)}"></span>
+            <div class="port-alloc-meta">
+              <span class="port-alloc-name">${escapeHtml(s.label)}</span>
+              <span class="port-alloc-hint muted-text">${hint}</span>
+            </div>
+            <div class="port-alloc-figures">
+              <span class="port-alloc-val">${fmt(s.value)}</span>
+              <span class="port-alloc-pct muted-text">${pct.toFixed(0)}%</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
     </div>`;
 }
 
@@ -325,14 +442,14 @@ function holdingsTable(rows, equity, focusRow) {
   const focusKey = focusRow?.optId ? `OPT:${focusRow.optId}` : focusRow?.sym;
   return `<table class="holdings-table">
     <thead><tr>
-      <th data-sort="sym">Symbol</th>
-      <th data-sort="shares">Qty</th>
-      <th data-sort="avg">Avg</th>
-      <th data-sort="price">Last</th>
-      <th data-sort="dayPct">Day</th>
-      <th data-sort="pl">P&amp;L</th>
-      <th data-sort="val">Value</th>
-      <th></th>
+      <th class="port-h-sym" data-sort="sym">Symbol</th>
+      <th class="port-h-num" data-sort="shares">Qty</th>
+      <th class="port-h-num port-col-avg" data-sort="avg">Avg</th>
+      <th class="port-h-num" data-sort="price">Last</th>
+      <th class="port-h-num" data-sort="dayPct">Day</th>
+      <th class="port-h-num" data-sort="pl">P&amp;L</th>
+      <th class="port-h-num port-col-val" data-sort="val">Value</th>
+      <th class="port-h-act" aria-hidden="true"></th>
     </tr></thead>
     <tbody>${rows.map((r) => {
       const key = r.optId ? `OPT:${r.optId}` : r.sym;
@@ -344,7 +461,7 @@ function holdingsTable(rows, equity, focusRow) {
       const sellLabel = isOpt ? 'Close' : isShort ? 'Cover' : 'Sell';
       const sellClass = isOpt ? 'port-close-opt' : isShort ? 'port-cover' : 'port-sell';
       return `<tr class="port-row ${active}" data-focus="${key}" data-sym="${r.sym}">
-        <td>
+        <td class="port-c-sym">
           <div class="port-sym-cell">
             ${logoMarkHtml(r.sym, { color: getSymbolMeta(r.sym).color, letter: getSymbolMeta(r.sym).letter, size: 'sm' })}
             <div>
@@ -354,13 +471,13 @@ function holdingsTable(rows, equity, focusRow) {
             </div>
           </div>
         </td>
-        <td>${r.shares}</td>
-        <td>$${Number(r.avg || 0).toFixed(2)}</td>
-        <td>$${Number(r.price).toFixed(2)}</td>
-        <td class="${dayCls}">${(r.dayPct || 0) >= 0 ? '+' : ''}${(r.dayPct || 0).toFixed(2)}%</td>
-        <td class="${plCls}">${fmtPnL(r.pl)}<div class="port-pl-pct">${r.plPct >= 0 ? '+' : ''}${(r.plPct || 0).toFixed(1)}%</div></td>
-        <td>${fmt(r.val)}</td>
-        <td class="port-row-actions" onclick="event.stopPropagation()">
+        <td class="port-c-num">${r.shares}</td>
+        <td class="port-c-num port-col-avg">$${Number(r.avg || 0).toFixed(2)}</td>
+        <td class="port-c-num">$${Number(r.price).toFixed(2)}</td>
+        <td class="port-c-num ${dayCls}">${(r.dayPct || 0) >= 0 ? '+' : ''}${(r.dayPct || 0).toFixed(2)}%</td>
+        <td class="port-c-num port-c-pl ${plCls}">${fmtPnL(r.pl)}<div class="port-pl-pct">${r.plPct >= 0 ? '+' : ''}${(r.plPct || 0).toFixed(1)}%</div></td>
+        <td class="port-c-num port-col-val">${fmt(r.val)}</td>
+        <td class="port-c-act port-row-actions" onclick="event.stopPropagation()">
           <button type="button" class="btn btn-sm port-view" data-sym="${r.sym}" title="Open on trade desk">View</button>
           <button type="button" class="btn btn-sm ${isShort || isOpt ? 'btn-accent' : 'btn-short'} ${sellClass}" data-sym="${r.sym}" ${r.optId ? `data-id="${r.optId}"` : ''} data-shares="${r.shares}">${sellLabel}</button>
         </td>
@@ -428,39 +545,106 @@ function bindPortfolioFullActions(container, rows, state) {
   });
 }
 
-function drawAllocationPie(rows) {
+function drawStockAllocationPie(rows) {
   const canvas = document.getElementById('allocation-pie');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
+
   const total = rows.reduce((s, r) => s + Math.max(0, r.val), 0);
-  if (!total) {
+  if (!rows.length || !total) {
+    const cx = w / 2;
+    const cy = h / 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 62, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(139, 148, 158, 0.35)';
+    ctx.lineWidth = 14;
+    ctx.stroke();
     ctx.fillStyle = '#8b949e';
-    ctx.font = '13px Inter, sans-serif';
-    ctx.fillText('No allocation yet', 92, 112);
+    ctx.font = '600 11px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('NO POSITIONS', cx, cy - 2);
+    ctx.font = '10px Inter, sans-serif';
+    ctx.fillText('$0 invested', cx, cy + 14);
+    ctx.textAlign = 'start';
     return;
   }
+
   const colors = ['#3b82f6', '#26a69a', '#f0883e', '#ef5350', '#a371f7', '#58a6ff', '#e3b341'];
   let start = -Math.PI / 2;
+  const cx = 110;
+  const cy = 90;
   rows.forEach((r, i) => {
     const slice = (Math.max(0, r.val) / total) * Math.PI * 2;
     ctx.beginPath();
-    ctx.moveTo(110, 105);
-    ctx.arc(110, 105, 82, start, start + slice);
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, 72, start, start + slice);
     ctx.closePath();
     ctx.fillStyle = colors[i % colors.length];
     ctx.fill();
     start += slice;
   });
-  rows.slice(0, 6).forEach((r, i) => {
+  rows.slice(0, 5).forEach((r, i) => {
     ctx.fillStyle = colors[i % colors.length];
-    ctx.fillRect(210, 42 + i * 24, 10, 10);
+    ctx.fillRect(210, 28 + i * 22, 10, 10);
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '11px Inter, sans-serif';
-    ctx.fillText(`${r.sym} ${((r.val / total) * 100).toFixed(0)}%`, 226, 52 + i * 24);
+    ctx.fillText(`${r.sym} ${((r.val / total) * 100).toFixed(0)}%`, 226, 38 + i * 22);
   });
+}
+
+/**
+ * Donut cake for estates & cash — legend lives in the HTML block below.
+ * @param {{ id: string, label: string, value: number, color: string }[]} slices
+ */
+function drawFirmAllocationCake(slices = []) {
+  const canvas = document.getElementById('firm-allocation-pie');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const total = (slices || []).reduce((s, x) => s + Math.max(0, Number(x.value) || 0), 0);
+  const cx = w / 2;
+  const cy = h / 2 + 2;
+  const outer = 58;
+  const inner = 34;
+  if (!total) {
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '12px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No estates yet', cx, cy + 4);
+    ctx.textAlign = 'start';
+    return;
+  }
+  let start = -Math.PI / 2;
+  for (const s of slices) {
+    const val = Math.max(0, Number(s.value) || 0);
+    if (val <= 0) continue;
+    const sweep = (val / total) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, outer, start, start + sweep);
+    ctx.arc(cx, cy, inner, start + sweep, start, true);
+    ctx.closePath();
+    ctx.fillStyle = s.color;
+    ctx.fill();
+    start += sweep;
+  }
+  ctx.beginPath();
+  ctx.arc(cx, cy, inner - 0.5, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(15, 15, 18, 0.92)';
+  ctx.fill();
+  ctx.fillStyle = '#c9d1d9';
+  ctx.font = '600 10px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('ESTATES', cx, cy - 4);
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '9px Inter, sans-serif';
+  ctx.fillText(`${slices.filter((s) => s.value > 0).length} slices`, cx, cy + 10);
+  ctx.textAlign = 'start';
 }
 
 function calcMaxDrawdown(hist) {

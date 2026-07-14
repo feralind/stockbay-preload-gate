@@ -353,6 +353,32 @@ export const ACHIEVEMENTS = [
     reward: 2500,
     check: (s) => Object.keys(s.achievements?.unlocked || {}).length >= 35,
   },
+
+  /* ── Lifestyle & Estates ── */
+  {
+    id: 'first_estate',
+    tier: 'gold',
+    name: 'Keys to the Coast',
+    desc: 'Purchase your first Lifestyle estate',
+    reward: 300,
+    check: (s) => (s.estateOwned || []).length >= 1,
+  },
+  {
+    id: 'yacht_aurora',
+    tier: 'diamond',
+    name: 'Aurora Fleet',
+    desc: 'Own Private Yacht Aurora',
+    reward: 1200,
+    check: (s) => (s.estateOwned || []).includes('privateYachtAurora'),
+  },
+  {
+    id: 'island_elysium',
+    tier: 'master',
+    name: 'Elysium Sovereign',
+    desc: 'Own Private Island Elysium',
+    reward: 3500,
+    check: (s) => (s.estateOwned || []).includes('privateIslandElysium'),
+  },
 ];
 
 /** Rank badge SVG — same shield silhouette, more ornate as tier rises */
@@ -364,7 +390,7 @@ export function achievementCategory(a) {
   if (/perk|scanner|power up|pro eyes|unlock|ai trading|margin|options desk/.test(blob)) {
     return 'perk';
   }
-  if (/cash|equity|loan|credit|borrow|net worth|digits|million|bankroll|tax/.test(blob)) {
+  if (/cash|equity|loan|credit|borrow|net worth|digits|million|bankroll|tax|estate|yacht|island|coast|penthouse/.test(blob)) {
     return 'finance';
   }
   return 'trade';

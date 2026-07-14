@@ -2021,6 +2021,197 @@ async function main() {
   }
 
   {
+    const estateMod = await import(pathToFileURL(path.join(__dirname, '../js/estates.js')).href);
+    const {
+      ESTATE_ASSETS, purchaseEstate, canPurchaseEstate, sanitizeEstateProgress,
+      drawEstateCredit, cashOutEstateEquity, syncEstateDerived, getEstateGraceBonus,
+      getEstateLiquidationScale, getEstatePrestigeAura,
+    } = estateMod;
+
+    test('estate purchase gates, credit draw, sanitize forge strip, and resilience helpers', () => {
+      assert.ok(ESTATE_ASSETS.length >= 26);
+      assert.ok(ESTATE_ASSETS.filter((a) => a.category === 'cars').length >= 10);
+      assert.ok(ESTATE_ASSETS.filter((a) => a.category === 'penthouses').length >= 4);
+      const state = {
+        portfolio: { cash: 200_000 },
+        estateOwned: [],
+        estateSpentTotal: 0,
+        meta: { reputation: 100 },
+      };
+      const locked = canPurchaseEstate(state, 'coastalResidence', { netWorth: 50_000 });
+      assert.equal(locked.ok, false);
+      assert.equal(locked.code, 'net');
+      const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
+      assert.equal(buy.ok, true);
+      assert.deepEqual(state.estateOwned, ['coastalResidence']);
+      assert.equal(state.estateSpentTotal, 125_000);
+      syncEstateDerived(state);
+      assert.ok(state.estateCreditMax > 0);
+      assert.ok(state.resilienceRating >= 8);
+      const draw = drawEstateCredit(state, 10_000);
+      assert.equal(draw.ok, true);
+      assert.equal(state.estateCreditUsed, 10_000);
+      assert.equal(state.portfolio.cash, 200_000 - 125_000 + 10_000);
+      assert.ok(getEstateGraceBonus(state) >= 1);
+      assert.ok(getEstateLiquidationScale(state) < 1);
+      const forged = sanitizeEstateProgress({
+        estateOwned: ['privateIslandElysium'],
+        estateSpentTotal: 0,
+      });
+      assert.deepEqual(forged.estateOwned, []);
+      // Yacht without penthouse must strip; island must not hitch a ride on the raw yacht id.
+      const chainForge = sanitizeEstateProgress({
+        estateOwned: ['privateYachtAurora', 'privateIslandElysium'],
+        estateSpentTotal: 12_000_000 + 80_000_000,
+      });
+      assert.deepEqual(chainForge.estateOwned, []);
+      const yachtState = {
+        estateOwned: ['coastalResidence', 'skylinePenthouse', 'privateYachtAurora'],
+        estateSpentTotal: 125_000 + 2_500_000 + 12_000_000,
+      };
+      const prestige = getEstatePrestigeAura(yachtState);
+      assert.ok(prestige.repPerClose >= 1);
+      const earlyCash = cashOutEstateEquity({
+        ...state,
+        estateEquityExtracted: 0,
+        estateCashOutCount: 0,
+        estateLastCashOutDay: null,
+      }, 1);
+      assert.equal(earlyCash.ok, true);
+      assert.ok(earlyCash.amount > 0);
+
+      // Category prereq: cars unlock after any residence
+      const carGate = canPurchaseEstate({
+        portfolio: { cash: 500_000 },
+        estateOwned: ['coastalResidence'],
+        meta: { reputation: 250 },
+      }, 'performanceGt', { netWorth: 500_000 });
+      assert.equal(carGate.ok, true);
+      const carLocked = canPurchaseEstate({
+        portfolio: { cash: 500_000 },
+        estateOwned: [],
+        meta: { reputation: 250 },
+      }, 'performanceGt', { netWorth: 500_000 });
+      assert.equal(carLocked.ok, false);
+      assert.equal(carLocked.code, 'prereq');
+    });
+
+    test('firm net worth includes estate equity; cash-out and credit keep NW consistent', async () => {
+      const portMod = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+      const finMod = await import(pathToFileURL(path.join(__dirname, '../js/finance.js')).href);
+      const { getFirmNetWorth, getEquity } = portMod;
+      const { createFinanceState, getFirmDebt } = finMod;
+
+      const state = {
+        portfolio: { cash: 200_000, longs: {}, shorts: {}, options: [], history: [], realizedPnL: 0, totalTrades: 0 },
+        finance: createFinanceState(),
+        estateOwned: [],
+        estateSpentTotal: 0,
+        estateEquityExtracted: 0,
+        estateCreditUsed: 0,
+        meta: { reputation: 100 },
+      };
+      const nwParts = () => {
+        syncEstateDerived(state);
+        return getFirmNetWorth(state.portfolio, {
+          debt: getFirmDebt(state.finance, state.estateCreditUsed),
+          vaultBook: 0,
+          estateEquity: state.estateEquity,
+        });
+      };
+      const before = nwParts();
+      assert.equal(before, getEquity(state.portfolio));
+
+      const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
+      assert.equal(buy.ok, true);
+      const afterBuy = nwParts();
+      assert.ok(Math.abs(afterBuy - before) < 0.01, 'buy estate: cash→equity keeps firm NW flat');
+      assert.equal(state.estateEquity, 125_000);
+      assert.equal(state.portfolio.cash, 75_000);
+      assert.ok(afterBuy > getEquity(state.portfolio), 'Portfolio Total Equity must exceed cash+positions when estates owned');
+
+      const draw = drawEstateCredit(state, 10_000);
+      assert.equal(draw.ok, true);
+      const afterCredit = nwParts();
+      assert.ok(Math.abs(afterCredit - afterBuy) < 0.01, 'estate credit: cash↑ debt↑ keeps firm NW flat');
+      assert.equal(state.estateEquity, 125_000, 'credit does not shrink estateEquity line');
+
+      const cashOut = cashOutEstateEquity(state, 1);
+      assert.equal(cashOut.ok, true);
+      const afterCashOut = nwParts();
+      assert.ok(Math.abs(afterCashOut - afterCredit) < 0.01, 'cash-out: cash↑ estateEquity↓ keeps firm NW flat');
+      assert.equal(state.estateEquity, 125_000 - cashOut.amount);
+    });
+
+    test('estate category book values sum owned catalog prices', () => {
+      const { getEstateCategoryBookValues } = estateMod;
+      const empty = getEstateCategoryBookValues({ estateOwned: [] });
+      assert.equal(empty.length, 5);
+      assert.ok(empty.every((c) => c.value === 0));
+
+      const coastal = ESTATE_ASSETS.find((a) => a.id === 'coastalResidence');
+      const gt = ESTATE_ASSETS.find((a) => a.category === 'cars');
+      const pent = ESTATE_ASSETS.find((a) => a.category === 'penthouses');
+      assert.ok(coastal && gt && pent);
+      const cats = getEstateCategoryBookValues({
+        estateOwned: [coastal.id, gt.id, pent.id],
+      });
+      const byId = Object.fromEntries(cats.map((c) => [c.id, c.value]));
+      assert.equal(byId.residences, coastal.price);
+      assert.equal(byId.cars, gt.price);
+      assert.equal(byId.penthouses, pent.price);
+      assert.equal(byId.yachts, 0);
+      assert.equal(byId.islands, 0);
+      assert.equal(
+        cats.reduce((s, c) => s + c.value, 0),
+        coastal.price + gt.price + pent.price,
+      );
+      assert.deepEqual(cats.map((c) => c.name), [
+        'Residences', 'Penthouses', 'Yachts', 'Garage', 'Islands',
+      ]);
+    });
+  }
+
+  {
+    const portUiMod = await import(pathToFileURL(path.join(__dirname, '../js/ui/portfolio.js')).href);
+    const estateMod2 = await import(pathToFileURL(path.join(__dirname, '../js/estates.js')).href);
+    const { buildFirmAllocationSlices } = portUiMod;
+    const { ESTATE_ASSETS: ASSETS } = estateMod2;
+
+    test('portfolio firm allocation slices are cash + estate categories only', () => {
+      const coastal = ASSETS.find((a) => a.id === 'coastalResidence');
+      const car = ASSETS.find((a) => a.category === 'cars');
+      assert.ok(coastal && car);
+
+      const cashOnly = buildFirmAllocationSlices({
+        portfolio: { cash: 250_000_000, longs: {}, shorts: {}, options: [] },
+        estateOwned: [],
+      });
+      assert.equal(cashOnly.length, 1);
+      assert.equal(cashOnly[0].id, 'cash');
+      assert.equal(cashOnly[0].value, 250_000_000);
+
+      const withEstates = buildFirmAllocationSlices({
+        portfolio: {
+          cash: 250_000_000,
+          longs: { AAA: { shares: 10, avgPrice: 100 } },
+          shorts: {},
+          options: [],
+        },
+        estateOwned: [coastal.id, car.id],
+      });
+      assert.ok(withEstates.some((s) => s.id === 'cash'));
+      assert.ok(!withEstates.some((s) => s.id === 'trading'), 'trading book must not mix into estates cake');
+      assert.ok(withEstates.some((s) => s.id === 'residences' && s.value === coastal.price));
+      assert.ok(withEstates.some((s) => s.id === 'cars' && s.value === car.price && s.label === 'Garage'));
+      const estateSum = withEstates
+        .filter((s) => s.id !== 'cash')
+        .reduce((n, s) => n + s.value, 0);
+      assert.equal(estateSum, coastal.price + car.price);
+    });
+  }
+
+  {
     const flavorMod = await import(pathToFileURL(path.join(__dirname, '../js/collection-flavor.js')).href);
     const metaMod = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const {
@@ -2091,7 +2282,7 @@ async function main() {
       assert.equal(getCollectionSetSummary(salonReady).complete >= 1, true);
     });
 
-    test('every catalog collectible has lore; flair cascade is mega → luxury → set → collection', () => {
+    test('every catalog collectible has lore; flair cascade is mega → estate → luxury → set → collection', () => {
       const catalogIds = [
         ...Object.keys(VAULT_ITEMS),
         ...BLACKMARKET_ITEM_POOL.map((i) => i.id),
@@ -2121,9 +2312,12 @@ async function main() {
       meta.collectionFlair = 'Master Collector';
       meta.setFlair = 'Instrument Desk';
       meta.luxuryFlair = 'Harbor Slip';
+      meta.estateFlair = 'Coastal Desk';
       meta.megaGoalFlair = 'Million Desk';
       assert.equal(getActiveFlair(meta), 'Million Desk');
       meta.megaGoalFlair = null;
+      assert.equal(getActiveFlair(meta), 'Coastal Desk');
+      meta.estateFlair = null;
       assert.equal(getActiveFlair(meta), 'Harbor Slip');
       meta.luxuryFlair = null;
       assert.equal(getActiveFlair(meta), 'Instrument Desk');
@@ -2403,7 +2597,7 @@ async function main() {
       const required = [
         'buying-power', 'cash', 'pnl', 'trading-halted', 'margin-stress',
         'feed-status', 'market-status', 'great-deal', 'stop-loss', 'take-profit',
-        'open-pnl', 'realized', 'win-rate', 'drawdown', 'total-equity',
+        'open-pnl', 'realized', 'win-rate', 'drawdown', 'total-equity', 'estate-equity',
       ];
       for (const id of required) {
         assert.ok(GLOSS_TIPS[id], `missing gloss tip ${id}`);

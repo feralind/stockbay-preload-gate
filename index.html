@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=1.0.18">
+  <link rel="stylesheet" href="css/styles.css?v=1.0.36">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script>
     if (typeof echarts === 'undefined') {
@@ -116,6 +116,10 @@
           <button class="nav-item" data-view="vault">
             <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/><path d="M7 8V6a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2"/><path d="M9 13h6M12 10v6"/></svg></span>
             <span>Trophy Vault</span>
+          </button>
+          <button class="nav-item" data-view="estates">
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M4 20V10.5L12 4l8 6.5V20"/><path d="M9 20v-6h6v6"/></svg></span>
+            <span>Estates</span>
           </button>
           <button class="nav-item" data-view="collection">
             <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M5 5h6v6H5zM13 5h6v6h-6zM5 13h6v6H5zM13 13h6v6h-6z"/></svg></span>
@@ -235,6 +239,7 @@
               <button class="btn btn-accent" data-goto="trade">Open Trade Desk</button>
               <button class="btn" data-goto="listings">Browse Listings</button>
               <button class="btn" data-goto="finance">Financing</button>
+              <button class="btn" data-goto="estates">Estates</button>
             </div>
           </header>
           <div class="dash-standing" id="dash-standing" aria-label="Standing"></div>
@@ -244,6 +249,7 @@
             <div class="dash-card dash-office-card" id="dash-office-stage" aria-label="Office"></div>
             <div class="dash-card dash-goal-card" id="dash-mega-goal" aria-label="Mega goal"></div>
           </div>
+          <div class="dash-card dash-estates-card" id="dash-estates" aria-label="Estates wealth overview"></div>
           <div class="dash-challenge" id="dash-challenge" hidden aria-hidden="true"></div>
           <div class="dash-market-board">
             <div class="dash-market-main">
@@ -252,7 +258,7 @@
                 <div class="dash-chart-head">
                   <div class="dash-chart-price-block">
                     <div class="dash-chart-price" id="dash-chart-price">$0</div>
-                    <p class="dash-chart-note">Trading equity history — cash + positions − debt. Net Worth also includes Vault book value.</p>
+                    <p class="dash-chart-note">Trading equity history — cash + positions − debt. Net Worth also includes Vault book value and Estate equity.</p>
                   </div>
                   <span class="up" id="dash-equity-delta">+$0</span>
                 </div>
@@ -592,6 +598,7 @@
         </div>
       </section>
       <section class="view-panel" id="view-vault"><div id="vault-root" class="vault-view"></div></section>
+      <section class="view-panel" id="view-estates"><div id="estates-root" class="estates-view"></div></section>
       <section class="view-panel" id="view-collection"><div id="collection-log-root" class="collection-log-view"></div></section>
       <section class="view-panel" id="view-blackmarket"><div id="blackmarket-root" class="blackmarket-view"></div></section>
       <section class="view-panel" id="view-finance">
@@ -995,6 +1002,6 @@
 
   <div id="toast-host" class="toast-host" aria-live="polite" aria-atomic="true" role="status"></div>
 
-  <script type="module" src="js/app.js?v=1.0.8"></script>
+  <script type="module" src="js/app.js?v=1.0.24"></script>
 </body>
 </html>

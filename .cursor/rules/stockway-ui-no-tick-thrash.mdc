@@ -1,0 +1,19 @@
+---
+description: Prevent UI flash/stutter from renderAll DOM thrash
+globs: js/ui/**/*.js,css/styles.css
+alwaysApply: false
+---
+
+# StockWay UI — no tick thrash
+
+`renderAll` runs frequently (market ticks, events). Rewriting a panel's full `innerHTML` every time destroys hover/focus and causes flash/blink/stutter (Estates regression).
+
+When adding or changing interactive panels:
+
+1. **Fingerprint / skip** unchanged DOM (`setHtmlIfChanged` in dashboard, structure keys in estates).
+2. **Patch live values** with `textContent` — do not remount card grids to update numbers.
+3. **One-shot enter animations** only on real navigation; remove the class after `animationend`.
+4. Prefer **border/opacity** hover over transform + image-scale + box-shadow + backdrop-filter on large tiles.
+5. Avoid continuous CSS **filter/blur animations** on large surfaces.
+
+References: `js/ui/dashboard.js`, `js/ui/estates.js`.
