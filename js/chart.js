@@ -29,6 +29,9 @@ let showMa = true;
 let showSr = false;
 let fitRetryTimer = null;
 let fitRaf = 0;
+/** Defer first paint until #chart-container has a real laid-out size (Trade tab visible). */
+let pendingPaint = false;
+let pendingPaintResetZoom = true;
 
 const LIVE_UPDATE_MS = 100;
 const LIVE_MAX_JUMP_PCT = LIVE_CANDLE_MAX_JUMP_PCT;
@@ -842,14 +845,41 @@ function buildOption() {
   };
 }
 
-function paint(resetZoom = true) {
-  if (!chart || !lastBars.length) return;
+/** True once the host box has a real, laid-out size we can trust for bar-count / axis math. */
+function hostHasRealSize() {
+  return !!chartHost && chartHost.clientWidth > 8 && chartHost.clientHeight > 8;
+}
+
+function paintNow(resetZoom) {
   if (resetZoom) userZoomed = false;
   try {
     chart.setOption(buildOption(), { notMerge: true });
   } catch (err) {
     console.warn('chart paint failed', err);
   }
+}
+
+function paint(resetZoom = true) {
+  if (!chart || !lastBars.length) return;
+  if (!hostHasRealSize()) {
+    // Container is display:none (e.g. Trade tab not open yet) or not laid out.
+    // Painting now would compute bar count / Y-axis range off a guessed width
+    // and visibly "snap" once the real size shows up — so wait for it instead.
+    pendingPaint = true;
+    pendingPaintResetZoom = resetZoom;
+    return;
+  }
+  pendingPaint = false;
+  paintNow(resetZoom);
+}
+
+/** Run a deferred paint now that the host has a real size. Returns true if it painted. */
+function flushPendingPaint() {
+  if (!pendingPaint || !chart || !lastBars.length) return false;
+  if (!hostHasRealSize()) return false;
+  pendingPaint = false;
+  paintNow(pendingPaintResetZoom);
+  return true;
 }
 
 export async function waitForChartLib(maxMs = 10000) {
@@ -891,6 +921,8 @@ function rebuildChart(container) {
   lastCandle = null;
   lastLiveUpdateAt = 0;
   userZoomed = false;
+  pendingPaint = false;
+  pendingPaintResetZoom = true;
 
   try {
     const saved = localStorage.getItem(CHART_STYLE_KEY);
@@ -912,9 +944,13 @@ function rebuildChart(container) {
   resizeObserver = new ResizeObserver(() => {
     if (!chart || !chartHost) return;
     if (chartHost.clientWidth <= 0 || chartHost.clientHeight <= 0) return;
+    // Container just went from hidden/0-size to a real size — do the deferred first
+    // paint now, against the real dimensions, instead of resizing a wrongly-guessed one.
+    if (flushPendingPaint()) return;
     try {
       const size = hostSize();
       chart.resize({ width: size.w, height: size.h });
+      if (!userZoomed) fitChartToData();
     } catch { /* ignore */ }
   });
   resizeObserver.observe(container);
@@ -956,10 +992,12 @@ export function scheduleFitChart() {
   if (fitRaf) cancelAnimationFrame(fitRaf);
   fitRaf = requestAnimationFrame(() => {
     fitRaf = 0;
+    if (flushPendingPaint()) return;
     resizeChart();
     if (!userZoomed) fitChartToData();
     fitRetryTimer = setTimeout(() => {
       fitRetryTimer = null;
+      if (flushPendingPaint()) return;
       resizeChart();
       if (!userZoomed) fitChartToData();
     }, 120);
@@ -968,6 +1006,7 @@ export function scheduleFitChart() {
 
 export function fitChartToData() {
   if (!chart || lastBarCount <= 0) return;
+  if (flushPendingPaint()) return;
   if (!chartHost || chartHost.clientWidth <= 8) return;
   userZoomed = false;
   try {
@@ -1104,6 +1143,9 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
         // Sim tape is authoritative — snap the forming bar instead of freezing the chart.
         pinLastBarClose(px);
         lastLiveUpdateAt = Date.now();
+        // Host not visible/sized yet — data above is still updated, just skip the
+        // partial render (a full correct paint runs once the container is shown).
+        if (pendingPaint || !hostHasRealSize()) return true;
         try {
           const axis = axisRangeForView();
           const isWave = chartStyle === 'wave';
@@ -1146,6 +1188,10 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   };
   // Do NOT peer-clamp close here — that was desyncing the chart from the HUD price.
 
+  // Host not visible/sized yet — data above is still updated, just skip the
+  // partial render (a full correct paint runs once the container is shown).
+  if (pendingPaint || !hostHasRealSize()) return true;
+
   try {
     const axis = axisRangeForView();
     const isWave = chartStyle === 'wave';
@@ -1165,6 +1211,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
 export function resizeChart() {
   if (!chart || !chartHost) return;
   if (chartHost.clientWidth <= 0) return;
+  if (flushPendingPaint()) return;
   try {
     const { w, h } = hostSize();
     chart.resize({ width: w, height: h });
@@ -1198,4 +1245,6 @@ export function destroyChart() {
   lastBars = [];
   lastBarCount = 0;
   lastCandle = null;
+  pendingPaint = false;
+  pendingPaintResetZoom = true;
 }

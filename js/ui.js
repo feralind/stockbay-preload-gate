@@ -11,7 +11,7 @@ import { evaluateMarginHealth } from './margin-call.js';
 import {
   getFirmNetWorth, getUnrealizedPnL, getBuyingPower, getEquityBreakdown,
 } from './portfolio.js';
-import { resizeChart } from './chart.js';
+import { resizeChart, scheduleFitChart } from './chart.js';
 import { renderStaff, showStaffHistory } from './ui/staff.js';
 import {
   configureListingsUi, getWatchlist, renderListingsViews, renderTriggeredAlerts, renderWatchlist,
@@ -918,6 +918,12 @@ export function switchView(viewId) {
       const root = document.getElementById('vault-root');
       if (root) root.dataset.vaultForce = '1';
     } catch (_) { /* ignore */ }
+  }
+  // Trade chart boots while display:none — flush deferred paint against real layout.
+  if (next === 'trade') {
+    requestAnimationFrame(() => {
+      try { scheduleFitChart(); } catch (_) { /* ignore */ }
+    });
   }
   if (prev === 'achievements' && next !== 'achievements') {
     const tip = document.getElementById('ach-cursor-tip');
