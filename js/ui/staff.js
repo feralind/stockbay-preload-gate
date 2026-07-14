@@ -8,6 +8,8 @@ import {
   STAFF_BUY_LANES, STAFF_SELL_LANES, STAFF_HIRE_AMORT_DAYS,
   getDailySalary, getHireSunk, getStaffCoverage, getNextHireRecommendation,
   canHire, getMaxStaff, getTier, canTrain, staffWinRate,
+  staffXp, staffTenureDays, staffTenureLevel, staffTenurePayMult,
+  staffAuthorityPct, canEnableAutopilot, STAFF_AUTOPILOT_MIN_XP,
 } from '../staff.js';
 import { trapFocus } from '../overlays.js';
 import { escapeHtml } from './shared.js';
@@ -40,7 +42,7 @@ function deskLabel(lane) {
 function memberDayPay(member) {
   const role = STAFF_ROLES[member.roleId];
   const tierMult = member.tier === 'expert' ? 1.25 : member.tier === 'veteran' ? 1.1 : 1;
-  return Math.round((role?.salary || 0) * tierMult);
+  return Math.round((role?.salary || 0) * tierMult * staffTenurePayMult(member));
 }
 
 /** Thin activity sparkline — seeded from progress + actions, not a chunky bar. */
@@ -156,7 +158,7 @@ function renderOverviewCards(state, coverage, salary, hireSunk, amort) {
         <div class="hr-next-line"><span class="hr-next-k">Reason</span> ${escapeHtml(rec.reason)}</div>
         <div class="hr-next-line"><span class="hr-next-k">Impact</span> ${escapeHtml(rec.impact)}</div>
         <div class="hr-next-actions">
-          <button type="button" class="btn btn-sm hr-view-role" data-staff-goto="hire" data-focus-role="${escapeHtml(role.id)}">View Role</button>
+          <button type="button" class="hr-glass-btn hr-view-role" data-staff-goto="hire" data-focus-role="${escapeHtml(role.id)}">View Role</button>
         </div>
       ` : `<p class="hr-card-foot">No recommendation — desk is full or balanced.</p>`}
     </article>`;
@@ -241,18 +243,27 @@ function renderFullRoster(state, coverage) {
     const wrTxt = wr != null ? `${Math.round(wr * 100)}% win` : 'no closes yet';
     const prog = Math.round(s.progress || 0);
     const pay = memberDayPay(s);
+    const lvl = staffTenureLevel(s);
+    const xp = staffXp(s);
+    const days = staffTenureDays(s);
+    const auth = staffAuthorityPct(s, role);
+    const authTxt = auth != null ? `${(auth * 100).toFixed(1)}% size` : 'no trading size';
+    const autoCheck = canEnableAutopilot(s);
+    const tradingSeat = STAFF_BUY_LANES.has(role?.lane) || STAFF_SELL_LANES.has(role?.lane);
     return `
       <div class="roster-row" style="--role-color:${role?.color || '#58a6ff'}">
         <div class="role-mark" style="background:${role?.color || '#58a6ff'}">${role?.mark || 'ST'}</div>
         <div class="roster-main">
           <div class="roster-name-row">
             <strong class="roster-name">${escapeHtml(s.name)}</strong>
-            <button class="btn-icon-tiny rename-btn" data-rename="${s.id}" title="Rename">✎</button>
+            <button type="button" class="hr-glass-btn hr-glass-icon rename-btn" data-rename="${s.id}" title="Rename">✎</button>
             <span class="tier-badge tier-${s.tier || 'newbie'}">${escapeHtml(tier.name)}</span>
             ${role?.lane ? laneChip(role.lane) : ''}
+            ${s.autopilot ? '<span class="hr-auto-badge">Autopilot</span>' : ''}
           </div>
           <div class="roster-role">${escapeHtml(role?.name || s.roleId)} · ${escapeHtml(deskLabel(role?.lane))}</div>
           <div class="roster-status">${escapeHtml(s.status || 'Ready')} · $${pay}/day</div>
+          <div class="roster-tenure">Tenure L${lvl} · ${days}d · ${xp} XP · ${authTxt}</div>
           <div class="roster-act-row">
             <span class="hr-act-pct">${prog}%</span>
             ${activitySpark(prog, s.actionsToday)}
@@ -263,13 +274,19 @@ function renderFullRoster(state, coverage) {
           <div class="roster-pnl ${pl >= 0 ? 'up' : 'down'}">${pl >= 0 ? '+' : ''}$${Math.round(pl).toLocaleString()}</div>
           <div class="roster-meta">${wrTxt} · ${s.actionsToday || 0} acts · ${s.mistakes || 0} errs</div>
           ${train.ok
-            ? `<button type="button" class="btn btn-accent btn-sm train-btn" data-train="${s.id}">Train $${train.cost} → ${STAFF_TIERS[train.next].name}</button>`
+            ? `<button type="button" class="hr-glass-btn hr-glass-primary train-btn" data-train="${s.id}">Train $${train.cost} → ${STAFF_TIERS[train.next].name}</button>`
             : (tier.next
-              ? `<span class="hire-lock">${train.msg}</span>`
+              ? `<span class="hire-lock">${escapeHtml(train.msg)}</span>`
               : `<span class="tier-max">MAX</span>`)}
           <div class="roster-actions">
-            <button class="btn-sm history-btn" data-history="${s.id}" title="History">Log</button>
-            <button class="btn-sm btn-fire" data-fire="${s.id}" title="Fire">Fire</button>
+            ${tradingSeat ? `
+              <button type="button" class="hr-glass-btn hr-glass-toggle autopilot-btn ${s.autopilot ? 'is-on' : ''}"
+                data-autopilot="${s.id}" data-on="${s.autopilot ? '0' : '1'}"
+                title="${s.autopilot ? 'Turn autopilot off' : (autoCheck.ok ? 'Enable self-management' : autoCheck.msg)}">
+                ${s.autopilot ? 'Auto ON' : (autoCheck.ok ? 'Autopilot' : `Auto ${xp}/${STAFF_AUTOPILOT_MIN_XP}`)}
+              </button>` : ''}
+            <button type="button" class="hr-glass-btn history-btn" data-history="${s.id}" title="History">Log</button>
+            <button type="button" class="hr-glass-btn hr-glass-danger btn-fire" data-fire="${s.id}" title="Fire">Fire</button>
           </div>
         </div>
       </div>`;
@@ -280,6 +297,9 @@ function renderFullRoster(state, coverage) {
   });
   roster.querySelectorAll('.train-btn').forEach((btn) => {
     btn.onclick = () => state.onTrainStaff?.(btn.dataset.train);
+  });
+  roster.querySelectorAll('.autopilot-btn').forEach((btn) => {
+    btn.onclick = () => state.onToggleStaffAutopilot?.(btn.dataset.autopilot, btn.dataset.on === '1');
   });
   roster.querySelectorAll('.history-btn').forEach((btn) => {
     btn.onclick = () => showStaffHistory(btn.dataset.history, state);
@@ -389,7 +409,7 @@ function renderHireList(state) {
             ${owned ? `<span class="hire-owned">${owned} on roster</span>` : ''}
           </div>
           ${check.ok
-            ? `<button type="button" class="btn btn-accent btn-sm hire-btn" data-role="${role.id}">Hire</button>`
+            ? `<button type="button" class="hr-glass-btn hr-glass-primary hire-btn" data-role="${role.id}">Hire</button>`
             : `<span class="hire-lock-pill" title="${escapeHtml(lockReason)}">${escapeHtml(lockReason || 'Locked')}</span>`}
         </div>
       </article>`;

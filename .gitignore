@@ -6,3 +6,5 @@ finnhub.key
 stockway.pid
 .stockway-gm
 .smoke-shots/
+.tmp-*/
+.tmp-video-frames/

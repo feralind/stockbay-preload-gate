@@ -507,7 +507,7 @@ function vaultItemArtHtml(item, variant = '') {
   return artPhoto(item) || artFoil(item, variant);
 }
 
-/** Shared foil plate art for Vault + Collection Log cards. */
+/** Shared plate art for Vault + Collection Log cards (unique photos when present, else foil). */
 export function renderVaultFoilArt(item, variant = '') {
   if (!item?.id) return '';
   return vaultItemArtHtml(item, variant);

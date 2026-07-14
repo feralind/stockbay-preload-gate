@@ -6,10 +6,11 @@
 import {
   BANKS, APR_CREDIT_TIERS, DAILY_CREDIT_GAIN_CAP, creditTier, getActiveLoans, getFirmDebt,
   projectLoanPayoff, maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers,
-  utilizationRatio, bankDebt, otherBanksDebt,
+  utilizationRatio, bankDebt, otherBanksDebt, firmStrengthBoostPct,
 } from '../finance.js';
-import { getVaultPledgedAppraisal } from '../vault.js';
+import { getVaultPledgedAppraisal, getVaultBookValue } from '../vault.js';
 import { syncEstateDerived } from '../estates.js';
+import { getFirmNetWorth } from '../portfolio.js';
 import { domainLogoHtml } from '../logos.js';
 import { formatMarketClock } from '../market.js';
 import { toast } from '../notify.js';
@@ -70,11 +71,11 @@ function creditGaugeHtml(label, score, tier, util) {
     </div>`;
 }
 
-function financeGaugesHtml(finance) {
+function financeGaugesHtml(finance, firmStrength = 0) {
   const p = creditTier(finance.personalCredit);
   const b = creditTier(finance.businessCredit);
-  const pUtil = Math.round(utilizationRatio(finance, 'personal') * 100);
-  const bUtil = Math.round(utilizationRatio(finance, 'company') * 100);
+  const pUtil = Math.round(utilizationRatio(finance, 'personal', firmStrength) * 100);
+  const bUtil = Math.round(utilizationRatio(finance, 'company', firmStrength) * 100);
   return creditGaugeHtml('Personal credit', finance.personalCredit, p, pUtil)
     + creditGaugeHtml('Company credit', finance.businessCredit, b, bUtil);
 }
@@ -101,6 +102,7 @@ function creditBuilderHtml(finance) {
     <div class="builder-shell">
       <div class="builder-ladder">${rows}</div>
       <div class="builder-tips">
+        <div class="builder-tip"><strong>Firm strength expands facilities.</strong> Higher net worth raises how much each bank will underwrite — credit score still gates approval, but a stronger balance sheet unlocks larger company lines (like real small-business lending).</div>
         <div class="builder-tip"><strong>Age it before you cash out.</strong> A loan must survive one day-end interest tick before payoff or partial repay can raise your score — same-morning borrow→repay builds nothing.</div>
         <div class="builder-tip"><strong>Daily gain caps.</strong> Personal credit can climb at most ${DAILY_CREDIT_GAIN_CAP.personal} pts/day, business ${DAILY_CREDIT_GAIN_CAP.business} pts/day — spreading paydowns across days beats one huge payment.</div>
         <div class="builder-tip"><strong>Utilization matters.</strong> Staying under 30% of your total credit limit earns an APR discount; 80%+ utilization adds a penalty and shrinks new approvals.</div>
@@ -110,7 +112,18 @@ function creditBuilderHtml(finance) {
 }
 
 function vaultCollateralOpts(state) {
-  return { collateralValue: getVaultPledgedAppraisal(state || {}) };
+  syncEstateDerived(state || {});
+  const estateCredit = Math.max(0, Number(state?.estateCreditUsed) || 0);
+  const debt = getFirmDebt(state?.finance, estateCredit);
+  const firmStrength = getFirmNetWorth(state?.portfolio || { cash: 0, longs: {}, shorts: {}, options: [] }, {
+    debt,
+    vaultBook: getVaultBookValue(state || {}),
+    estateEquity: state?.estateEquity || 0,
+  });
+  return {
+    collateralValue: getVaultPledgedAppraisal(state || {}),
+    firmStrength,
+  };
 }
 
 export function setLoanDraftAmount(bankId, val) {
@@ -294,9 +307,10 @@ export function renderFinance(state) {
   const gameDay = formatMarketClock()?.day || 1;
   const collatOpts = vaultCollateralOpts(state);
   const pledged = getVaultPledgedAppraisal(state);
+  const strengthPct = firmStrengthBoostPct(collatOpts.firmStrength || 0);
 
   const gauges = document.getElementById('finance-gauges');
-  if (gauges) gauges.innerHTML = financeGaugesHtml(finance);
+  if (gauges) gauges.innerHTML = financeGaugesHtml(finance, collatOpts.firmStrength || 0);
 
   const pills = document.getElementById('credit-pills');
   if (pills) {
@@ -314,10 +328,10 @@ export function renderFinance(state) {
         <span class="credit-pill-val">${fmt(pledged)}</span>
         <span class="credit-tier">50% LTV collateral</span>
       </div>
-      <div class="credit-pill">
-        <span class="credit-pill-lbl">Property credit</span>
-        <span class="credit-pill-val">${fmt(estateCredit)}</span>
-        <span class="credit-tier">Drawn HELOC-style</span>
+      <div class="credit-pill" data-gloss="net-worth">
+        <span class="credit-pill-lbl">Firm strength</span>
+        <span class="credit-pill-val">+${strengthPct}%</span>
+        <span class="credit-tier">NW facility boost</span>
       </div>`;
   }
 

@@ -206,23 +206,49 @@ export function otherBanksDebt(finance, bankId, type) {
 }
 
 /**
- * Max new principal this bank will underwrite right now (before step snap).
- * Shared by quoteLoan + maxBorrowableAmount so UI and approval never disagree.
+ * Firm balance-sheet strength → facility size (small-business style).
+ * Mid five-figure K keeps $500 start nearly flat; ~$100k+ clearly expands lines.
+ * Multiplier is capped so late wealth doesn't erase credit underwriting.
  */
+export const FIRM_STRENGTH_K = 50000;
+export const FIRM_STRENGTH_CAP_ADD = 1.5;
+
+/** Personal term loans stay short; company facilities get a longer amort window. */
+export const PERSONAL_LOAN_TERM_DAYS = 30;
+export const COMPANY_LOAN_TERM_DAYS = 90;
+
+/**
+ * @param {number} [firmStrength] firm net worth / equity used as underwriting strength
+ * @returns {number} multiplier ≥ 1
+ */
+export function firmStrengthMultiplier(firmStrength = 0) {
+  const v = Math.max(0, Number(firmStrength) || 0);
+  return 1 + Math.min(FIRM_STRENGTH_CAP_ADD, v / FIRM_STRENGTH_K);
+}
+
+export function firmStrengthBoostPct(firmStrength = 0) {
+  return Math.round((firmStrengthMultiplier(firmStrength) - 1) * 100);
+}
+
 /**
  * Max new principal this bank will underwrite right now (before step snap).
  * Optional vault collateral is a separate additive term (capped), never a multiplier
- * on tier.limitMult / util / credit math.
+ * on tier.limitMult / util / credit math. Firm strength scales the bank ceiling.
  *
  * @param {string} bankId
  * @param {'personal'|'company'} type
  * @param {object} finance
- * @param {{ collateralValue?: number }} [opts]
+ * @param {{ collateralValue?: number, firmStrength?: number }} [opts]
  */
-export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0 } = {}) {
+export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0, firmStrength = 0 } = {}) {
   const bank = BANKS.find((b) => b.id === bankId);
+  const strengthMult = firmStrengthMultiplier(firmStrength);
+  const strengthPct = firmStrengthBoostPct(firmStrength);
   if (!bank || !finance) {
-    return { max: 0, bankMax: 0, outstanding: 0, util: 0, collateralBonus: 0, reason: 'Unknown bank' };
+    return {
+      max: 0, bankMax: 0, outstanding: 0, util: 0, collateralBonus: 0,
+      strengthMult, strengthPct, reason: 'Unknown bank',
+    };
   }
   const isPersonal = type === 'personal';
   const credit = isPersonal ? finance.personalCredit : finance.businessCredit;
@@ -231,17 +257,21 @@ export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0
       max: 0,
       bankMax: 0,
       outstanding: typeDebt(finance, type),
-      util: utilizationRatio(finance, type),
+      util: utilizationRatio(finance, type, firmStrength),
       collateralBonus: 0,
+      strengthMult,
+      strengthPct,
       reason: `Need ${bank.minCredit}+ ${isPersonal ? 'personal' : 'business'} credit (you have ${credit})`,
     };
   }
   const tier = aprTierForScore(credit);
-  const bankMax = Math.floor((isPersonal ? bank.maxPersonal : bank.maxCompany) * tier.limitMult);
+  const bankMax = Math.floor(
+    (isPersonal ? bank.maxPersonal : bank.maxCompany) * tier.limitMult * strengthMult,
+  );
   const outstanding = typeDebt(finance, type);
   const debtRoom = Math.max(0, bankMax * 1.5 - outstanding);
   let raw = Math.min(bankMax, debtRoom);
-  const util = utilizationRatio(finance, type);
+  const util = utilizationRatio(finance, type, firmStrength);
   if (util >= 0.8) raw *= 0.5;
   else if (util >= 0.6) raw *= 0.75;
   // 50% LTV on pledged appraisal, hard-capped so bonus never exceeds bankMax.
@@ -259,25 +289,26 @@ export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0
       reason = `No ${type} room left at ${bank.short} right now`;
     }
   }
-  return { max, bankMax, outstanding, util, collateralBonus, reason };
+  return { max, bankMax, outstanding, util, collateralBonus, strengthMult, strengthPct, reason };
 }
 
 /** Aggregate bank ceilings for a loan type (utilization denominator). */
-export function typeCreditLimit(finance, type) {
+export function typeCreditLimit(finance, type, firmStrength = 0) {
   const isPersonal = type === 'personal';
   const credit = isPersonal ? finance.personalCredit : finance.businessCredit;
+  const strengthMult = firmStrengthMultiplier(firmStrength);
   let sum = 0;
   for (const bank of BANKS) {
     if (credit < bank.minCredit) continue;
     const base = isPersonal ? bank.maxPersonal : bank.maxCompany;
     const mult = aprTierForScore(credit).limitMult;
-    sum += base * mult;
+    sum += base * mult * strengthMult;
   }
   return Math.max(sum, 1);
 }
 
-export function utilizationRatio(finance, type) {
-  return typeDebt(finance, type) / typeCreditLimit(finance, type);
+export function utilizationRatio(finance, type, firmStrength = 0) {
+  return typeDebt(finance, type) / typeCreditLimit(finance, type, firmStrength);
 }
 
 export function creditHistoryDays(finance, gameDay = 1) {
@@ -302,12 +333,18 @@ function hasCreditMix(finance) {
 /**
  * Personalized APR from bank base ± credit tier, relationship, utilization,
  * recent inquiries, and thin-file / mix adjustments.
+ * @param {object} bank
+ * @param {'personal'|'company'} type
+ * @param {object} finance
+ * @param {number} [gameDay]
+ * @param {{ firmStrength?: number }} [opts]
  */
-export function priceApr(bank, type, finance, gameDay = 1) {
+export function priceApr(bank, type, finance, gameDay = 1, opts = {}) {
   const isPersonal = type === 'personal';
   const credit = isPersonal ? finance.personalCredit : finance.businessCredit;
   const baseApr = isPersonal ? bank.personalApr : bank.companyApr;
   const tier = aprTierForScore(credit);
+  const firmStrength = opts.firmStrength ?? 0;
 
   let apr = baseApr + tier.aprAdj;
 
@@ -315,7 +352,7 @@ export function priceApr(bank, type, finance, gameDay = 1) {
   if (rel >= 1) apr -= 0.35;
   if (rel >= 2) apr -= 0.25;
 
-  const util = utilizationRatio(finance, type);
+  const util = utilizationRatio(finance, type, firmStrength);
   if (util >= 0.8) apr += 1.5;
   else if (util >= 0.5) apr += 0.75;
   else if (util > 0 && util < 0.3) apr -= 0.25;
@@ -350,12 +387,13 @@ export function quoteBankOffers(bankId, finance, gameDay = 1, opts = {}) {
   if (!bank || !finance) return null;
   return {
     bank,
-    personalApr: priceApr(bank, 'personal', finance, gameDay),
-    companyApr: priceApr(bank, 'company', finance, gameDay),
+    personalApr: priceApr(bank, 'personal', finance, gameDay, opts),
+    companyApr: priceApr(bank, 'company', finance, gameDay, opts),
     personalMax: maxBorrowableAmount(bankId, 'personal', finance, 50, gameDay, opts),
     companyMax: maxBorrowableAmount(bankId, 'company', finance, 50, gameDay, opts),
     personalOk: finance.personalCredit >= bank.minCredit,
     companyOk: finance.businessCredit >= bank.minCredit,
+    strengthPct: firmStrengthBoostPct(opts.firmStrength || 0),
   };
 }
 
@@ -367,6 +405,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
   const minCredit = bank.minCredit;
   const baseApr = isPersonal ? bank.personalApr : bank.companyApr;
   const tier = aprTierForScore(credit);
+  const firmStrength = opts.firmStrength ?? 0;
 
   if (credit < minCredit) {
     return {
@@ -379,6 +418,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
       debtHere: bankDebt(finance, bankId, type),
       debtElsewhere: otherBanksDebt(finance, bankId, type),
       totalTypeDebt: typeDebt(finance, type),
+      strengthPct: firmStrengthBoostPct(firmStrength),
     };
   }
   if (amount < 100) {
@@ -392,6 +432,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
       debtHere: bankDebt(finance, bankId, type),
       debtElsewhere: otherBanksDebt(finance, bankId, type),
       totalTypeDebt: typeDebt(finance, type),
+      strengthPct: firmStrengthBoostPct(firmStrength),
     };
   }
 
@@ -415,6 +456,8 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
       credit,
       maxApproved: uw.max,
       collateralBonus: uw.collateralBonus || 0,
+      strengthMult: uw.strengthMult,
+      strengthPct: uw.strengthPct,
       debtHere: bankDebt(finance, bankId, type),
       debtElsewhere: elsewhere,
       totalTypeDebt: uw.outstanding,
@@ -423,11 +466,14 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
   }
 
   const outstanding = uw.outstanding;
-  const apr = priceApr(bank, type, finance, gameDay);
+  const apr = priceApr(bank, type, finance, gameDay, opts);
   const dailyRate = apr / 100 / 365;
-  const termDays = isPersonal ? 30 : 60;
+  const termDays = isPersonal ? PERSONAL_LOAN_TERM_DAYS : COMPANY_LOAN_TERM_DAYS;
   const estimatedInterest = amount * dailyRate * termDays;
-  const utilAfter = (outstanding + amount) / typeCreditLimit(finance, type);
+  const minDailyPayment = Math.round(
+    Math.min(amount, Math.max(amount * dailyRate * 2, amount / Math.max(1, termDays) * 0.5)) * 100,
+  ) / 100;
+  const utilAfter = (outstanding + amount) / typeCreditLimit(finance, type, firmStrength);
 
   return {
     ok: true,
@@ -439,6 +485,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
     dailyRate,
     termDays,
     estimatedInterest,
+    minDailyPayment,
     credit,
     tier: tier.label,
     utilization: Math.round(utilAfter * 1000) / 10,
@@ -447,6 +494,8 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
     totalTypeDebt: outstanding,
     maxApproved: uw.max,
     collateralBonus: uw.collateralBonus || 0,
+    strengthMult: uw.strengthMult,
+    strengthPct: uw.strengthPct,
   };
 }
 

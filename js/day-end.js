@@ -6,7 +6,7 @@
 import { getNetEquity, settleExpiredOptions } from './portfolio.js';
 import { getFirmDebt, processDailyLoans } from './finance.js';
 import { getDayStats } from './market.js';
-import { payDailySalaries } from './staff.js';
+import { payDailySalaries, tickStaffTenureDay } from './staff.js';
 import {
   updateChallengeProgress,
   claimChallenge,
@@ -93,6 +93,7 @@ export function runDayEndSettlement(state, day) {
     addRep(rep, ev.type);
   }
 
+  tickStaffTenureDay(state);
   const payroll = payDailySalaries(state);
   if (!state.stats) state.stats = {};
 

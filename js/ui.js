@@ -344,8 +344,10 @@ function renderHeader(state) {
   const debt = finance ? getFirmDebt(finance, state.estateCreditUsed) : Math.max(0, Number(state.estateCreditUsed) || 0);
   const vaultBook = getVaultBookValue(state);
   const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
-  setText('cash', fmt(portfolio.cash));
-  setText('equity', fmt(getFirmNetWorth(portfolio, { debt, vaultBook, estateEquity })));
+  const cash = Number(portfolio.cash) || 0;
+  const firm = getFirmNetWorth(portfolio, { debt, vaultBook, estateEquity });
+  setText('cash', fmt(cash));
+  setText('equity', fmt(firm));
   setText('pnl', fmtPnL(getUnrealizedPnL(portfolio)));
   setText('buying-power', fmt(getBuyingPower(portfolio, perks)));
   const rep = meta?.reputation ?? 0;

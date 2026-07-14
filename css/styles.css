@@ -3629,18 +3629,117 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .hr-meta-time { font-variant-numeric: tabular-nums; }
 
 .hr-tabs {
-  display: flex; gap: 2px; border-bottom: 1px solid var(--glass-stroke-soft);
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 4px;
+  border: 1px solid var(--glass-stroke-soft);
+  border-radius: 14px;
+  background: color-mix(in srgb, #fff 4%, transparent);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 10%, transparent);
 }
 .hr-tab {
-  appearance: none; background: none; border: none; cursor: pointer;
-  padding: 8px 14px 10px; margin-bottom: -1px;
+  appearance: none; cursor: pointer;
+  padding: 8px 14px;
   font: inherit; font-size: 13px; font-weight: 600; color: var(--muted);
-  border-bottom: 2px solid transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
 }
-.hr-tab:hover { color: var(--text); }
+.hr-tab:hover { color: var(--text); background: color-mix(in srgb, #fff 6%, transparent); }
 .hr-tab.is-active {
   color: var(--text);
-  border-bottom-color: var(--blue, var(--accent));
+  border-color: var(--glass-stroke);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+}
+
+/* Staff liquid-glass action buttons */
+.hr-glass-btn {
+  appearance: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 7px 12px;
+  border-radius: 10px;
+  color: var(--text);
+  border: 1px solid var(--glass-stroke);
+  background: var(--glass-bg);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+  transition: border-color 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+}
+.hr-glass-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-stroke));
+  background: color-mix(in srgb, #fff 10%, transparent);
+}
+.hr-glass-btn:active { opacity: 0.88; }
+.hr-glass-primary {
+  color: #041018;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--glass-stroke));
+  background: linear-gradient(
+    155deg,
+    color-mix(in srgb, var(--accent) 78%, #fff),
+    color-mix(in srgb, var(--accent) 55%, transparent)
+  );
+  box-shadow: var(--glass-shadow), 0 0 18px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.hr-glass-primary:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, #fff);
+  background: linear-gradient(
+    155deg,
+    color-mix(in srgb, var(--accent) 88%, #fff),
+    color-mix(in srgb, var(--accent) 62%, transparent)
+  );
+}
+.hr-glass-danger {
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 40%, var(--glass-stroke));
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+}
+.hr-glass-danger:hover {
+  border-color: color-mix(in srgb, var(--red) 55%, var(--glass-stroke));
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+}
+.hr-glass-toggle.is-on {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, var(--glass-stroke));
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.hr-glass-icon {
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: 8px;
+}
+.hr-auto-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--green);
+  border: 1px solid color-mix(in srgb, var(--green) 40%, var(--glass-stroke));
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.roster-tenure {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.hr-view-role {
+  border: 1px solid color-mix(in srgb, var(--blue, var(--accent)) 55%, var(--glass-stroke));
+  color: var(--blue, var(--accent));
+  background: color-mix(in srgb, var(--blue, var(--accent)) 10%, transparent);
 }
 
 .hr-tab-panel {
@@ -3732,11 +3831,6 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .hr-next-line { font-size: 12px; color: color-mix(in srgb, var(--text) 85%, var(--muted)); line-height: 1.4; }
 .hr-next-k { color: var(--muted); font-weight: 600; margin-right: 4px; }
 .hr-next-actions { margin-top: auto; display: flex; justify-content: flex-end; }
-.hr-view-role {
-  border: 1px solid color-mix(in srgb, var(--blue, var(--accent)) 55%, var(--glass-stroke));
-  color: var(--blue, var(--accent));
-  background: transparent;
-}
 
 .hr-overview-tables {
   display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px;
@@ -8850,15 +8944,20 @@ body[data-luxury="dynastyWing"] .dashboard-view {
   min-height: 148px;
   overflow: hidden;
   contain: paint;
+  background: #0b1220;
 }
 .estate-detail-media {
   position: relative;
+  min-height: 180px;
   overflow: hidden;
   contain: paint;
+  background: #0b1220;
 }
 .estate-media-img,
 .estate-option-img,
 .estate-detail-img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -8867,11 +8966,21 @@ body[data-luxury="dynastyWing"] .dashboard-view {
   transform: none;
 }
 .estate-option-img[src*="harbor-villa"],
-.estate-detail-img[src*="harbor-villa"] { object-position: 30% 40%; }
+.estate-detail-img[src*="harbor-villa"] { object-position: 50% 42%; }
 .estate-option-img[src*="cliffside-retreat"],
-.estate-detail-img[src*="cliffside-retreat"] { object-position: 70% 35%; }
+.estate-detail-img[src*="cliffside-retreat"] { object-position: 35% 50%; }
 .estate-option-img[src*="lakeside-compound"],
-.estate-detail-img[src*="lakeside-compound"] { object-position: 50% 70%; }
+.estate-detail-img[src*="lakeside-compound"] { object-position: 28% 45%; }
+.estate-option-img[src*="coastal-residence"],
+.estate-detail-img[src*="coastal-residence"] { object-position: 55% 45%; }
+.estate-option-img[src*="ghost-limousine"],
+.estate-detail-img[src*="ghost-limousine"] { object-position: 50% 48%; }
+.estate-option-img[src*="titanium-gt3"],
+.estate-detail-img[src*="titanium-gt3"] { object-position: 55% 50%; }
+.estate-option-img[src*="apex-roadster"],
+.estate-detail-img[src*="apex-roadster"] { object-position: 48% 55%; }
+.estate-option-img[src*="obsidian-hyper"],
+.estate-detail-img[src*="obsidian-hyper"] { object-position: 50% 50%; }
 .estate-bento-shade {
   position: absolute;
   inset: 0;

@@ -2,7 +2,9 @@
 param(
   [switch]$Silent,
   [switch]$NoBrowser,
-  [switch]$ForceRestart
+  [switch]$ForceRestart,
+  # Bind on LAN IPs so phones / other PCs on the same Wi‑Fi can play
+  [switch]$Lan
 )
 
 $Port = 8080
@@ -291,21 +293,90 @@ if ($portBusy) {
   Start-Sleep -Seconds 2
 }
 
+function Get-LanIPv4Addresses {
+  $addrs = @()
+  try {
+    $addrs = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+      Where-Object {
+        $_.IPAddress -and
+        $_.IPAddress -ne '127.0.0.1' -and
+        $_.PrefixOrigin -ne 'WellKnown' -and
+        $_.AddressState -eq 'Preferred' -and
+        $_.IPAddress -notlike '169.254.*'
+      } |
+      Select-Object -ExpandProperty IPAddress -Unique)
+  } catch {
+    try {
+      $addrs = @(Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPEnabled -and $_.IPAddress } |
+        ForEach-Object { $_.IPAddress } |
+        Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' -and $_ -ne '127.0.0.1' -and $_ -notlike '169.254.*' } |
+        Select-Object -Unique)
+    } catch { $addrs = @() }
+  }
+  return @($addrs)
+}
+
+function Try-OpenLanFirewall([int]$port) {
+  $ruleName = "StockWay LAN $port"
+  try {
+    $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+    if ($existing) { return $true }
+    New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -Profile Private -ErrorAction Stop | Out-Null
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 $listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add("http://127.0.0.1:$Port/")
+$listenHosts = @('127.0.0.1')
+$lanIps = @()
+if ($Lan) {
+  $lanIps = @(Get-LanIPv4Addresses)
+  foreach ($ip in $lanIps) { $listenHosts += $ip }
+}
+$listenHosts = @($listenHosts | Select-Object -Unique)
+foreach ($hostAddr in $listenHosts) {
+  $listener.Prefixes.Add("http://${hostAddr}:$Port/")
+}
 try {
   $listener.Start()
 } catch {
   Write-Info "Failed to start server on port $Port - run Stop StockWay.bat then try again." "Red"
+  if ($Lan) {
+    Write-Info "LAN bind tip: if this failed, run PowerShell as Admin once:" "Yellow"
+    Write-Info "  netsh http add urlacl url=http://+:$Port/ user=Everyone" "DarkYellow"
+  }
   if (-not $Silent) { Write-Host $_.Exception.Message -ForegroundColor DarkRed }
   exit 1
 }
 [System.IO.File]::WriteAllText($PidFile, "$PID")
 
+$firewallOk = $false
+if ($Lan) { $firewallOk = Try-OpenLanFirewall $Port }
+
 if (-not $Silent) {
   Write-Host ""
   Write-Host "  StockWay is running!" -ForegroundColor Green
-  Write-Host "  http://127.0.0.1:$Port" -ForegroundColor White
+  Write-Host "  Local:  http://127.0.0.1:$Port" -ForegroundColor White
+  if ($Lan) {
+    if ($lanIps.Count -gt 0) {
+      Write-Host "  Share these on the same Wi-Fi / LAN:" -ForegroundColor Cyan
+      foreach ($ip in $lanIps) {
+        Write-Host "    http://${ip}:$Port" -ForegroundColor White
+      }
+    } else {
+      Write-Host "  LAN mode on, but no IPv4 LAN address was found." -ForegroundColor Yellow
+    }
+    if ($firewallOk) {
+      Write-Host "  Firewall: inbound TCP $Port allowed (Private profile)." -ForegroundColor DarkGray
+    } else {
+      Write-Host "  Firewall: could not auto-allow port $Port. If friends cannot connect," -ForegroundColor Yellow
+      Write-Host "  allow inbound TCP $Port in Windows Defender Firewall (Private networks)." -ForegroundColor Yellow
+    }
+    Write-Host "  Note: each browser has its own save (localStorage). Host PC must stay on." -ForegroundColor DarkGray
+  }
   Write-Host "  Data: Yahoo Finance (stable live prices)" -ForegroundColor DarkGray
   Write-Host "  KEEP THIS WINDOW OPEN while playing." -ForegroundColor Yellow
   Write-Host ""

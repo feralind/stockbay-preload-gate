@@ -7,8 +7,14 @@ export function toYahooSymbol(sym) {
 }
 
 export function isLocalServer() {
-  const h = location.hostname;
-  return h === '127.0.0.1' || h === 'localhost';
+  const h = String(location.hostname || '').toLowerCase();
+  if (h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1') return true;
+  // Private LAN / link-local so friends on the same Wi‑Fi still use /api Yahoo proxy
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (h.endsWith('.local')) return true;
+  return false;
 }
 
 const YAHOO_CANDLE_RANGES = {

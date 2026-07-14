@@ -180,8 +180,39 @@ async function main() {
   const {
     createFinanceState, takeLoan, makeLoanPayment, processDailyLoans, getTotalDebt,
     DAILY_CREDIT_GAIN_CAP, quoteLoan, BANKS, priceApr, maxBorrowableAmount,
-    bankDebt, otherBanksDebt, underwriteMaxAmount,
+    bankDebt, otherBanksDebt, underwriteMaxAmount, firmStrengthMultiplier,
+    firmStrengthBoostPct, PERSONAL_LOAN_TERM_DAYS, COMPANY_LOAN_TERM_DAYS,
   } = fin;
+
+  test('firm strength multiplier scales with NW and caps', () => {
+    assert.equal(firmStrengthMultiplier(0), 1);
+    assert.ok(firmStrengthMultiplier(500) > 1 && firmStrengthMultiplier(500) < 1.02);
+    assert.ok(firmStrengthMultiplier(50000) >= 1.99 && firmStrengthMultiplier(50000) <= 2.01);
+    assert.equal(firmStrengthMultiplier(1e9), 1 + 1.5);
+    assert.equal(firmStrengthBoostPct(50000), 100);
+  });
+
+  test('higher firm strength raises underwriting ceiling without changing credit', () => {
+    const finance = createFinanceState();
+    const base = underwriteMaxAmount('chase', 'company', finance);
+    const strong = underwriteMaxAmount('chase', 'company', finance, { firmStrength: 100000 });
+    assert.ok(strong.max > base.max, `expected strength to raise max (${strong.max} > ${base.max})`);
+    assert.equal(finance.businessCredit, 700);
+    assert.ok(strong.strengthPct >= 100);
+  });
+
+  test('company loans use 90-day term; personal stays 30', () => {
+    const finance = createFinanceState();
+    const portfolio = createPortfolio(20000);
+    const personal = quoteLoan('chase', 'personal', 200, finance, 1);
+    const company = quoteLoan('chase', 'company', 500, finance, 1);
+    assert.equal(personal.ok, true, personal.msg);
+    assert.equal(company.ok, true, company.msg);
+    assert.equal(personal.termDays, PERSONAL_LOAN_TERM_DAYS);
+    assert.equal(company.termDays, COMPANY_LOAN_TERM_DAYS);
+    assert.equal(COMPANY_LOAN_TERM_DAYS, 90);
+    assert.ok(company.minDailyPayment > 0);
+  });
 
   test('rapid same-day borrow→repay does not raise credit', () => {
     const finance = createFinanceState();
@@ -902,11 +933,47 @@ async function main() {
     const {
       getMaxStaff, payDailySalaries, MAX_STAFF, STAFF_ROLES,
       staffMaxBuyShares, listingConviction, STAFF_DEFAULT_MAX_POSITION_PCT, STAFF_AI_MIN_CONFIDENCE,
+      createStaffMember, tickStaffTenureDay, staffXp, staffTenureLevel, staffAuthorityPct,
+      canEnableAutopilot, setStaffAutopilot, STAFF_AUTO_VETERAN_XP, STAFF_AUTOPILOT_MIN_XP,
     } = staffMod;
     test('staff caps: 6 → 8 Trading Floor → 10 Legend Desk', () => {
       assert.equal(getMaxStaff({ perks: [] }), MAX_STAFF);
       assert.equal(getMaxStaff({ perks: ['tradingFloor'] }), 8);
       assert.equal(getMaxStaff({ perks: ['tradingFloor', 'legendDesk'] }), 10);
+    });
+    test('staff tenure XP grows authority and can auto-promote to Veteran', () => {
+      const member = createStaffMember('scout');
+      assert.equal(member.tier, 'newbie');
+      assert.equal(staffXp(member), 0);
+      const state = { staff: [member], staffLog: [], stats: {} };
+      member.actionsToday = 8;
+      for (let d = 0; d < 20; d++) {
+        tickStaffTenureDay(state);
+        member.actionsToday = 4;
+      }
+      assert.ok(staffXp(member) >= STAFF_AUTO_VETERAN_XP);
+      assert.equal(member.tier, 'veteran');
+      assert.ok(staffTenureLevel(member) >= 2);
+      const auth = staffAuthorityPct(member, STAFF_ROLES.scout);
+      assert.ok(auth > STAFF_DEFAULT_MAX_POSITION_PCT);
+      assert.ok(auth <= 0.12);
+    });
+    test('staff autopilot gates on Veteran+ and XP; expert Train still required separately', () => {
+      const member = createStaffMember('scout');
+      member.tier = 'veteran';
+      member.xp = STAFF_AUTOPILOT_MIN_XP;
+      assert.equal(canEnableAutopilot(member).ok, true);
+      const state = { staff: [member], staffLog: [] };
+      const on = setStaffAutopilot(member.id, true, state);
+      assert.equal(on.ok, true);
+      assert.equal(member.autopilot, true);
+      member.tier = 'newbie';
+      member.autopilot = false;
+      assert.equal(canEnableAutopilot(member).ok, false);
+      const intern = createStaffMember('intern');
+      intern.tier = 'expert';
+      intern.xp = 999;
+      assert.equal(canEnableAutopilot(intern).ok, false);
     });
     test('Legend Desk stacks +10% payroll subsidy on Hedge Fund', () => {
       const state = {
@@ -1303,8 +1370,13 @@ async function main() {
         const item = getVaultItem(id);
         const motif = VAULT_MOTIF_BY_ID[id];
         assert.ok(ALLOWED_MOTIFS.has(motif), `${id} missing/unknown motif: ${motif}`);
-        const svg = renderVaultFoilArt(item);
-        assert.ok(typeof svg === 'string' && svg.includes('<svg'), `${id} foil art missing`);
+        const art = renderVaultFoilArt(item);
+        assert.ok(typeof art === 'string' && art.length > 0, `${id} plate art missing`);
+        // Unique vault photos when present; otherwise SVG foil motif.
+        assert.ok(
+          art.includes('vault-art-photo') || art.includes('<svg'),
+          `${id} expected photo or foil svg`,
+        );
       }
     });
   }

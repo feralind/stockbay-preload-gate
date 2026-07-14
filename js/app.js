@@ -44,7 +44,7 @@ import { startEventEngine, onEvent } from './events.js';
 import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote, setChartStyle, getChartStyle, scheduleFitChart } from './chart.js';
 import { initThemePanel } from './theme.js';
 import {
-  tickStaff, hireStaff, fireStaff, trainStaff, renameStaff, STAFF_ROLES,
+  tickStaff, hireStaff, fireStaff, trainStaff, renameStaff, setStaffAutopilot, STAFF_ROLES,
 } from './staff.js';
 import { generateDailyPicks } from './ai.js';
 import {
@@ -1269,6 +1269,21 @@ function bindState() {
     } else { sfxError(); showAlert(r.msg, { title: 'Training', label: 'STAFF' }); }
   };
 
+  state.onToggleStaffAutopilot = (staffId, enabled) => {
+    const r = setStaffAutopilot(staffId, !!enabled, state);
+    if (r.ok) {
+      sfxSuccess();
+      toast(r.member.autopilot ? `${r.member.name} on autopilot` : `${r.member.name} back under desk watch`, {
+        type: r.member.autopilot ? 'success' : 'info',
+      });
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg, { title: 'Autopilot', label: 'STAFF' });
+    }
+  };
+
   state.onRenameStaff = (staffId, name) => {
     const r = renameStaff(staffId, name, state);
     if (r.ok) { saveGame(); renderAll(state); }
@@ -1433,15 +1448,18 @@ function bindState() {
     const amt = Math.max(0, Math.round(Number(amount) || 0));
     state.vaultPledged = sanitizeVaultPledged(state.vaultPledged, state.vaultOwned);
     const collateralValue = getVaultPledgedAppraisal(state);
+    const firmStrength = firmNetWorth();
     const collateralOpts = {
       collateralValue,
       collateralIds: state.vaultPledged.slice(),
+      firmStrength,
     };
     const preview = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
     const debtHere = preview.debtHere ?? bankDebt(state.finance, bankId, type);
     const debtElsewhere = preview.debtElsewhere ?? otherBanksDebt(state.finance, bankId, type);
     const totalType = preview.totalTypeDebt ?? typeDebt(state.finance, type);
     const bankLabel = preview.bank?.name || bank?.name || 'Bank';
+    const strengthPct = preview.strengthPct ?? 0;
 
     const debtLine = `
       <br><span style="color:var(--muted);font-size:12px">
@@ -1450,16 +1468,24 @@ function bindState() {
         · total: <strong>$${Math.round(totalType).toLocaleString()}</strong>
       </span>`;
 
+    const strengthLine = strengthPct > 0
+      ? `<br><span style="color:var(--muted);font-size:12px">Firm strength (net worth): <strong>+${strengthPct}%</strong> facility room</span>`
+      : `<br><span style="color:var(--muted);font-size:12px">Firm strength: base facility (grow net worth to unlock larger lines)</span>`;
+
     const body = preview.ok
       ? `<strong>${bankLabel} — ${type} loan</strong><br>
          Amount: <strong>$${amt.toLocaleString()}</strong><br>
          Your APR: <strong>${preview.apr}%</strong> (${preview.tier}, credit ${preview.credit})<br>
-         Term: ${preview.termDays} game days · est. interest ~$${Math.round(preview.estimatedInterest).toLocaleString()}
+         Term: <strong>${preview.termDays} game days</strong>
+         · est. interest ~$${Math.round(preview.estimatedInterest).toLocaleString()}
+         · min auto-pay ~$${Number(preview.minDailyPayment || 0).toFixed(2)}/day
+         ${strengthLine}
          ${collateralValue > 0 ? `<br><span style="color:var(--muted);font-size:12px">Vault collateral bonus: +$${Math.round(preview.collateralBonus || 0).toLocaleString()} ceiling (50% LTV)</span>` : ''}
          ${debtLine}<br>
-         <span style="color:var(--muted);font-size:12px">Confirm to submit. Banks review your total debt across lenders.</span>`
+         <span style="color:var(--muted);font-size:12px">Underwriting uses credit score, utilization, firm strength, and collateral — like a small-business loan review.</span>`
       : `<strong>${bankLabel} — ${type} application</strong><br>
          Amount requested: <strong>$${amt.toLocaleString()}</strong>
+         ${strengthLine}
          ${debtLine}<br>
          <span style="color:var(--muted);font-size:12px">Submit to see if underwriting approves this loan.</span>`;
 
@@ -1479,6 +1505,7 @@ function bindState() {
         <br><br><span style="color:var(--muted);font-size:12px">
           ${type} debt at other banks: $${Math.round(decision.debtElsewhere || 0).toLocaleString()}
           · at this bank: $${Math.round(decision.debtHere || 0).toLocaleString()}
+          ${(decision.strengthPct || 0) > 0 ? ` · firm strength +${decision.strengthPct}%` : ''}
         </span>`;
       await showAlert(`${decision.msg}${denyDebt}`, { title: 'Loan denied', label: 'FINANCE' });
       return;
@@ -1971,7 +1998,9 @@ async function init() {
           const cash = document.getElementById('cash');
           if (cash) cash.textContent = `$${Math.round(state.portfolio.cash).toLocaleString()}`;
           const eq = document.getElementById('equity');
-          if (eq) eq.textContent = `$${Math.round(getNetEquity(state.portfolio, firmDebt())).toLocaleString()}`;
+          // Must match HUD firm NW (vault + estates) — not trading-only getNetEquity,
+          // or the label stutters between ~cash book and full net worth between paints.
+          if (eq) eq.textContent = `$${Math.round(firmNetWorth()).toLocaleString()}`;
         }
       }
     });

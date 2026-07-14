@@ -76,6 +76,117 @@ export const STAFF_TIERS = {
   expert: { id: 'expert', name: 'Expert', efficiency: 1.35, mistakeRate: 0.03, next: null, trainCost: 0 },
 };
 
+/** Tenure XP — longer play makes the desk faster, cleaner, and more autonomous. */
+export const STAFF_XP_PER_DAY = 10;
+export const STAFF_XP_PER_ACTION = 3;
+/** Auto-promote Newbie → Veteran after enough clean tenure (Expert still needs Train). */
+export const STAFF_AUTO_VETERAN_XP = 140;
+/** Autopilot unlock — Veteran+ with real desk time. */
+export const STAFF_AUTOPILOT_MIN_XP = 200;
+/** Max salary bump from tenure (keeps late desk from being free money). */
+export const STAFF_TENURE_PAY_CAP = 0.18;
+
+export function staffXp(member) {
+  return Math.max(0, Math.floor(Number(member?.xp) || 0));
+}
+
+export function staffTenureDays(member) {
+  return Math.max(0, Math.floor(Number(member?.tenureDays) || 0));
+}
+
+/** Soft levels 0–5 from accumulated XP. */
+export function staffTenureLevel(member) {
+  const xp = staffXp(member);
+  if (xp >= 400) return 5;
+  if (xp >= 280) return 4;
+  if (xp >= 180) return 3;
+  if (xp >= 100) return 2;
+  if (xp >= 40) return 1;
+  return 0;
+}
+
+export function staffTenureEfficiencyBoost(member) {
+  return 1 + staffTenureLevel(member) * 0.04;
+}
+
+export function staffTenureMistakeScale(member) {
+  return Math.max(0.55, 1 - staffTenureLevel(member) * 0.07);
+}
+
+export function staffActionChanceMult(member) {
+  let m = 1 + staffTenureLevel(member) * 0.06;
+  if (member?.autopilot) m *= 1.25;
+  return m;
+}
+
+export function staffProgressGainMult(member) {
+  let m = 1 + staffTenureLevel(member) * 0.08;
+  if (member?.autopilot) m *= 1.35;
+  return m;
+}
+
+/** Position authority scales with tenure/tier, hard-capped at 12% equity. */
+export function staffAuthorityPct(member, role) {
+  const base = role?.maxPositionPct;
+  if (base == null) return null;
+  const lvl = staffTenureLevel(member);
+  const tierBoost = member?.tier === 'expert' ? 0.25 : member?.tier === 'veteran' ? 0.12 : 0;
+  const mult = 1 + Math.min(0.45, lvl * 0.06 + tierBoost);
+  return Math.min(0.12, base * mult);
+}
+
+export function staffHardCapShares(member, baseCap) {
+  return Math.max(1, Math.floor((Number(baseCap) || 1) + staffTenureLevel(member) * 2));
+}
+
+export function staffConvictionFloor(member) {
+  let floor = 70 - Math.min(12, staffTenureLevel(member) * 2);
+  if (member?.autopilot) floor -= 3;
+  return Math.max(55, floor);
+}
+
+export function staffAiConfidenceFloor(member) {
+  let floor = STAFF_AI_MIN_CONFIDENCE - Math.min(10, staffTenureLevel(member) * 2);
+  if (member?.autopilot) floor -= 3;
+  return Math.max(55, floor);
+}
+
+export function staffTenurePayMult(member) {
+  const fromDays = staffTenureDays(member) * 0.0015;
+  const fromLevel = staffTenureLevel(member) * 0.02;
+  return 1 + Math.min(STAFF_TENURE_PAY_CAP, fromDays + fromLevel);
+}
+
+/**
+ * Day-end tenure tick — XP, days employed, optional Newbie→Veteran auto-promote.
+ * Expert still requires paid Train so Train stays meaningful.
+ */
+export function tickStaffTenureDay(state) {
+  const promotions = [];
+  for (const m of state.staff || []) {
+    if (!m.active) continue;
+    m.tenureDays = staffTenureDays(m) + 1;
+    const actionXp = Math.min(24, (m.actionsToday || 0) * STAFF_XP_PER_ACTION);
+    m.xp = staffXp(m) + STAFF_XP_PER_DAY + actionXp;
+    if (
+      m.tier === 'newbie'
+      && staffXp(m) >= STAFF_AUTO_VETERAN_XP
+      && (m.mistakes || 0) <= Math.max(3, staffTenureDays(m) * 0.35)
+    ) {
+      m.tier = 'veteran';
+      state.stats = state.stats || {};
+      state.stats.trainedVeteran = (state.stats.trainedVeteran || 0) + 1;
+      promotions.push(m.name);
+      state.staffLog?.unshift({
+        time: Date.now(),
+        staff: m.name,
+        action: `Promoted to Veteran (tenure ${staffTenureDays(m)}d · ${staffXp(m)} XP)`,
+      });
+    }
+  }
+  return promotions;
+}
+
 /** Lanes that count toward buy / sell coverage on the Overview desk. */
 export const STAFF_BUY_LANES = new Set(['buy', 'short']);
 export const STAFF_SELL_LANES = new Set(['sell']);
@@ -258,6 +369,37 @@ export const STAFF_ROLES = {
   },
 };
 
+export function canEnableAutopilot(member) {
+  if (!member) return { ok: false, msg: 'Not found' };
+  const role = STAFF_ROLES[member.roleId];
+  if (!role) return { ok: false, msg: 'Unknown role' };
+  const trading = STAFF_BUY_LANES.has(role.lane) || STAFF_SELL_LANES.has(role.lane);
+  if (!trading) return { ok: false, msg: 'Autopilot is for trading seats' };
+  if (member.tier !== 'veteran' && member.tier !== 'expert') {
+    return { ok: false, msg: 'Need Veteran+ for autopilot' };
+  }
+  if (staffXp(member) < STAFF_AUTOPILOT_MIN_XP) {
+    return { ok: false, msg: `Need ${STAFF_AUTOPILOT_MIN_XP} XP (have ${staffXp(member)})` };
+  }
+  return { ok: true };
+}
+
+export function setStaffAutopilot(staffId, enabled, state) {
+  const m = state.staff?.find((s) => s.id === staffId);
+  if (!m) return { ok: false, msg: 'Not found' };
+  if (enabled) {
+    const check = canEnableAutopilot(m);
+    if (!check.ok) return check;
+  }
+  m.autopilot = !!enabled;
+  state.staffLog?.unshift({
+    time: Date.now(),
+    staff: m.name,
+    action: m.autopilot ? 'Autopilot ON — self-managing within lane rules' : 'Autopilot OFF — desk supervision',
+  });
+  return { ok: true, member: m };
+}
+
 const PERK_LABELS = {
   scanner: 'Pro Scanner',
   insider: 'Insider Network',
@@ -309,6 +451,9 @@ export function createStaffMember(roleId) {
     status: 'Ready',
     progress: 0,
     history: [],
+    xp: 0,
+    tenureDays: 0,
+    autopilot: false,
   };
 }
 
@@ -328,7 +473,8 @@ export function getDailySalary(staff) {
   return staff.filter(s => s.active).reduce((sum, s) => {
     const role = STAFF_ROLES[s.roleId];
     const tierMult = s.tier === 'expert' ? 1.25 : s.tier === 'veteran' ? 1.1 : 1;
-    return sum + Math.round((role?.salary || 0) * tierMult);
+    const tenureMult = staffTenurePayMult(s);
+    return sum + Math.round((role?.salary || 0) * tierMult * tenureMult);
   }, 0);
 }
 
@@ -489,7 +635,7 @@ export function trainStaff(staffId, state) {
 
 function maybeMistake(member, state, actions, mistakeScale = 1) {
   const tier = getTier(member);
-  const rate = Math.max(0.01, tier.mistakeRate * mistakeScale);
+  const rate = Math.max(0.01, tier.mistakeRate * mistakeScale * staffTenureMistakeScale(member));
   if (Math.random() > rate) return false;
   const loss = 5 + Math.floor(Math.random() * 25);
   if (state.portfolio.cash < loss) return false;
@@ -551,11 +697,22 @@ export function tickStaff(state) {
     const role = STAFF_ROLES[member.roleId];
     if (!role) continue;
     const tier = getTier(member);
-    const eff = tier.efficiency * partnerBoost * staffEfficiencyMultiplier(member) * floorBoost;
+    const eff = tier.efficiency
+      * partnerBoost
+      * staffEfficiencyMultiplier(member)
+      * floorBoost
+      * staffTenureEfficiencyBoost(member);
+    const actMult = staffActionChanceMult(member);
+    const authPct = staffAuthorityPct(member, role);
 
-    member.progress = Math.min(100, (member.progress || 0) + 8 + Math.random() * 12 * eff);
+    member.progress = Math.min(
+      100,
+      (member.progress || 0) + (8 + Math.random() * 12 * eff) * staffProgressGainMult(member),
+    );
     if (member.progress < 100) {
-      member.status = member.status?.startsWith('Mistake') ? member.status : 'Working…';
+      member.status = member.status?.startsWith('Mistake')
+        ? member.status
+        : (member.autopilot ? 'Autopilot…' : 'Working…');
       continue;
     }
     member.progress = 0;
@@ -568,15 +725,16 @@ export function tickStaff(state) {
 
     switch (member.roleId) {
       case 'scout':
-        if (Math.random() < 0.55 * eff * researchBoost) {
+        if (Math.random() < 0.55 * eff * researchBoost * actMult) {
+          const convFloor = staffConvictionFloor(member);
           const deal = state.listings?.find((l) => {
             if (!l?.isDeal || pf.longs[l.sym]) return false;
-            return listingConviction(l) >= 70;
+            return listingConviction(l) >= convFloor;
           });
           if (deal) {
             const shares = staffMaxBuyShares(pf, deal.sym, deal.price, {
-              maxPct: role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
-              hardCapShares: 12,
+              maxPct: authPct ?? role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
+              hardCapShares: staffHardCapShares(member, 12),
             });
             if (shares >= 1) {
               const conv = listingConviction(deal);
@@ -631,7 +789,7 @@ export function tickStaff(state) {
       }
 
       case 'research':
-        if (Math.random() < 0.5 * eff) {
+        if (Math.random() < 0.5 * eff * actMult) {
           const near = state.listings?.find(l =>
             !l.isDeal && !l.isMarket && l.trueValue > 0
             && (l.trueValue - l.price) / l.trueValue > 0.03
@@ -663,18 +821,19 @@ export function tickStaff(state) {
       case 'trader': {
         const pick = state.aiTopPick;
         const conf = Number(pick?.confidence) || 0;
+        const confFloor = staffAiConfidenceFloor(member);
         if (
           hasAi
-          && Math.random() < 0.4 * eff * researchBoost
+          && Math.random() < 0.4 * eff * researchBoost * actMult
           && pick?.signal === 'BUY'
-          && conf >= STAFF_AI_MIN_CONFIDENCE
+          && conf >= confFloor
         ) {
           const sym = pick.sym;
           const q = getCachedQuote(sym);
           if (q && !pf.longs[sym]) {
             const shares = staffMaxBuyShares(pf, sym, q.price, {
-              maxPct: role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
-              hardCapShares: 8,
+              maxPct: authPct ?? role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
+              hardCapShares: staffHardCapShares(member, 8),
             });
             if (shares >= 1) {
               const r = buyLong(pf, sym, shares, staffFill(sym, 'buy', shares, q.price, perks));
@@ -690,8 +849,8 @@ export function tickStaff(state) {
               member.status = 'Sized out on AI pick';
             }
           }
-        } else if (hasAi && pick?.signal === 'BUY' && conf < STAFF_AI_MIN_CONFIDENCE) {
-          member.status = `Waiting — AI ${conf}% < ${STAFF_AI_MIN_CONFIDENCE}`;
+        } else if (hasAi && pick?.signal === 'BUY' && conf < confFloor) {
+          member.status = `Waiting — AI ${conf}% < ${confFloor}`;
         } else {
           member.status = hasAi ? 'Watching AI signals' : 'Idle — needs AI Advisor';
         }
@@ -749,7 +908,7 @@ export function tickStaff(state) {
       }
 
       case 'shortSpec':
-        if (hasMargin && Math.random() < 0.45 * eff) {
+        if (hasMargin && Math.random() < 0.45 * eff * actMult) {
           const candidates = ['TSLA', 'NVDA', 'AMD', 'COIN', 'PLTR', 'SOFI'].filter(s => {
             const q = getCachedQuote(s);
             return q && q.changePct > 3 && !pf.shorts[s] && !pf.longs[s];
@@ -758,8 +917,8 @@ export function tickStaff(state) {
             const sym = candidates[Math.floor(Math.random() * candidates.length)];
             const q = getCachedQuote(sym);
             const shares = staffMaxBuyShares(pf, sym, q.price, {
-              maxPct: role.maxPositionPct ?? 0.03,
-              hardCapShares: 5,
+              maxPct: authPct ?? role.maxPositionPct ?? 0.03,
+              hardCapShares: staffHardCapShares(member, 5),
             });
             if (shares >= 1) {
               const r = openShort(pf, sym, shares, staffFill(sym, 'short', shares, q.price, perks), true);
@@ -767,7 +926,7 @@ export function tickStaff(state) {
                 state.stats = state.stats || {};
                 state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
                 member.status = `Shorting ${sym}`;
-                actions.push({ staff: member.name, action: `Shorted ${shares} ${sym} (overbought · 3% size)` });
+                actions.push({ staff: member.name, action: `Shorted ${shares} ${sym} (overbought · sized)` });
                 member.actionsToday++;
               }
             } else member.status = 'Sized out on shorts';
@@ -776,7 +935,7 @@ export function tickStaff(state) {
         break;
 
       case 'quant':
-        if (hasMargin && Math.random() < 0.5 * eff) {
+        if (hasMargin && Math.random() < 0.5 * eff * actMult) {
           let acted = false;
           Object.entries(pf.shorts).forEach(([sym, pos]) => {
             if (acted) return;
@@ -802,8 +961,8 @@ export function tickStaff(state) {
             if (breakout) {
               const q = getCachedQuote(breakout);
               const shares = staffMaxBuyShares(pf, breakout, q.price, {
-                maxPct: role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
-                hardCapShares: 4,
+                maxPct: authPct ?? role.maxPositionPct ?? STAFF_DEFAULT_MAX_POSITION_PCT,
+                hardCapShares: staffHardCapShares(member, 4),
               });
               if (shares >= 1) {
                 const r = buyLong(pf, breakout, shares, staffFill(breakout, 'buy', shares, q.price, perks));
@@ -821,7 +980,7 @@ export function tickStaff(state) {
         break;
 
       case 'intern':
-        if (Math.random() < 0.35 * eff) {
+        if (Math.random() < 0.35 * eff * actMult) {
           member.status = 'Refreshing desk';
           actions.push({ staff: member.name, action: 'Refreshed market listings' });
           member.actionsToday++;
@@ -829,7 +988,7 @@ export function tickStaff(state) {
         break;
 
       case 'partner':
-        if (Math.random() < 0.25 * eff) {
+        if (Math.random() < 0.25 * eff * actMult) {
           const bonus = 15 + Math.floor(Math.random() * 40);
           state.portfolio.cash += bonus;
           member.profitGenerated = (member.profitGenerated || 0) + bonus;
