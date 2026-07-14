@@ -110,6 +110,15 @@ import { initGlossaryTooltips } from './glossary-tooltips.js';
 import { archiveRun } from './leaderboard.js';
 import { toast, clearToasts, showAlert, showConfirm, bindDialogUI, deferDaySummary, isCoachQuiet, clearDeferredNotifications } from './notify.js';
 import { bindSaveIO } from './save-io.js';
+import {
+  DESK_WIPE_FLAG_KEY,
+  markDeskWipe,
+  clearDeskWipeFlags,
+  consumeDeskWipeOnBoot,
+  shouldBlockSaveAfterForeignWipe,
+  wipeRunSaveKeys,
+  isDeskWipePending,
+} from './save-wipe.js';
 import { sanitizeRunData } from './save-sanitize.js';
 import { bindOverlayStack, registerOverlayClosers } from './overlays.js';
 import { bindHotkeys } from './hotkeys.js';
@@ -405,6 +414,8 @@ let shutdownToken = '';
 
 function writeSaveToDisk() {
   if (window.__stockwayDisableSave) return false;
+  // Another tab archived & reset — never push this tab's stale run back.
+  if (shouldBlockSaveAfterForeignWipe()) return false;
   try {
     const data = buildSaveData();
     const payload = JSON.stringify(data);
@@ -423,6 +434,10 @@ function writeSaveToDisk() {
     } catch (_) { /* slots are best-effort */ }
 
     saveDirty = false;
+    // Fresh boot after reset: first successful write clears the wipe sentinel.
+    try {
+      if (isDeskWipePending()) clearDeskWipeFlags();
+    } catch (_) { /* ignore */ }
     return true;
   } catch (e) {
     console.warn('Save failed', e);
@@ -442,24 +457,22 @@ function clearAllSaveData({ archive = true, keepQuoteBaseline = false } = {}) {
       });
     } catch (_) { /* best-effort */ }
   }
+  // Flag first so boot + other tabs honor the wipe even if reload is slow.
+  try { markDeskWipe(); } catch (_) { /* ignore */ }
   window.__stockwayDisableSave = true;
   saveDirty = false;
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const key = CONFIG.SAVE_KEY;
-  const wipeKeys = [
-    key,
-    `${key}__tmp`,
-    `${key}_slot`,
-    'stockway_onboarded_v1',
-    'stockway_alert_history_v1',
-  ];
-  if (!keepQuoteBaseline) wipeKeys.push(CONFIG.QUOTE_BASELINE_KEY);
-  wipeKeys.forEach((k) => {
-    try { localStorage.removeItem(k); } catch (_) {}
-  });
+  if (autosaveInterval) {
+    clearInterval(autosaveInterval);
+    autosaveInterval = null;
+  }
+  try { stopMarketClock(); } catch (_) { /* ignore */ }
+  const extra = ['stockway_onboarded_v1', 'stockway_alert_history_v1'];
+  if (!keepQuoteBaseline) extra.push(CONFIG.QUOTE_BASELINE_KEY);
+  wipeRunSaveKeys({ also: extra });
   // Profile name/photo persist; vault equip slots must not survive a wiped inventory.
   try { clearProfileCosmetics(); } catch (_) { /* ignore */ }
   // Reset in-memory market + Fed before reload (Day 1, Pre-Market, Fed 4.50%)
@@ -681,13 +694,33 @@ function bindSaveLifecycle() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushSave();
   });
+  // Another tab hit Archive & reset — drop stale in-memory run; don't rewrite it.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== DESK_WIPE_FLAG_KEY || !e.newValue) return;
+    window.__stockwayDisableSave = true;
+    saveDirty = false;
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (autosaveInterval) {
+      clearInterval(autosaveInterval);
+      autosaveInterval = null;
+    }
+    try { stopMarketClock(); } catch (_) { /* ignore */ }
+    try { location.reload(); } catch (_) { /* ignore */ }
+  });
 }
 
 function loadGame() {
   try {
+    // Intentional reset: re-wipe run keys and skip slot recovery so an old
+    // checkpoint cannot undo Archive & reset across a slow reload.
+    if (consumeDeskWipeOnBoot()) return false;
+
     let raw = localStorage.getItem(CONFIG.SAVE_KEY);
     if (!raw) {
-      // Recover from rotating slot if main key missing
+      // Recover from rotating slot if main key missing (crash / partial write only)
       try {
         const slots = JSON.parse(localStorage.getItem(`${CONFIG.SAVE_KEY}_slot`) || '[]');
         if (slots[0]?.data) raw = JSON.stringify(slots[0].data);

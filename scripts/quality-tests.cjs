@@ -3012,6 +3012,70 @@ async function main() {
     assert.equal(store[baselineKey], '{"AAPL":{"price":123.45}}', 'quote baselines preserved');
   });
 
+  {
+    const wipeMod = await import(pathToFileURL(path.join(__dirname, '../js/save-wipe.js')).href);
+    const {
+      DESK_WIPE_FLAG_KEY,
+      DESK_WIPE_SESSION_KEY,
+      markDeskWipe,
+      isDeskWipePending,
+      shouldBlockSaveAfterForeignWipe,
+      consumeDeskWipeOnBoot,
+      clearDeskWipeFlags,
+      wipeRunSaveKeys,
+    } = wipeMod;
+
+    function memStorage(seed = {}) {
+      const d = { ...seed };
+      return {
+        _d: d,
+        getItem(k) { return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : null; },
+        setItem(k, v) { d[k] = String(v); },
+        removeItem(k) { delete d[k]; },
+      };
+    }
+
+    test('desk wipe flag blocks foreign-tab saves and consumes slot revival on boot', () => {
+      const storage = memStorage({
+        stockway_save_v1: '{"v":2,"portfolio":{"cash":999999}}',
+        stockway_save_v1_slot: JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]),
+        stockway_save_v1__tmp: '{"v":2}',
+        stockway_alert_history_v1: '[]',
+      });
+      const session = memStorage();
+      const otherSession = memStorage();
+
+      markDeskWipe(storage, session);
+      assert.equal(isDeskWipePending(storage, session), true);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), true, 'other tab must not rewrite wiped desk');
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, session), false, 'wiping tab may write fresh Day 1');
+
+      wipeRunSaveKeys({
+        storage,
+        also: ['stockway_alert_history_v1'],
+      });
+      // Simulate late slot rewrite (race / other tab before it notices wipe)
+      storage.setItem('stockway_save_v1_slot', JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]));
+      storage.setItem('stockway_save_v1', '{"v":2,"portfolio":{"cash":999999}}');
+
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), true, 'boot must honor wipe');
+      assert.equal(storage.getItem('stockway_save_v1'), null, 'primary cleared on boot');
+      assert.equal(storage.getItem('stockway_save_v1_slot'), null, 'slot cleared — no revival');
+      assert.equal(storage.getItem('stockway_save_v1__tmp'), null);
+      assert.equal(isDeskWipePending(storage, session), true, 'flag stays until fresh save');
+
+      // Fresh Day-1 write then clear sentinel
+      storage.setItem('stockway_save_v1', JSON.stringify({ v: 2, portfolio: { cash: 500 } }));
+      clearDeskWipeFlags(storage, session);
+      assert.equal(isDeskWipePending(storage, session), false);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), false);
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), false);
+      assert.ok(storage.getItem('stockway_save_v1'), 'fresh save kept after sentinel clear');
+      assert.equal(storage.getItem(DESK_WIPE_FLAG_KEY), null);
+      assert.equal(session.getItem(DESK_WIPE_SESSION_KEY), null);
+    });
+  }
+
   test('needsOnboarding / markOnboarded still gate first boot only', () => {
     const key = 'stockway_onboarded_v1';
     const mem = globalThis.localStorage || {
