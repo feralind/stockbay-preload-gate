@@ -25,7 +25,15 @@ const { pathToFileURL } = require('node:url');
 
 const STARTING_CASH = 500;
 const DAYS = Number(process.env.BALANCE_DAYS || 500);
-const STYLES = ['careful', 'aggressive', 'afk'];
+/**
+ * Styles: careful / aggressive / afk are the standing trio.
+ * 'optimal' = best-case careful — identical trading edge and discipline
+ * (same P&L mean/vol, 0 late pays), but perfect desk decisions: credit built
+ * from day 2, Series 7 as soon as qualified (margin boost early), no payroll
+ * drag, cash left to compound. Opt in via BALANCE_STYLES=optimal,careful.
+ */
+const STYLES = (process.env.BALANCE_STYLES || 'careful,aggressive,afk')
+  .split(',').map((s) => s.trim()).filter(Boolean);
 const CHECKPOINT_DAYS = [1, 10, 30, 60, 100, 200, 300, 400, 500, 750, 1000];
 
 const localStorageStore = new Map();
@@ -238,6 +246,13 @@ function hireIfOpen(mods, state, roleId, reserve = 0) {
 }
 
 function progressDesk(mods, state, style, day, track) {
+  if (style === 'optimal') {
+    // Lean desk: only perks that pay for themselves in-model (margin boost).
+    // No staff — payroll is the silent killer of careful's mid-game.
+    buyPerk(mods, state, 'scanner', 200, track);
+    buyPerk(mods, state, 'margin', 600, track);
+    return;
+  }
   const reserve = style === 'careful' ? 1400 : style === 'aggressive' ? 250 : 350;
   const hireReserve = style === 'careful' ? 1800 : style === 'aggressive' ? 150 : 600;
   const trainReserve = style === 'careful' ? 2200 : style === 'aggressive' ? 250 : 900;
@@ -276,8 +291,10 @@ function syntheticTradingPnl(style, day, state, rand) {
   const staffCount = (state.staff || []).length;
   const autoCount = (state.staff || []).filter((member) => member.autopilot).length;
   const scale = 0.55 + Math.min(1.35, day / 430);
-  // Credit-scaled Available Buying Power: dampen size when personal file weakens.
-  // Mirrors desk-rules marginBuyingPowerMultiplier (Good 2× / Fair 1.5× / Poor 1×).
+  // Credit-scaled Available Buying Power: dampen synthetic size when personal
+  // credit falls below Good (670). Fair (580–669) → 1.5×; Poor (<580) → 1.0×.
+  // Mirrors desk-rules marginBuyingPowerMultiplier — prevents headless bankruptcy
+  // when aggressive paths trash the file while Margin is still unlocked.
   const personalCredit = Number(state.finance?.personalCredit);
   let bpMult = 1;
   if (hasMargin) {
@@ -293,7 +310,8 @@ function syntheticTradingPnl(style, day, state, rand) {
 
   let mean = 0;
   let volatility = 0;
-  if (style === 'careful') {
+  if (style === 'careful' || style === 'optimal') {
+    // 'optimal' uses the exact careful edge — only desk decisions differ.
     mean = (92 + day * 0.88) * scale * marginBoost * staffBoost * cashDampen * bpScale;
     volatility = 34 + day * 0.18;
   } else if (style === 'aggressive') {
@@ -308,7 +326,7 @@ function syntheticTradingPnl(style, day, state, rand) {
   let pnl = mean + normal(rand) * volatility;
   if (style === 'aggressive' && rand() < 0.055) pnl -= 525 + day * 2.35;
   if (style === 'afk' && rand() < 0.04) pnl -= 140 + day * 0.8;
-  if (style === 'careful' && rand() < 0.012) pnl -= 140 + day * 0.45;
+  if ((style === 'careful' || style === 'optimal') && rand() < 0.012) pnl -= 140 + day * 0.45;
 
   if (pnl < 0 && cash + pnl < 35) pnl = 35 - cash;
   return Math.round(pnl);

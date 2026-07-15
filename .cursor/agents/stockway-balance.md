@@ -21,13 +21,14 @@ Compressed real-life trading desk: teach honest money habits; celebrate process;
 ### Credit-scaled Available Buying Power
 
 - Header/order UI label: **Available Buying Power** (cash stays raw cash). Implemented in `js/portfolio.js` `getBuyingPower` + `js/desk-rules.js` `marginBuyingPowerMultiplier`.
-- With **Margin perk**, long BP multiplier from **personal credit**:
+- With **Margin perk**, long BP multiplier from **personal credit** (hard law):
   - ≥ 670 (Good+ / Exceptional): **2.0×**
   - 580–669 (Fair): **1.5×**
   - &lt; 580 (Poor): **1.0×** (no leverage boost)
 - Without Margin: flat **1.0×** spendable cash at every credit score.
 - Options stay **cash-only** (`getSpendableCash`) — untouched by credit scaling.
 - Wire via existing callers (`renderHeader`, trade UI, engine) with personal credit — **in-place `setText`**, no panel remounts.
+- Harness (`BALANCE_DAYS=1000`): synthetic long size dampens when personal credit falls below Good (670); tracks poor-personal days (&lt;580) and asserts held licenses are never stripped.
 
 ### 30-second revenge cool-down (wall clock)
 
@@ -38,11 +39,11 @@ Compressed real-life trading desk: teach honest money habits; celebrate process;
 - Teach: one-shot `firstRevengeCooloff`; later blowups = silent lock + muted toast at most.
 - Sanitize drops expired `buySuspendUntilMs` on load.
 
-### Progression = licenses (not an abstract meter)
+### Progression = licenses (career milestones)
 
 - Ladder: retail → series7 → research → regd (`js/licenses.js`).
 - Day-1 finance starts Fair/thin-file (personal ~600, business ~630); Series 7 needs personal ≥670; Reg D needs business ≥720.
-- Perk/vault/seat/salon/office/estate gates use `hasLicense` (legacy catalog keys may still say `repRequired` — map via `requiredLicenseForRep` only; never reintroduce earn/spend reputation points).
+- Perk/vault/seat/salon/office/estate gates use `hasLicense` only. Do **not** invent earn/spend reputation meters — licenses measure hard career milestones; credit measures capital trust.
 - Challenges and milestones pay **cash / flair only**.
 - Owned licenses **persist** when credit collapses; re-qualification for higher exams adapts quietly (blocked exams, not stripped ids).
 

@@ -3598,29 +3598,35 @@ async function main() {
     const { getBuyingPower, getAvailableForLong, createPortfolio } = await import(
       pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href
     );
+    const { CONFIG: cfg } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
+    const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
     const { marginBuyingPowerMultiplier } = desk;
-    // Good+ / Exceptional (≥670) → exactly 2.0× with margin
-    assert.equal(marginBuyingPowerMultiplier(670), 2);
-    assert.equal(marginBuyingPowerMultiplier(700), 2);
-    assert.equal(marginBuyingPowerMultiplier(820), 2);
-    // Fair (580–669) → exactly 1.5×
-    assert.equal(marginBuyingPowerMultiplier(580), 1.5);
-    assert.equal(marginBuyingPowerMultiplier(600), 1.5);
-    assert.equal(marginBuyingPowerMultiplier(669), 1.5);
-    // Poor (<580) → exactly 1.0×
-    assert.equal(marginBuyingPowerMultiplier(579), 1);
-    assert.equal(marginBuyingPowerMultiplier(300), 1);
 
-    const cash = 1000;
+    // Day-1 Intern / cash anchors untouched
+    assert.equal(cfg.STARTING_CASH, 500);
+    assert.equal(STAFF_ROLES.intern.hireCost, 550);
+
+    // Multiplier table (Margin unlocked)
+    assert.equal(marginBuyingPowerMultiplier(720), 2.0); // Good/Exceptional
+    assert.equal(marginBuyingPowerMultiplier(850), 2.0);
+    assert.equal(marginBuyingPowerMultiplier(670), 2.0);
+    assert.equal(marginBuyingPowerMultiplier(600), 1.5); // Fair
+    assert.equal(marginBuyingPowerMultiplier(580), 1.5);
+    assert.equal(marginBuyingPowerMultiplier(669), 1.5);
+    assert.equal(marginBuyingPowerMultiplier(500), 1.0); // Poor
+    assert.equal(marginBuyingPowerMultiplier(579), 1.0);
+
+    const cash = 10000;
     const p = createPortfolio(cash);
-    assert.equal(getBuyingPower(p, ['margin'], 820), cash * 2.0);
-    assert.equal(getBuyingPower(p, ['margin'], 670), cash * 2.0);
-    assert.equal(getBuyingPower(p, ['margin'], 600), cash * 1.5);
-    assert.equal(getBuyingPower(p, ['margin'], 500), cash * 1.0);
-    // No margin perk → flat 1.0× spendable cash across all credit scores
-    for (const score of [300, 500, 600, 670, 820]) {
-      assert.equal(getBuyingPower(p, [], score), cash);
-      assert.equal(getAvailableForLong(p, [], score), cash);
+    // With Margin: exact BP dollars (verified matrix)
+    assert.equal(getBuyingPower(p, ['margin'], 720), 20000);
+    assert.equal(getBuyingPower(p, ['margin'], 850), 20000);
+    assert.equal(getBuyingPower(p, ['margin'], 600), 15000);
+    assert.equal(getBuyingPower(p, ['margin'], 500), 10000);
+    // Margin locked → flat 1.0× across all credit levels
+    for (const score of [450, 600, 850]) {
+      assert.equal(getBuyingPower(p, [], score), 10000);
+      assert.equal(getAvailableForLong(p, [], score), 10000);
     }
   });
 
@@ -3630,51 +3636,59 @@ async function main() {
       BUY_SUSPEND_MS, BUY_SUSPEND_LOSS_PCT, BUY_SUSPEND_MIN_LOSS,
       buyLong, sellLong, openShort, coverShort, createPortfolio,
     } = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+    const { CONFIG: cfg, PERKS } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
+    const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
 
-    // Gate boundaries
     assert.equal(BUY_SUSPEND_MS, 30_000);
     assert.equal(BUY_SUSPEND_LOSS_PCT, 0.15);
     assert.equal(BUY_SUSPEND_MIN_LOSS, 40);
-    assert.equal(shouldArmRevengeCooloff(-150, 1000), true); // 15% and ≥$40
-    assert.equal(shouldArmRevengeCooloff(-149, 1000), false); // under 15%
-    assert.equal(shouldArmRevengeCooloff(-39, 100), false); // under $40 floor
-    assert.equal(shouldArmRevengeCooloff(150, 1000), false); // green close
-    assert.equal(shouldArmRevengeCooloff(-20, 500), false); // sub-threshold
 
-    const p = createPortfolio(5000);
+    // Case A: sub-threshold — 0.5% NW or under $40 floor → gate stays open
+    assert.equal(shouldArmRevengeCooloff(-500, 100_000), false);
+    assert.equal(shouldArmRevengeCooloff(-39, 100), false);
+    assert.equal(shouldArmRevengeCooloff(16_000, 100_000), false); // green
+
+    // Case B: blowup — 16% NW and ≥$40 → arm
+    assert.equal(shouldArmRevengeCooloff(-16_000, 100_000), true);
+    assert.equal(shouldArmRevengeCooloff(-150, 1000), true);
+    assert.equal(shouldArmRevengeCooloff(-149, 1000), false); // under 15%
+
+    const p = createPortfolio(50_000);
     const t0 = Date.now();
-    // Blowup path: populate buySuspendUntilMs exactly +30_000ms
-    assert.ok(shouldArmRevengeCooloff(-200, 1000));
     armBuySuspend(p, t0);
-    assert.equal(p.buySuspendUntilMs, t0 + BUY_SUSPEND_MS);
+    assert.equal(p.buySuspendUntilMs, t0 + 30_000);
     assert.ok(isBuySuspended(p, t0 + 1));
 
-    // Buy-side blocked at engine
-    assert.equal(buyLong(p, 'AAPL', 1, 10, {}, []).ok, false);
-    assert.equal(openShort(p, 'AAPL', 1, 10, true).ok, false);
+    // Case C: buy-side rejected at engine
+    const buyDenied = buyLong(p, 'AAPL', 10, 10, {}, []);
+    assert.equal(buyDenied.ok, false);
+    assert.match(buyDenied.msg, /Trading [Dd]esk [Ss]uspended/);
+    const shortDenied = openShort(p, 'TSLA', 5, 10, true);
+    assert.equal(shortDenied.ok, false);
+    assert.match(shortDenied.msg, /Trading [Dd]esk [Ss]uspended/);
 
-    // Risk-mitigating sells/covers proceed
-    p.longs.AAPL = { shares: 5, avgPrice: 10, lots: [{ shares: 5, avgPrice: 10, openedDay: 1 }] };
-    assert.equal(sellLong(p, 'AAPL', 1, 10).ok, true);
-    p.shorts.MSFT = { shares: 2, avgPrice: 20, marginHeld: 20, openedDay: 1 };
-    p.cash += 20;
-    assert.equal(coverShort(p, 'MSFT', 1, 20).ok, true);
+    // Case D: risk liquidations remain open
+    p.longs.AAPL = { shares: 10, avgPrice: 10, lots: [{ shares: 10, avgPrice: 10, openedDay: 1 }] };
+    assert.equal(sellLong(p, 'AAPL', 5, 10).ok, true);
+    p.shorts.TSLA = { shares: 5, avgPrice: 20, marginHeld: 50, openedDay: 1 };
+    p.cash += 50;
+    assert.equal(coverShort(p, 'TSLA', 5, 20).ok, true);
 
-    // Sub-threshold / green leave gate undisturbed
-    const p2 = createPortfolio(5000);
-    assert.equal(shouldArmRevengeCooloff(-20, 500), false);
-    assert.equal(shouldArmRevengeCooloff(80, 500), false);
-    assert.equal(p2.buySuspendUntilMs, undefined);
-    assert.equal(buyLong(p2, 'IBM', 1, 10, {}, []).ok, true);
+    // Undisturbed when criteria not met
+    const openBook = createPortfolio(5000);
+    assert.equal(openBook.buySuspendUntilMs, undefined);
+    assert.equal(buyLong(openBook, 'IBM', 1, 10, {}, []).ok, true);
 
-    // Teach one-shot
+    // firstRevengeCooloff teach — one-shot; subsequent stays quiet
     const teach = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
     assert.ok(teach.TEACH_MOMENTS.firstRevengeCooloff?.text);
     const meta = { teachMomentsShown: {} };
     assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), true);
-    assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), false);
+    assert.equal(meta.teachMomentsShown.firstRevengeCooloff, true);
+    const subsequentQuiet = !teach.markTeachMoment(meta, 'firstRevengeCooloff');
+    assert.equal(subsequentQuiet, true);
 
-    // Sanitize: drop expired, keep future
+    // Sanitize: drop expired; keep future
     const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
     const expired = sanitizeRunData({
       v: 2,
@@ -3700,9 +3714,8 @@ async function main() {
     });
     assert.ok(active.portfolio.buySuspendUntilMs >= futureUntil - 1);
 
-    // Day-1 Intern path untouched (HR retail + Intern hire/salary anchors)
-    const { PERKS } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
-    const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
+    // Day-1 Intern path completely untouched
+    assert.equal(cfg.STARTING_CASH, 500);
     assert.equal(PERKS.hrDept.licenseRequired, 'retail');
     assert.equal(PERKS.hrDept.cost, 400);
     assert.equal(STAFF_ROLES.intern.hireCost, 550);

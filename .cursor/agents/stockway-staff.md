@@ -41,7 +41,7 @@ Staff autopilot opens go through the same portfolio engine as the player:
 
 - **Available Buying Power** — with Margin, long capacity scales by personal credit (Good 2× / Fair 1.5× / Poor 1×). Poor credit quietly shrinks operational size; do not invent a staff bypass.
 - **Revenge cool-down** — `buySuspendUntilMs` blocks new longs/shorts/options at the engine for 30s wall-clock after a blowup close; sells/covers remain allowed. Staff `buyLong`/`openShort` must respect that gate (no special unlock).
-- **Progression = licenses** (`js/licenses.js`) — HR stays retail-tier so day-1 hire path needs no exam. Staff hire/fire/train grant **no** abstract reputation points; never reintroduce earn/spend reputation meters.
+- **Progression = licenses** (`js/licenses.js`) — HR stays retail-tier so day-1 hire path needs no exam. Staff hire/fire/train grant no abstract earn/spend reputation meters; licenses are career milestones, credit is capital trust.
 
 UI for these laws stays **in-place** (disabled buttons / `setText` BP) — never remount Trade or Staff panels to show a countdown.
 
