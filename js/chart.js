@@ -40,15 +40,42 @@ const MAX_VISIBLE_BARS = 120;
 /** Single-session clock ranges â€” time-only axis labels + tight spear defense. */
 const SESSION_RANGES = new Set(['1D', '1', '5', '15', '60']);
 /** Multi-bar ranges that still use intraday Yahoo intervals (need date+time labels). */
-const INTRADAY_RANGES = new Set(['1D', '5D', '1M', '1', '5', '15', '60']);
-const LONG_RANGES = new Set(['6M', 'YTD', '1Y', '5Y', 'MAX', 'D']);
+const INTRADAY_RANGES = new Set(['1D', '1M', '1', '5', '15', '60']);
+const LONG_RANGES = new Set(['1W', '5D', '6M', 'YTD', '1Y', '5Y', 'MAX', 'D']);
 const CHART_STYLE_KEY = 'stockway_chart_style_v1';
+
+/** Locked Y window — live ticks must not re-center the pane every quote. */
+let cachedAxisMin = NaN;
+let cachedAxisMax = NaN;
+/** @type {string | null} */
+let lastCalculatedSymbol = null;
+/** @type {string | null} */
+let lastCalculatedRange = null;
+
+function clearPriceAxisCache() {
+  cachedAxisMin = NaN;
+  cachedAxisMax = NaN;
+  lastCalculatedSymbol = null;
+  lastCalculatedRange = null;
+}
+
+function hasPriceAxisCache() {
+  return Number.isFinite(cachedAxisMin) && Number.isFinite(cachedAxisMax) && cachedAxisMax > cachedAxisMin;
+}
+
+function storePriceAxisCache(min, max, symbol, range) {
+  cachedAxisMin = min;
+  cachedAxisMax = max;
+  lastCalculatedSymbol = symbol != null ? String(symbol).toUpperCase() : null;
+  lastCalculatedRange = range != null ? String(range).toUpperCase() : null;
+}
 
 function rangeBarMinutes(range) {
   const key = String(range || '1D').toUpperCase();
   if (key === '1D' || key === '5') return 5;
-  if (key === '5D' || key === '15') return 15;
+  if (key === '15') return 15;
   if (key === '1M' || key === '60') return 60;
+  if (key === '1W' || key === '5D') return 1440;
   if (key === 'MAX') return 1440 * 21;
   if (key === '5Y' || key === '1Y' || key === '6M' || key === 'YTD' || key === 'D') return 1440;
   return 1440;
@@ -114,11 +141,42 @@ export function clampBarToPeers(bar, peerRange, mid) {
  * Broker-style Y window for the bars in view.
  * - Always keep the last close on-screen (live HUD tape).
  * - 1D: ignore forming-bar spear high/low so one bad wick doesn't own the pane.
- * - Multi-day / long: fit real H/L â€” never re-center with a hard maxSpan that clips ATH.
+ * - Multi-day / long: fit real H/L — never re-center with a hard maxSpan that clips ATH.
+ * - Live ticks: return a locked cache when price is inside the window (axis hysteresis).
+ *
+ * @param {Array<{high?:number,low?:number,close?:number}>} bars
+ * @param {string} [range]
+ * @param {string | null} [symbol]
+ * @param {boolean} [isLiveTick] when true, reuse locked bounds unless price breaks out
  */
-export function computePriceAxisRange(bars, range = '1D') {
+export function computePriceAxisRange(bars, range = '1D', symbol = null, isLiveTick = false) {
   if (!Array.isArray(bars) || !bars.length) return null;
   const key = String(range || '1D').toUpperCase();
+  const symKey = symbol != null && String(symbol) ? String(symbol).toUpperCase() : null;
+  const last = bars[bars.length - 1];
+  const lastClose = Number(last?.close) || 0;
+
+  const cacheHit = hasPriceAxisCache()
+    && lastCalculatedRange === key
+    && lastCalculatedSymbol === symKey;
+
+  // Live hysteresis: freeze the pane while price stays inside the locked window.
+  if (isLiveTick && cacheHit) {
+    if (lastClose > 0 && lastClose >= cachedAxisMin && lastClose <= cachedAxisMax) {
+      return { min: cachedAxisMin, max: cachedAxisMax };
+    }
+    // Breakout — expand only, never re-center.
+    let min = cachedAxisMin;
+    let max = cachedAxisMax;
+    const span = Math.max(0.01, max - min);
+    const pad = span * 0.02;
+    if (lastClose > max) max = lastClose + pad;
+    if (lastClose > 0 && lastClose < min) min = Math.max(0.01, lastClose - pad);
+    storePriceAxisCache(min, max, symKey, key);
+    return { min, max };
+  }
+
+  // Symbol / TF change, refresh, or first paint — recompute from bars.
   const session = isSessionRange(key);
   const longRange = LONG_RANGES.has(key);
 
@@ -145,10 +203,8 @@ export function computePriceAxisRange(bars, range = '1D') {
   }
 
   const sessionMid = (minV + maxV) / 2 || 1;
-  const last = bars[bars.length - 1];
-  const lastClose = Number(last?.close) || 0;
 
-  // Live close is the HUD quote â€” must stay visible or the chart looks "displaced" over time.
+  // Live close is the HUD quote — must stay visible or the chart looks "displaced" over time.
   if (lastClose > 0) {
     minV = Math.min(minV, lastClose);
     maxV = Math.max(maxV, lastClose);
@@ -166,7 +222,6 @@ export function computePriceAxisRange(bars, range = '1D') {
   let span = Math.max(maxV - minV, mid * 0.001);
 
   // Floor the Y window so flat / cents-level days don't over-zoom into cliffs.
-  // Prefer live close as baseline; keep prior session/longRange % floors as a lower bound.
   const baseline = (lastClose > 0 ? lastClose : mid) || 1;
   const minSpan = Math.max(
     baseline * 0.025,
@@ -181,11 +236,13 @@ export function computePriceAxisRange(bars, range = '1D') {
   }
 
   // Session only: tame absurd leftover completed-bar outliers, then re-pin last close.
+  // Never compress below the composite floor ($5 / 2.5% / legacy %).
   if (session) {
-    const maxSpan = mid * 0.12;
+    const maxSpan = Math.max(mid * 0.12, minSpan);
     if (span > maxSpan) {
       minV = mid - maxSpan / 2;
       maxV = mid + maxSpan / 2;
+      span = maxV - minV;
     }
     if (lastClose > 0) {
       minV = Math.min(minV, lastClose);
@@ -195,10 +252,12 @@ export function computePriceAxisRange(bars, range = '1D') {
 
   const padRatio = session ? 0.12 : longRange ? 0.1 : 0.12;
   const pad = Math.max((maxV - minV) * padRatio, mid * 0.003);
-  return {
+  const result = {
     min: Math.max(0.01, minV - pad),
     max: maxV + pad,
   };
+  storePriceAxisCache(result.min, result.max, symKey, key);
+  return result;
 }
 
 function sanitizeLastBarInPlace() {
@@ -217,7 +276,8 @@ function sanitizeLastBarInPlace() {
 }
 
 /**
- * Live forming bar must track the HUD quote. Cap absurd wicks, but never move close off `price`.
+ * Live forming bar must track the HUD quote.
+ * Keep display wicks glued to the open/close body so micro ticks don't thrash the last candle.
  */
 export function applyLiveCandleTick(bar, price, maxRangePct) {
   if (!bar) return null;
@@ -225,28 +285,40 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
   if (!(px > 0)) return null;
   let open = Number(bar.open);
   if (!(open > 0)) open = px;
-  // Keep the bar's session open â€” rewriting open made candles fight the tape.
-  const next = {
+  // Keep the bar's session open — rewriting open made candles fight the tape.
+  const bodyHi = Math.max(open, px);
+  const bodyLo = Math.min(open, px);
+  const mid = (open + px) / 2 || px;
+  // Tiny wick only — ignore historical ratcheted high/low on the forming bar.
+  const bodySpan = bodyHi - bodyLo;
+  const wickPad = Math.min(
+    mid * Math.max(0.00035, Number(maxRangePct) > 0 ? Number(maxRangePct) * 0.08 : 0.0008),
+    Math.max(mid * 0.00035, bodySpan * 0.12, 0.01),
+  );
+  return {
     time: bar.time,
     open,
     close: px,
-    high: Math.max(Number(bar.high) || px, open, px),
-    low: Math.min(Number(bar.low) || px, open, px),
+    high: bodyHi + wickPad,
+    low: Math.max(0.01, bodyLo - wickPad),
   };
-  const mid = (open + px) / 2 || px;
-  const cap = mid * Math.max(0.006, Number(maxRangePct) > 0 ? Number(maxRangePct) : 0.02);
-  // Keep wicks tight to the body so a long sit doesn't grow a monster spear candle.
-  if (next.high - next.low > cap) {
-    const bodyHigh = Math.max(open, px);
-    const bodyLow = Math.min(open, px);
-    const bodySpan = bodyHigh - bodyLow;
-    const room = Math.max(0, cap - bodySpan);
-    next.high = bodyHigh + room * 0.55;
-    next.low = Math.max(0.01, bodyLow - room * 0.45);
-    next.high = Math.max(next.high, open, px);
-    next.low = Math.min(next.low, open, px);
-  }
-  return next;
+}
+
+/** Display OHLC — forming bar wicks stay near the body so live ticks don't flicker. */
+function clampFormingBarForDisplay(bar) {
+  if (!bar) return bar;
+  const open = Number(bar.open);
+  const close = Number(bar.close);
+  if (!(open > 0) || !(close > 0)) return bar;
+  const bodyHi = Math.max(open, close);
+  const bodyLo = Math.min(open, close);
+  const mid = (open + close) / 2 || close;
+  const wickPad = Math.max(mid * 0.00035, (bodyHi - bodyLo) * 0.12, 0.01);
+  return {
+    ...bar,
+    high: bodyHi + wickPad,
+    low: Math.max(0.01, bodyLo - wickPad),
+  };
 }
 
 /** After wick hygiene, force last close back to the live quote (HUD â†” candle lock). */
@@ -256,13 +328,12 @@ function pinLastBarClose(price) {
   const i = lastBars.length - 1;
   const bar = lastBars[i];
   const open = Number(bar.open) > 0 ? Number(bar.open) : px;
-  const high = Math.max(Number(bar.high) || px, open, px);
-  const low = Math.min(Number(bar.low) || px, open, px);
-  lastBars[i] = { ...bar, open, high, low, close: px };
+  const clamped = clampFormingBarForDisplay({ ...bar, open, close: px });
+  lastBars[i] = { ...bar, open, high: clamped.high, low: clamped.low, close: px };
   if (lastCandle) {
     lastCandle.open = open;
-    lastCandle.high = high;
-    lastCandle.low = low;
+    lastCandle.high = clamped.high;
+    lastCandle.low = clamped.low;
     lastCandle.close = px;
   }
 }
@@ -298,6 +369,7 @@ export function maybeRollFormingBar(price) {
 
   const last = lastBars[lastBars.length - 1];
   const lastT = Number(last.time) || 0;
+  // Never append a bar that would walk the clock backward (timeline crush / overlapping labels).
   if (bucketStart <= lastT) return false;
 
   lastBars.push({
@@ -308,7 +380,7 @@ export function maybeRollFormingBar(price) {
     close: px,
     volume: 0,
   });
-  const maxKeep = key === '1D' ? 130 : key === '5D' ? 220 : 200;
+  const maxKeep = key === '1D' ? 130 : key === '1W' || key === '5D' ? 14 : 200;
   if (lastBars.length > maxKeep) lastBars = lastBars.slice(-maxKeep);
   lastBarCount = lastBars.length;
   lastCandle = { ...lastBars[lastBarCount - 1] };
@@ -505,8 +577,8 @@ function formatAxisLabel(ts, range = lastRange) {
   if (isSessionRange(key)) {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   }
-  // 5D / 1M: date + time so day boundaries don't look like the clock jumped backward
-  if (key === '5D' || key === '1M') {
+  // 1M: date + time so day boundaries don't look like the clock jumped backward
+  if (key === '1M') {
     return d.toLocaleString([], {
       month: 'short',
       day: 'numeric',
@@ -518,6 +590,17 @@ function formatAxisLabel(ts, range = lastRange) {
     return d.toLocaleDateString([], { month: 'short', year: '2-digit' });
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Static category-label stride so live bar appends don't crush right-edge timestamps
+ * (Before: 12:35 PM then overlapping 10:55 / 11:25). Targets ~12–15 labels.
+ */
+export function xLabelInterval(barCount) {
+  const n = Math.max(0, Math.floor(Number(barCount) || 0));
+  const want = 14;
+  if (n <= want) return 0;
+  return Math.max(1, Math.floor((n - 1) / (want - 1)));
 }
 
 function formatPrice(v) {
@@ -660,14 +743,19 @@ function readZoomPercents() {
   return { start: lastUserZoom.start, end: lastUserZoom.end };
 }
 
-function axisRangeForPercents(startPct, endPct) {
+function axisRangeForPercents(startPct, endPct, { isLiveTick = false } = {}) {
   const slice = sliceBarsForAxis(lastBars, startPct, endPct);
-  return computePriceAxisRange(slice.length ? slice : lastBars, lastRange);
+  return computePriceAxisRange(
+    slice.length ? slice : lastBars,
+    lastRange,
+    currentSym,
+    isLiveTick,
+  );
 }
 
-function axisRangeForView() {
+function axisRangeForView({ isLiveTick = false } = {}) {
   const { start, end } = readZoomPercents();
-  return axisRangeForPercents(start, end);
+  return axisRangeForPercents(start, end, { isLiveTick });
 }
 
 /** Apply a zoom window and re-fit price (+ volume) to the visible bars in one paint. */
@@ -752,9 +840,14 @@ function buildTooltipHtml(barIndex) {
     </div>`;
 }
 
-/** ECharts candle datum: [open, close, low, high] â€” raw sanitized OHLC, no visual smash. */
+/** ECharts candle datum: [open, close, low, high] — forming bar wicks clamped to body. */
 function toOhlc(bars) {
-  return bars.map((b) => [b.open, b.close, b.low, b.high]);
+  if (!Array.isArray(bars) || !bars.length) return [];
+  const last = bars.length - 1;
+  return bars.map((b, i) => {
+    const bar = i === last ? clampFormingBarForDisplay(b) : b;
+    return [bar.open, bar.close, bar.low, bar.high];
+  });
 }
 
 function buildOption() {
@@ -891,7 +984,11 @@ function buildOption() {
         axisTick: { show: false },
         axisLabel: {
           color: t.muted,
+          // Fixed stride — hideOverlap alone crushed live right-edge labels into cliffs.
+          interval: xLabelInterval(cats.length),
           hideOverlap: true,
+          showMinLabel: true,
+          showMaxLabel: true,
           fontSize: 10,
           margin: 8,
           formatter: labelFmt,
@@ -1227,6 +1324,7 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
   lastRange = String(range || '1D').toUpperCase();
   showMa = !!showMA;
   showSr = !!showSR;
+  clearPriceAxisCache();
   const sanitized = normalizeChartCandles(candles, lastRange);
   if (!sanitized.length) return;
 
@@ -1313,7 +1411,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
         // partial render (a full correct paint runs once the container is shown).
         if (pendingPaint || !hostHasRealSize()) return true;
         try {
-          const axis = axisRangeForView();
+          const axis = axisRangeForView({ isLiveTick: true });
           const isWave = chartStyle === 'wave';
           const z = readZoomPercents();
           const ws = isWave ? wavePaintStyle(lastBars, z.start, z.end) : null;
@@ -1365,7 +1463,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   if (pendingPaint || !hostHasRealSize()) return true;
 
   try {
-    const axis = axisRangeForView();
+    const axis = axisRangeForView({ isLiveTick: true });
     const isWave = chartStyle === 'wave';
     const z = readZoomPercents();
     const ws = isWave ? wavePaintStyle(lastBars, z.start, z.end) : null;
@@ -1398,7 +1496,9 @@ export function resizeChart() {
 export function getCurrentSym() { return currentSym; }
 
 export function setCurrentSym(sym) {
-  currentSym = sym ? String(sym).toUpperCase() : null;
+  const next = sym ? String(sym).toUpperCase() : null;
+  if (next !== currentSym) clearPriceAxisCache();
+  currentSym = next;
 }
 
 export function destroyChart() {
@@ -1422,4 +1522,5 @@ export function destroyChart() {
   lastBars = [];
   lastBarCount = 0;
   lastCandle = null;
+  clearPriceAxisCache();
 }

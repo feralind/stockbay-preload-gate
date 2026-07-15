@@ -10,7 +10,7 @@ import {
   getHeldSymbols, seedQuotesForPositions, onQuoteTransition, ensureLiveQuoteForDisplay,
   isLiveAnchoredQuote, seedQuote, applyLiveAnchor, markCloudProxyConfigured,
   parsePreloadProgress, countLiveAnchoredQuotes, loadPersistedBaselines,
-  startBackgroundQuotePreload,
+  startBackgroundQuotePreload, setSimLedgerClockProviders,
 } from './api.js';
 import {
   startMarket, onMarketTick, pauseMarket, resumeMarket, stopMarketClock, serializeMarket, loadMarket, isMarketOpen,
@@ -1878,6 +1878,8 @@ function continueNextDay() {
 
 async function init() {
   window.__STOCKWAY_INIT = true;
+  // Career charts: ledger uses game clock, not wall clock / Yahoo session times.
+  setSimLedgerClockProviders({ getMarketTime, getDayCount });
   detectAndArmGmMode();
   if (/Electron/i.test(navigator.userAgent)) {
     document.documentElement.classList.add('electron');

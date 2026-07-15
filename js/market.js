@@ -1,6 +1,10 @@
 // @ts-check
 import { CONFIG } from './config.js';
-import { getQuoteCache, isSimulationMode } from './api.js';
+import {
+  getQuoteCache, isSimulationMode,
+  foldAllSimDays, beginSimSessionFromQuotes, clearSimCandleLedger,
+  serializeSimCandleLedger, loadSimCandleLedger, recordSimTick,
+} from './api.js';
 import { getSymbolSector } from './symbols.js';
 import { serializeMacro, loadMacro, stepMacroTowardNeutral, resetMacro } from './macro.js';
 
@@ -352,6 +356,7 @@ function advanceMarket(minutes, { soft = false } = {}) {
     }
     // Evening wraps into next trading day (land in pre-market)
     const summaryDay = dayCount;
+    foldCareerCandleDay(summaryDay);
     marketDate.setDate(marketDate.getDate() + 1);
     const pre = CONFIG.PREMARKET_MINUTES ?? 30;
     marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
@@ -360,6 +365,7 @@ function advanceMarket(minutes, { soft = false } = {}) {
     tapeRegime = getTapeRegime(dayCount);
     resetSessionAnchors();
     rollQuotesForNewDay();
+    beginCareerCandleSession();
     stepMacroTowardNeutral(0.03);
     emit('dayEnd', { day: summaryDay });
     emit('newDay', { day: dayCount });
@@ -396,6 +402,33 @@ export function rollQuotesForNewDay() {
   });
 }
 
+function foldCareerCandleDay(summaryDay) {
+  if (!isSimulationMode()) return;
+  const cache = getQuoteCache();
+  const entries = [];
+  cache.forEach((q, sym) => {
+    if (!(q?.price > 0)) return;
+    entries.push({
+      sym,
+      price: q.price,
+      open: q.open ?? q.sessionOpen ?? q.price,
+      high: q.high ?? q.price,
+      low: q.low ?? q.price,
+    });
+  });
+  foldAllSimDays(entries, { day: summaryDay });
+}
+
+function beginCareerCandleSession() {
+  if (!isSimulationMode()) return;
+  const cache = getQuoteCache();
+  const entries = [];
+  cache.forEach((q, sym) => {
+    if (q?.price > 0) entries.push({ sym, price: q.price });
+  });
+  beginSimSessionFromQuotes(entries);
+}
+
 export function applyPriceShock(sym, pct, { skipCircuit = false, maxPct = MAX_SHOCK_PCT, countDaily = false } = {}) {
   const key = String(sym || '').toUpperCase();
   if (isSymbolHalted(key)) return;
@@ -424,6 +457,9 @@ export function applyPriceShock(sym, pct, { skipCircuit = false, maxPct = MAX_SH
     simulated: true,
   };
   cache.set(key, next);
+  if (isSimulationMode()) {
+    try { recordSimTick(key, next.price); } catch { /* ignore */ }
+  }
   if (!skipCircuit) checkCircuitBreaker(key, next.price);
 }
 
@@ -667,6 +703,7 @@ export function isMarketRunning() {
  */
 export function forceAdvanceGameDay() {
   const summaryDay = dayCount;
+  foldCareerCandleDay(summaryDay);
   marketDate.setDate(marketDate.getDate() + 1);
   const pre = CONFIG.PREMARKET_MINUTES ?? 30;
   marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
@@ -674,6 +711,8 @@ export function forceAdvanceGameDay() {
   dayCount++;
   tapeRegime = getTapeRegime(dayCount);
   resetSessionAnchors();
+  rollQuotesForNewDay();
+  beginCareerCandleSession();
   stepMacroTowardNeutral(0.03);
   emit('dayEnd', { day: summaryDay });
   emit('newDay', { day: dayCount });
@@ -703,6 +742,7 @@ export function resetMarketForNewRun() {
   const pre = CONFIG.PREMARKET_MINUTES ?? 30;
   marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
   marketDate = new Date(marketDate.getTime() - pre * 60000);
+  clearSimCandleLedger();
   return serializeMarket();
 }
 
@@ -737,6 +777,7 @@ export function serializeMarket() {
     macro: serializeMacro(),
     halts: haltList,
     sessionOpen: openList,
+    candleLedger: serializeSimCandleLedger(),
   };
 }
 
@@ -789,4 +830,6 @@ export function loadMarket(data) {
       if (sym && px > 0) sessionOpen.set(sym, px);
     }
   }
+  // Migration: older saves omit candleLedger → empty career chart history
+  loadSimCandleLedger(data?.candleLedger);
 }

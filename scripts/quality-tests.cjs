@@ -559,6 +559,337 @@ async function main() {
     assert.ok(candleBarVolFraction(15, 0.65) < candleBarVolFraction(1440, 0.65));
   });
 
+  {
+    const {
+      startSimulationMode,
+      clearSimCandleLedger,
+      setSimLedgerClockProviders,
+      seedSimLedgerFromCandles,
+      seedSimLaunchpadDaily,
+      seedSimIntradayFromCandles,
+      sliceSimCandlesForRange,
+      recordSimTick,
+      foldAllSimDays,
+      beginSimSessionFromQuotes,
+      serializeSimCandleLedger,
+      loadSimCandleLedger,
+      hasSimLedger,
+      hasLaunchpadDaily,
+      launchpadCoversRange,
+      ensureCareerDailyCatchUp,
+      fetchCandles,
+      _simLedgerSizeForTests,
+    } = {
+      ...api,
+      ...(await import(pathToFileURL(path.join(__dirname, '../js/sim-candle-ledger.js')).href)),
+    };
+
+    test('1D remaps launchpad intraday to game clock (not Yahoo end stamp)', () => {
+      clearSimCandleLedger();
+      let fakeDay = 1;
+      const fakeMs = Date.UTC(2026, 0, 2, 15, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      const launchpad = [];
+      const base = Math.floor(fakeMs / 1000) - 77 * 300;
+      for (let i = 0; i < 78; i++) {
+        const px = 300 + i * 0.05;
+        launchpad.push({
+          time: base + i * 300,
+          open: px, high: px + 0.2, low: px - 0.2, close: px + 0.05, volume: 1000,
+        });
+      }
+      launchpad[launchpad.length - 1].time = Math.floor(Date.UTC(2026, 6, 15, 20, 0, 0) / 1000);
+
+      assert.equal(seedSimIntradayFromCandles('AAPL', launchpad), true);
+      assert.equal(hasLaunchpadDaily('AAPL'), false, '1D seed must not fake long-TF launchpad');
+      const day1 = sliceSimCandlesForRange('AAPL', '1D', 310);
+      assert.ok(day1 && day1.length >= 2);
+      const end1 = day1[day1.length - 1].time;
+      assert.ok(Math.abs(end1 - Math.floor(fakeMs / 1000)) < 600, `1D end stuck on Yahoo time: ${end1}`);
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('1W hybrid: 7 live → 6L+1S → all sim as career grows', () => {
+      clearSimCandleLedger();
+      let fakeDay = 1;
+      let fakeMs = Date.UTC(2026, 0, 2, 16, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      const live7 = [];
+      const t0 = 1_700_000_000;
+      for (let i = 0; i < 7; i++) {
+        const px = 100 + i;
+        live7.push({
+          time: t0 + i * 86400,
+          open: px, high: px + 0.5, low: px - 0.5, close: px + 0.1, volume: 1e6,
+        });
+      }
+      assert.equal(seedSimLaunchpadDaily('AAPL', live7, { range: '1W' }), true);
+      assert.ok(hasLaunchpadDaily('AAPL'));
+      assert.equal(launchpadCoversRange('AAPL', '1W'), true);
+      assert.equal(launchpadCoversRange('AAPL', '5D'), true, '5D aliases 1W coverage');
+      assert.equal(launchpadCoversRange('AAPL', '1M'), false, '1W pad must not cover 1M');
+      assert.equal(launchpadCoversRange('AAPL', '1Y'), false, '1W pad must not cover 1Y');
+      assert.equal(launchpadCoversRange('AAPL', 'MAX'), false, '1W pad must not cover MAX');
+
+      let w = sliceSimCandlesForRange('AAPL', '1W', 106);
+      assert.equal(w.length, 7, 'start: full live week');
+      assert.equal(w[0].open, 100);
+      assert.ok(Math.abs(w[6].close - 106) < 0.05);
+
+      // 1 sim day → 6 live + 1 sim
+      fakeDay = 1;
+      fakeMs += 86400 * 1000;
+      recordSimTick('AAPL', 111);
+      foldAllSimDays([{ sym: 'AAPL', price: 111 }], { day: 1 });
+      fakeDay = 2;
+      beginSimSessionFromQuotes([{ sym: 'AAPL', price: 111 }]);
+      w = sliceSimCandlesForRange('AAPL', '1W', 111);
+      assert.equal(w.length, 7);
+      assert.equal(w[0].open, 100, 'oldest live kept');
+      assert.equal(w[5].open, 105);
+      assert.ok(Math.abs(w[6].close - 111) < 0.05, 'desk pin on sim tail');
+
+      // 7+ sim days → all sim
+      for (let d = 2; d <= 8; d++) {
+        fakeDay = d;
+        fakeMs += 86400 * 1000;
+        recordSimTick('AAPL', 120 + d);
+        foldAllSimDays([{ sym: 'AAPL', price: 120 + d }], { day: d });
+        fakeDay = d + 1;
+        beginSimSessionFromQuotes([{ sym: 'AAPL', price: 120 + d }]);
+      }
+      w = sliceSimCandlesForRange('AAPL', '1W', 128);
+      assert.equal(w.length, 7);
+      assert.ok(w.every((b) => b.open >= 110), 'window fully sim (no leftover live 100–106 opens)');
+      assert.ok(Math.abs(w[6].close - 128) < 0.05);
+
+      const snap = serializeSimCandleLedger();
+      clearSimCandleLedger();
+      loadSimCandleLedger(snap);
+      assert.ok(hasLaunchpadDaily('AAPL'));
+      const wb = sliceSimCandlesForRange('AAPL', '1W', 128);
+      assert.equal(wb.length, 7);
+      assert.ok(_simLedgerSizeForTests('AAPL').launchpad >= 7);
+
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('1M / 1Y / MAX each need their own full live launchpad then slide like 1W', () => {
+      clearSimCandleLedger();
+      let fakeDay = 1;
+      let fakeMs = Date.UTC(2026, 5, 16, 16, 0, 0); // ~Jun 16
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      // Pretend user opened 1W first
+      const live7 = [];
+      for (let i = 0; i < 7; i++) {
+        live7.push({
+          time: 1_700_000_000 + i * 86400,
+          open: 200 + i, high: 201 + i, low: 199 + i, close: 200.5 + i, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', live7, { range: '1W' });
+      assert.equal(launchpadCoversRange('NVDA', '1M'), false);
+
+      // Upgrade to full 1M live window (22 trading days)
+      const live1M = [];
+      const t0 = 1_718_500_000; // ~Jun-ish
+      for (let i = 0; i < 22; i++) {
+        const px = 250 + Math.sin(i / 3) * 8;
+        live1M.push({
+          time: t0 + i * 86400,
+          open: px, high: px + 1, low: px - 1, close: px + 0.2, volume: 2e6,
+        });
+      }
+      assert.equal(seedSimLaunchpadDaily('NVDA', live1M, { force: true, range: '1M' }), true);
+      assert.equal(launchpadCoversRange('NVDA', '1M'), true);
+      assert.equal(launchpadCoversRange('NVDA', '6M'), false, '1M pad must not cover 6M');
+      assert.equal(launchpadCoversRange('NVDA', '1Y'), false, '1M pad must not cover 1Y');
+
+      let m1 = sliceSimCandlesForRange('NVDA', '1M', live1M[21].close);
+      assert.equal(m1.length, 22, '1M shows full live month');
+      assert.equal(m1[0].time, live1M[0].time);
+
+      // Play 5 game days → 17 live + 5 sim
+      for (let d = 1; d <= 5; d++) {
+        fakeDay = d;
+        fakeMs += 86400 * 1000;
+        recordSimTick('NVDA', 300 + d);
+        foldAllSimDays([{ sym: 'NVDA', price: 300 + d }], { day: d });
+        fakeDay = d + 1;
+        beginSimSessionFromQuotes([{ sym: 'NVDA', price: 300 + d }]);
+      }
+      m1 = sliceSimCandlesForRange('NVDA', '1M', 305);
+      assert.equal(m1.length, 22);
+      assert.equal(m1[0].time, live1M[0].time, 'oldest live month bar retained');
+      assert.ok(Math.abs(m1[21].close - 305) < 0.05);
+
+      // Upgrade to 1Y launchpad (252 days)
+      const live1Y = [];
+      for (let i = 0; i < 252; i++) {
+        const px = 180 + Math.sin(i / 20) * 40;
+        live1Y.push({
+          time: t0 + i * 86400,
+          open: px, high: px + 2, low: px - 2, close: px + 0.3, volume: 3e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', live1Y, { force: true, range: '1Y' });
+      assert.equal(launchpadCoversRange('NVDA', '1Y'), true);
+      assert.equal(launchpadCoversRange('NVDA', '1M'), true, '1Y pad also covers shorter 1M');
+      assert.equal(launchpadCoversRange('NVDA', 'MAX'), false);
+
+      let y1 = sliceSimCandlesForRange('NVDA', '1Y', 305);
+      assert.ok(y1.length >= 240, `1Y should be ~full live year, got ${y1.length}`);
+      assert.ok(Math.abs(y1[y1.length - 1].close - 305) < 0.05);
+
+      // 6M pad (126 days)
+      const live6M = live1Y.slice(-126);
+      seedSimLaunchpadDaily('AMD', live6M, { force: true, range: '6M' });
+      assert.equal(launchpadCoversRange('AMD', '6M'), true);
+      assert.equal(launchpadCoversRange('AMD', '1Y'), false);
+      const m6 = sliceSimCandlesForRange('AMD', '6M', live6M[125].close);
+      assert.equal(m6.length, 126, '6M shows full live half-year');
+
+      // MAX: 400 bars tagged as MAX fetch — covers via tier rule
+      const liveMax = [];
+      for (let i = 0; i < 400; i++) {
+        liveMax.push({
+          time: t0 + i * 86400,
+          open: 100 + i * 0.1, high: 101 + i * 0.1, low: 99 + i * 0.1, close: 100.2 + i * 0.1, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', liveMax, { force: true, range: 'MAX' });
+      assert.equal(launchpadCoversRange('NVDA', 'MAX'), true);
+      const mx = sliceSimCandlesForRange('NVDA', 'MAX', 305);
+      assert.ok(mx.length >= 400, `MAX should use long live history, got ${mx.length}`);
+      assert.ok(Math.abs(mx[mx.length - 1].close - 305) < 0.05);
+
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('NVDA and MSFT get same 1W/1M hybrid slide as AAPL (incl. late catch-up)', () => {
+      clearSimCandleLedger();
+      let fakeDay = 10;
+      let fakeMs = Date.UTC(2026, 2, 20, 16, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      // Late open: never folded MSFT, but career day is already 10
+      assert.equal(ensureCareerDailyCatchUp('MSFT', 400), true);
+      assert.ok(_simLedgerSizeForTests('MSFT').daily >= 9, 'catch-up fills prior career days');
+
+      const live7 = [];
+      for (let i = 0; i < 7; i++) {
+        live7.push({
+          time: 1_710_000_000 + i * 86400,
+          open: 390 + i, high: 391 + i, low: 389 + i, close: 390.5 + i, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('MSFT', live7, { range: '1W' });
+      let w = sliceSimCandlesForRange('MSFT', '1W', 400);
+      assert.equal(w.length, 7);
+      // 9 career days ≥ 7 → all sim (live week opens 390..396 gone)
+      assert.ok(w.every((b, i) => Math.abs(b.open - (390 + i)) > 0.5), 'late MSFT 1W drops live week head');
+      assert.ok(Math.abs(w[6].close - 400) < 0.05);
+
+      // NVDA: seed week, fold one day → 6L+1S like AAPL path
+      clearSimCandleLedger();
+      fakeDay = 1;
+      fakeMs = Date.UTC(2026, 2, 10, 16, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      const nvLive = [];
+      for (let i = 0; i < 7; i++) {
+        nvLive.push({
+          time: 1_712_000_000 + i * 86400,
+          open: 200 + i, high: 201 + i, low: 199 + i, close: 200.4 + i, volume: 2e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', nvLive, { range: '1W' });
+      fakeDay = 1;
+      fakeMs += 86400 * 1000;
+      recordSimTick('NVDA', 220);
+      foldAllSimDays([{ sym: 'NVDA', price: 220 }], { day: 1 });
+      fakeDay = 2;
+      w = sliceSimCandlesForRange('NVDA', '1W', 220);
+      assert.equal(w.length, 7);
+      assert.equal(w[0].open, 200);
+      assert.ok(Math.abs(w[6].close - 220) < 0.05);
+
+      const live1M = [];
+      for (let i = 0; i < 22; i++) {
+        live1M.push({
+          time: 1_713_000_000 + i * 86400,
+          open: 210 + i * 0.5, high: 211 + i * 0.5, low: 209 + i * 0.5, close: 210.2 + i * 0.5, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', live1M, { force: true, range: '1M' });
+      // still 1 career day
+      const m = sliceSimCandlesForRange('NVDA', '1M', 220);
+      assert.equal(m.length, 22);
+      assert.ok(Math.abs(m[21].close - 220) < 0.05);
+      assert.equal(m[0].open, live1M[0].open);
+
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('fetchCandles 1D prefers ledger; long TF needs launchpad before hybrid', async () => {
+      clearSimCandleLedger();
+      let fakeDay = 5;
+      const fakeMs = Date.UTC(2026, 2, 10, 14, 30, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+      getQuoteCache().set('MSFT', { price: 400, prevClose: 398, source: 'seed', simulated: true });
+
+      const seedBars = [];
+      for (let i = 0; i < 20; i++) {
+        seedBars.push({
+          time: 1_700_000_000 + i * 300,
+          open: 390 + i * 0.1,
+          high: 391 + i * 0.1,
+          low: 389 + i * 0.1,
+          close: 390.5 + i * 0.1,
+          volume: 500,
+        });
+      }
+      seedSimLedgerFromCandles('MSFT', seedBars, '1D');
+      assert.equal(hasLaunchpadDaily('MSFT'), false);
+      const a = await fetchCandles('MSFT', '1D');
+      const b = await fetchCandles('MSFT', '1D');
+      assert.ok(a.length >= 2 && b.length >= 2);
+      assert.equal(a[a.length - 1].time, b[b.length - 1].time, 'refresh must not swap timeline');
+      assert.ok(Math.abs(a[a.length - 1].close - 400) < 0.05);
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+  }
+
   test('shouldRebaseQuote / candle close wins over bad seed', () => {
     assert.equal(shouldRebaseQuote(889, 73), true);
     assert.equal(shouldRebaseQuote(361, 49), true);
@@ -1276,8 +1607,56 @@ async function main() {
       assert.ok(next);
       assert.equal(next.close, 318.52, 'forming close must equal HUD quote');
       assert.ok(next.high >= 318.52, 'high must include quote');
-      assert.ok(next.low <= 310, 'low keeps session floor');
+      assert.ok(next.low <= 310, 'low stays at body floor');
       assert.equal(next.open, 310, 'session open is preserved');
+      // Forming wicks stay near the body — no ratchet from prior high/low
+      assert.ok(next.high - next.low < 12, `forming wick too wide: ${next.high - next.low}`);
+      assert.ok(next.high < 320, `forming high still ratcheting: ${next.high}`);
+    });
+
+    test('live ticks lock Y-axis until price breaks out (hysteresis)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 24; i++) {
+        const px = 40 + (i % 3) * 0.05;
+        bars.push({
+          time: now - (23 - i) * 300,
+          open: px, high: px + 0.08, low: px - 0.06, close: px + 0.02, volume: 800,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 40.2, high: 40.35, low: 40.15, close: 40.25, volume: 1200,
+      };
+      const locked = computePriceAxisRange(bars, '1D', 'HYST', false);
+      assert.ok(locked);
+      bars[bars.length - 1].close = 40.55;
+      bars[bars.length - 1].high = 40.6;
+      const same = computePriceAxisRange(bars, '1D', 'HYST', true);
+      assert.equal(same.min, locked.min, 'live tick must not slide axis min');
+      assert.equal(same.max, locked.max, 'live tick must not slide axis max');
+      bars[bars.length - 1].close = locked.max + 0.5;
+      const broke = computePriceAxisRange(bars, '1D', 'HYST', true);
+      assert.ok(broke.max > locked.max, 'breakout must expand max only');
+      assert.equal(broke.min, locked.min, 'breakout must keep min locked');
+    });
+
+    test('xLabelInterval keeps a stable stride so live bars do not crush timeline labels', () => {
+      const { xLabelInterval } = chartMod;
+      assert.equal(xLabelInterval(10), 0, 'short series shows all labels');
+      assert.equal(xLabelInterval(14), 0);
+      const step = xLabelInterval(78);
+      assert.ok(step >= 1, `expected stride for dense 1D series, got ${step}`);
+      // ~14 labels across 78 bars: indices 0, step, 2*step... must stay monotonic
+      const shown = [];
+      for (let i = 0; i < 78; i += step) shown.push(i);
+      if (shown[shown.length - 1] !== 77) shown.push(77);
+      for (let i = 1; i < shown.length; i++) {
+        assert.ok(shown[i] > shown[i - 1], 'label indices must be strictly increasing');
+      }
+      assert.ok(shown.length >= 10 && shown.length <= 20, `label count out of band: ${shown.length}`);
+      // Growing the series only increases stride or holds — never collapses to overcrowding
+      assert.ok(xLabelInterval(130) >= xLabelInterval(78));
     });
 
     test('1D axis keeps a drifted live close on-screen (no soft-pin clip)', () => {
@@ -1300,7 +1679,7 @@ async function main() {
       assert.ok(axis.min <= 300, `session lows clipped: ${axis.min}`);
     });
 
-    test('computePriceAxisRange keeps MAX / 5D highs on-screen (no hard maxSpan recenter)', () => {
+    test('computePriceAxisRange keeps MAX / 1W highs on-screen (no hard maxSpan recenter)', () => {
       const { computePriceAxisRange, sliceBarsForAxis } = chartMod;
       const now = Math.floor(Date.now() / 1000);
       const maxBars = [];
@@ -1316,19 +1695,19 @@ async function main() {
       assert.ok(maxAxis.max >= 396, `MAX clipped ATH: max=${maxAxis.max}`);
       assert.ok(maxAxis.min <= 80, `MAX clipped early lows: min=${maxAxis.min}`);
 
-      const fiveDay = [];
-      for (let i = 0; i < 40; i++) {
-        const px = 100 + (i < 20 ? -i * 0.6 : (i - 20) * 0.9); // ~8%+ swing
-        fiveDay.push({
-          time: now - (39 - i) * 900,
-          open: px, high: px + 0.4, low: px - 0.4, close: px + 0.1, volume: 1000,
+      const week = [];
+      for (let i = 0; i < 7; i++) {
+        const px = 100 + (i < 3 ? -i * 1.2 : (i - 3) * 1.5); // multi-day swing
+        week.push({
+          time: now - (6 - i) * 86400,
+          open: px, high: px + 0.8, low: px - 0.8, close: px + 0.1, volume: 1e6,
         });
       }
-      const d5 = computePriceAxisRange(fiveDay, '5D');
-      const hi = Math.max(...fiveDay.map((b) => b.high));
-      const lo = Math.min(...fiveDay.map((b) => b.low));
-      assert.ok(d5.max >= hi, `5D clipped high ${hi} vs axis ${d5.max}`);
-      assert.ok(d5.min <= lo, `5D clipped low ${lo} vs axis ${d5.min}`);
+      const wAxis = computePriceAxisRange(week, '1W');
+      const hi = Math.max(...week.map((b) => b.high));
+      const lo = Math.min(...week.map((b) => b.low));
+      assert.ok(wAxis.max >= hi, `1W clipped high ${hi} vs axis ${wAxis.max}`);
+      assert.ok(wAxis.min <= lo, `1W clipped low ${lo} vs axis ${wAxis.min}`);
 
       const visible = sliceBarsForAxis(maxBars, 75, 100);
       assert.ok(visible.length >= 10);

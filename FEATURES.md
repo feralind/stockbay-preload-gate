@@ -48,7 +48,7 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 
 ### Charts
 - Candlesticks + volume (Lightweight Charts)
-- Timeframes: 1D · 5D · 1M · 6M · YTD · 1Y · 5Y · MAX
+- Timeframes: 1D · 1W · 1M · 6M · YTD · 1Y · 5Y · MAX
 - Zoom in / out / reset (sticky)
 - Fit to view
 - Live last-candle updates

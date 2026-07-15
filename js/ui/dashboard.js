@@ -56,7 +56,7 @@ export { getNextNetWorthMilestone };
 const dashSnap = {};
 
 let dashGotoBound = false;
-/** @type {'1D'|'5D'|'1M'|'YTD'|'6M'|'1Y'|'5Y'|'MAX'} */
+/** @type {'1D'|'1W'|'1M'|'YTD'|'6M'|'1Y'|'5Y'|'MAX'} */
 let equityTf = 'MAX';
 /** @type {Array<{ t?: number, equity: number, day?: number }> } */
 let lastEquityHist = [];
@@ -679,7 +679,8 @@ function filterEquityHist(hist, tf) {
   const maxDay = Math.max(...hist.map((p) => Number(p.day) || 0));
   const dayWindow = {
     '1D': 1,
-    '5D': 5,
+    '1W': 7,
+    '5D': 7,
     '1M': 22,
     YTD: Math.max(1, maxDay),
     '6M': 130,
@@ -694,7 +695,8 @@ function filterEquityHist(hist, tf) {
   const now = hist[hist.length - 1]?.t || Date.now();
   const msWindow = {
     '1D': 1,
-    '5D': 5,
+    '1W': 7,
+    '5D': 7,
     '1M': 30,
     YTD: 365,
     '6M': 180,

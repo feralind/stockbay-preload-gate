@@ -4,6 +4,46 @@ import { ALL_SYMBOLS } from './symbols.js';
 import {
   fetchFromProviders, fetchCandlesFromProviders, getProviderLabel, isLocalServer,
 } from './providers.js';
+import {
+  hasSimLedger,
+  hasUsableSimIntraday,
+  seedSimLedgerFromCandles,
+  seedSimIntradayFromCandles,
+  seedSimLaunchpadDaily,
+  sliceSimCandlesForRange,
+  clearSimCandleLedger,
+  serializeSimCandleLedger,
+  loadSimCandleLedger,
+  setSimLedgerClockProviders,
+  recordSimTick,
+  foldAllSimDays,
+  beginSimSessionFromQuotes,
+  getSimLedgerNowSec,
+  hasLaunchpadDaily,
+  launchpadCoversRange,
+  isSessionRangeKey,
+  ensureCareerDailyCatchUp,
+} from './sim-candle-ledger.js';
+
+export {
+  clearSimCandleLedger,
+  serializeSimCandleLedger,
+  loadSimCandleLedger,
+  setSimLedgerClockProviders,
+  recordSimTick,
+  foldAllSimDays,
+  beginSimSessionFromQuotes,
+  hasSimLedger,
+  hasUsableSimIntraday,
+  seedSimLedgerFromCandles,
+  seedSimIntradayFromCandles,
+  seedSimLaunchpadDaily,
+  sliceSimCandlesForRange,
+  getSimLedgerNowSec,
+  hasLaunchpadDaily,
+  launchpadCoversRange,
+  ensureCareerDailyCatchUp,
+};
 
 const quoteCache = new Map();
 let batchIndex = 0;
@@ -39,7 +79,8 @@ export const SEED_PLAUSIBLE_MIN_RATIO = 0.2;
 
 const CHART_RANGE_FALLBACKS = {
   '1D': { count: 78, minutes: 5 },
-  '5D': { count: 130, minutes: 15 },
+  '1W': { count: 7, minutes: 1440 },
+  '5D': { count: 7, minutes: 1440 }, // legacy alias → 1W
   '1M': { count: 160, minutes: 60 },
   '6M': { count: 126, minutes: 1440 },
   YTD: { count: 260, minutes: 1440 },
@@ -1056,22 +1097,56 @@ export async function refreshQuotes(symbols, { force = false } = {}) {
 }
 
 export async function fetchCandles(sym, range = '1D', count = null) {
-  const fallback = getCandleFallback(range, count);
+  const key = String(sym || '').toUpperCase();
+  let rangeKey = String(range || '1D').toUpperCase();
+  if (rangeKey === '5D') rangeKey = '1W';
+  const fallback = getCandleFallback(rangeKey, count);
+  const deskPx = quoteCache.get(key)?.price;
+  const session = isSessionRangeKey(rangeKey);
+
+  // Sim 1D: prefer real intraday ledger only (≥2 bars). A single morning stub
+  // from beginSimSession must NOT block Yahoo/seed remap — that made only
+  // heavily-watched names (often AAPL) look correct.
+  if (simulationMode) {
+    if (!session && deskPx > 0) ensureCareerDailyCatchUp(key, deskPx);
+    if (session && hasUsableSimIntraday(key)) {
+      const sliced = sliceSimCandlesForRange(key, rangeKey, deskPx > 0 ? deskPx : null);
+      if (sliced?.length) return sliced;
+    }
+    if (!session && launchpadCoversRange(key, rangeKey)) {
+      const sliced = sliceSimCandlesForRange(key, rangeKey, deskPx > 0 ? deskPx : null);
+      if (sliced?.length) return sliced;
+    }
+  }
+
   const allowNet = shouldAttemptNetworkFetch({
     force: false,
     networkOnline,
     navigatorOnline: readNavigatorOnline(),
   });
 
-  // Prefer real candle shapes; during sim rebase last close to the desk price
-  // (never overwrite the quote cache with unrebased live closes).
   if (allowNet) {
-    const live = await fetchCandlesFromProviders(sym, range, fallback.count);
+    const live = await fetchCandlesFromProviders(sym, rangeKey, fallback.count);
     if (live?.length) {
       noteFetchSuccess();
       if (simulationMode) {
-        // Re-read after await — sim may have ticked during the network round-trip
-        const freshPx = quoteCache.get(String(sym || '').toUpperCase())?.price;
+        const freshPx = quoteCache.get(key)?.price;
+        let series = live;
+        if (freshPx > 0) {
+          const rebased = rebaseCandlesToPrice(live, freshPx);
+          if (rebased?.length) series = rebased;
+        }
+        if (session) {
+          seedSimIntradayFromCandles(key, series);
+        } else {
+          if (freshPx > 0) ensureCareerDailyCatchUp(key, freshPx);
+          seedSimLaunchpadDaily(key, series, {
+            force: !launchpadCoversRange(key, rangeKey),
+            range: rangeKey,
+          });
+        }
+        const sliced = sliceSimCandlesForRange(key, rangeKey, freshPx > 0 ? freshPx : null);
+        if (sliced?.length) return sliced;
         if (freshPx > 0) {
           const rebased = rebaseCandlesToPrice(live, freshPx);
           if (rebased?.length) return rebased;
@@ -1086,7 +1161,21 @@ export async function fetchCandles(sym, range = '1D', count = null) {
     }
     noteFetchFailure();
   }
-  return generateStableCandles(sym, fallback.count, fallback.minutes);
+
+  const synth = generateStableCandles(sym, fallback.count, fallback.minutes);
+  if (simulationMode && synth?.length) {
+    if (session) seedSimIntradayFromCandles(key, synth);
+    else {
+      if (deskPx > 0) ensureCareerDailyCatchUp(key, deskPx);
+      seedSimLaunchpadDaily(key, synth, {
+        force: !launchpadCoversRange(key, rangeKey),
+        range: rangeKey,
+      });
+    }
+    const sliced = sliceSimCandlesForRange(key, rangeKey, deskPx > 0 ? deskPx : null);
+    if (sliced?.length) return sliced;
+  }
+  return synth;
 }
 
 function getCandleFallback(range, count) {
@@ -1117,7 +1206,13 @@ export function generateStableCandles(sym, count, resMin = 5) {
   const sigma = candleBarVolFraction(minutes, volScale);
   const maxRangePct = sigma * 3.2; // ~3σ high-low cap per bar
   const step = minutes * 60;
-  const now = Math.floor(Date.now() / 1000);
+  let now = Math.floor(Date.now() / 1000);
+  if (simulationMode) {
+    try {
+      const t = Number(getSimLedgerNowSec());
+      if (Number.isFinite(t) && t > 0) now = Math.floor(t);
+    } catch { /* ignore */ }
+  }
   const seed = [...String(sym).toUpperCase()].reduce((a, c, i) => a + c.charCodeAt(0) * (i + 3), 17);
   const noise = (i) => {
     const x = Math.sin((i + 1) * 12.9898 + seed * 0.017) * 43758.5453;

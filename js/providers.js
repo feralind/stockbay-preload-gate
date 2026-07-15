@@ -19,7 +19,8 @@ export function isLocalServer() {
 
 const YAHOO_CANDLE_RANGES = {
   '1D': { interval: '5m', range: '1d' },
-  '5D': { interval: '15m', range: '5d' },
+  '1W': { interval: '1d', range: '1mo' },
+  '5D': { interval: '1d', range: '1mo' }, // legacy alias → 1W
   '1M': { interval: '60m', range: '1mo' },
   '6M': { interval: '1d', range: '6mo' },
   YTD: { interval: '1d', range: 'ytd' },
@@ -35,7 +36,8 @@ const YAHOO_CANDLE_RANGES = {
 
 const FINNHUB_CANDLE_RANGES = {
   '1D': { resolution: '5', seconds: 86400 },
-  '5D': { resolution: '15', seconds: 5 * 86400 },
+  '1W': { resolution: 'D', seconds: 12 * 86400 },
+  '5D': { resolution: 'D', seconds: 12 * 86400 },
   '1M': { resolution: '60', seconds: 32 * 86400 },
   '6M': { resolution: 'D', seconds: 190 * 86400 },
   YTD: { resolution: 'D', ytd: true },
@@ -86,7 +88,8 @@ export function candlesLookPlausibleForRange(candles, range) {
   /** Minimum acceptable span (seconds) per UI range key. */
   const minSpan = {
     '1D': 30 * 60,
-    '5D': 1.5 * 86400,
+    '1W': 4 * 86400,
+    '5D': 4 * 86400,
     '1M': 10 * 86400,
     '6M': 60 * 86400,
     YTD: 14 * 86400,
