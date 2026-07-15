@@ -90,7 +90,7 @@ export function confirmOrder(state, draft, deps = {}) {
       limitPrice,
       stopLoss: risk.stopLoss,
       takeProfit: risk.takeProfit,
-    }, { perks: state.perks });
+    }, { perks: state.perks, personalCredit: state.finance?.personalCredit });
     if (!placed.ok) {
       return {
         ...alertResult(placed.msg, 'Limit order'),
@@ -178,7 +178,7 @@ export function confirmOrder(state, draft, deps = {}) {
     deps,
   );
   const result = side === 'long'
-    ? buyLong(state.portfolio, listing.sym, orderShares, fillPx, risk, state.perks)
+    ? buyLong(state.portfolio, listing.sym, orderShares, fillPx, risk, state.perks, state.finance?.personalCredit)
     : openShort(state.portfolio, listing.sym, orderShares, fillPx, state.perks.includes('margin'), risk);
   if (!result.ok) {
     return {

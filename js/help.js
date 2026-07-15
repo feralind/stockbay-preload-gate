@@ -105,9 +105,9 @@ Offline note: credit math still runs on the sim clock; only live quote refreshes
 <strong>License ladder</strong>
 <ol>
 <li><strong>Retail Trading Account</strong> — everyone starts here. No exam.</li>
-<li><strong>Series 7</strong> — ~$1,500 exam · ~25 closed trades · personal credit ≥ 620. Unlocks margin, shorts, the trading floor.</li>
+<li><strong>Series 7</strong> — ~$1,500 exam · ~25 closed trades · personal credit ≥ 670 (Good). Unlocks margin, shorts, the trading floor.</li>
 <li><strong>Series 86/87 Research</strong> — ~$8,000 exam · ~15 green days · ~60 days on the desk. Unlocks research, news, AI advisor.</li>
-<li><strong>Reg D Institutional</strong> — ~$35,000 exam · business credit ≥ 700 · net worth floor · no late payments in 30 days. Unlocks hedge fund, prime broker, Legend Desk.</li>
+<li><strong>Reg D Institutional</strong> — ~$35,000 exam · business credit ≥ 720 · net worth floor · no late payments in 30 days. Unlocks hedge fund, prime broker, Legend Desk.</li>
 </ol>
 Licenses are earned by <em>doing the work</em> — closing trades, keeping credit clean, staying patient. There is no grind meter; the requirements read like the real thing.
 <br><br>
@@ -207,7 +207,7 @@ export const GLOSSARY = [
   { cat: 'TRADING', term: 'Stop loss (SL)', def: 'Auto-exit level if price moves against you.', glossId: 'stop-loss' },
   { cat: 'TRADING', term: 'Take profit (TP)', def: 'Auto-exit level when price hits your target.', glossId: 'take-profit' },
   { cat: 'TRADING', term: 'Equity', def: 'Cash + value of all open positions (net of debt on Finance views).', glossId: 'total-equity' },
-  { cat: 'TRADING', term: 'Buying power', def: 'How much you can still deploy (2× with Margin perk). Vault appraisal is not buying power.', glossId: 'buying-power' },
+  { cat: 'TRADING', term: 'Available buying power', def: 'How much you can still deploy into new longs. With Margin: 2× cash when personal credit is Good (670+), 1.5× when Fair, 1× when Poor. Options stay cash-only. Vault appraisal is not buying power.', glossId: 'buying-power' },
   { cat: 'TRADING', term: 'P&L', def: 'Profit and loss — unrealized until you close.', glossId: 'pnl' },
   { cat: 'TRADING', term: 'Position size', def: 'How much capital sits in one idea — decides how hard a miss hits equity.', glossId: 'position-size' },
   { cat: 'TRADING', term: 'Risk / reward', def: 'Downside if wrong vs upside if right; stops and targets make it explicit.', glossId: 'risk-reward' },

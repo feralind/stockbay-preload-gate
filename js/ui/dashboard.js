@@ -398,7 +398,7 @@ function ensureDashStatsShell(stats) {
     <div class="dash-stat-card dash-index-card interactive-card" data-gloss="cash">
       <span class="stat-lbl">Cash</span>
       <span class="stat-num" data-stat="cash"></span>
-      <span class="dash-index-delta muted" data-stat-delta="cash">Buying power</span>
+      <span class="dash-index-delta muted" data-stat-delta="cash">Available buying power</span>
     </div>
     <div class="dash-stat-card dash-index-card interactive-card" data-gloss="net-worth">
       <span class="stat-lbl">Net Worth</span>
@@ -966,8 +966,8 @@ export function renderDashboard(state) {
     const staffN = state.staff?.length || 0;
     const perksN = state.perks?.length || 0;
     const flagship = getFlagshipEquippedVaultItem(profile?.cosmetics, state.vaultOwned);
-    const pCredit = state.finance?.personalCredit ?? 680;
-    const bCredit = state.finance?.businessCredit ?? 700;
+    const pCredit = state.finance?.personalCredit ?? 600;
+    const bCredit = state.finance?.businessCredit ?? 630;
     const firmHtml = `
       <div class="dash-row"><span>Office</span><span>${escapeHtml(office.name)}</span></div>
       <div class="dash-row"><span>Staff</span><span>${staffN}</span></div>

@@ -182,6 +182,7 @@ async function main() {
     DAILY_CREDIT_GAIN_CAP, quoteLoan, BANKS, priceApr, maxBorrowableAmount,
     bankDebt, otherBanksDebt, underwriteMaxAmount, firmStrengthMultiplier,
     firmStrengthBoostPct, PERSONAL_LOAN_TERM_DAYS, COMPANY_LOAN_TERM_DAYS,
+    creditTier,
   } = fin;
 
   test('firm strength multiplier scales with NW and caps', () => {
@@ -197,7 +198,7 @@ async function main() {
     const base = underwriteMaxAmount('chase', 'company', finance);
     const strong = underwriteMaxAmount('chase', 'company', finance, { firmStrength: 100000 });
     assert.ok(strong.max > base.max, `expected strength to raise max (${strong.max} > ${base.max})`);
-    assert.equal(finance.businessCredit, 700);
+    assert.equal(finance.businessCredit, 630);
     assert.ok(strong.strengthPct >= 100);
   });
 
@@ -216,6 +217,8 @@ async function main() {
 
   test('rapid same-day borrow→repay does not raise credit', () => {
     const finance = createFinanceState();
+    // Seed above Day-1 Fair so stacked inquiry hits do not trip Chase's floor mid-loop.
+    finance.personalCredit = 680;
     const startPersonal = finance.personalCredit;
     const portfolio = createPortfolio(500);
     for (let i = 0; i < 5; i++) {
@@ -260,6 +263,7 @@ async function main() {
 
   test('daily credit gain from loans is capped', () => {
     const finance = createFinanceState();
+    finance.personalCredit = 680;
     const portfolio = createPortfolio(50000);
     // Open several aged loans and pay them off same game day
     const ids = [];
@@ -714,9 +718,16 @@ async function main() {
       finance: { personalCredit: 700, businessCredit: 700, latePayments: 0, lastLateDay: null },
       ...over,
     });
-    // Qualified: 30 closed trades + 700 personal credit + fee cash
+    // Qualified: 30 closed trades + Good personal credit + fee cash
     const okSnap = licenseSnapshot(mkState(), { day: 5, netWorth: 5000 });
     assert.equal(canTakeLicenseExam('series7', okSnap).ok, true);
+    // Day-1 thin file must NOT already clear Series 7 / Reg D credit rows
+    const day1 = createFinanceState();
+    assert.ok(day1.personalCredit < LICENSES.series7.reqs.personalCredit,
+      `day-1 personal ${day1.personalCredit} should be below Series 7 gate ${LICENSES.series7.reqs.personalCredit}`);
+    assert.ok(day1.businessCredit < LICENSES.regd.reqs.businessCredit,
+      `day-1 business ${day1.businessCredit} should be below Reg D gate ${LICENSES.regd.reqs.businessCredit}`);
+    assert.equal(creditTier(day1.personalCredit).label, 'Fair');
     // Not enough trades
     const fewTrades = licenseSnapshot(mkState({ stats: { tradesClosed: 3, greenDays: 0 } }), { day: 5, netWorth: 5000 });
     const noTrades = canTakeLicenseExam('series7', fewTrades);
@@ -725,6 +736,9 @@ async function main() {
     // Bad credit blocks the background check
     const badCredit = licenseSnapshot(mkState({ finance: { personalCredit: 500, businessCredit: 700 } }), { day: 5, netWorth: 5000 });
     assert.equal(canTakeLicenseExam('series7', badCredit).code, 'personalCredit');
+    // Fair personal (Day-1-like) still fails Series 7 Good-band gate
+    const fairOnly = licenseSnapshot(mkState({ finance: { personalCredit: 600, businessCredit: 630 } }), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', fairOnly).code, 'personalCredit');
     // Qualified but broke → fee gate
     const broke = licenseSnapshot(mkState({ portfolio: { cash: 100 } }), { day: 5, netWorth: 5000 });
     assert.equal(canTakeLicenseExam('series7', broke).code, 'cash');
@@ -3572,10 +3586,86 @@ async function main() {
   test('margin perk doubles buying power for longs', () => {
     const p = realCreatePortfolio(100);
     assert.equal(getAvailableForLong(p, []), 100);
+    // Missing personal credit → Good band (2×) for backward-compatible callers
     assert.equal(getAvailableForLong(p, ['margin']), 200);
+    assert.equal(getAvailableForLong(p, ['margin'], 700), 200);
+    assert.equal(getAvailableForLong(p, ['margin'], 600), 150);
+    assert.equal(getAvailableForLong(p, ['margin'], 500), 100);
+    assert.equal(getAvailableForLong(p, [], 500), 100);
     const r = realBuyLong(p, 'AAPL', 1, 150, {}, ['margin']);
     assert.equal(r.ok, true);
     assert.ok(p.cash < 100);
+  });
+
+  test('credit-scaled buying power bands and revenge cool-down gate', async () => {
+    const desk = await import(pathToFileURL(path.join(__dirname, '../js/desk-rules.js')).href);
+    const {
+      getBuyingPower, armBuySuspend, isBuySuspended, BUY_SUSPEND_MS,
+      buyLong, sellLong, createPortfolio,
+    } = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+    assert.equal(desk.marginBuyingPowerMultiplier(700), 2);
+    assert.equal(desk.marginBuyingPowerMultiplier(600), 1.5);
+    assert.equal(desk.marginBuyingPowerMultiplier(500), 1);
+    const cash = 1000;
+    const p = createPortfolio(cash);
+    assert.equal(getBuyingPower(p, ['margin'], 700), 2000);
+    assert.equal(getBuyingPower(p, ['margin'], 600), 1500);
+    assert.equal(getBuyingPower(p, ['margin'], 500), 1000);
+    assert.equal(getBuyingPower(p, [], 700), 1000);
+
+    // Arm cool-down — opens blocked, sells allowed
+    const before = Date.now();
+    armBuySuspend(p, before);
+    assert.ok(isBuySuspended(p, before + 1000));
+    assert.ok(p.buySuspendUntilMs >= before + BUY_SUSPEND_MS - 1);
+    assert.equal(buyLong(p, 'AAPL', 1, 10, {}, []).ok, false);
+    p.longs.AAPL = { shares: 5, avgPrice: 10, lots: [{ shares: 5, avgPrice: 10, openedDay: 1 }] };
+    const sold = sellLong(p, 'AAPL', 1, 10);
+    assert.equal(sold.ok, true, sold.msg);
+
+    // Expired suspend clears for opens
+    p.buySuspendUntilMs = before - 1;
+    assert.equal(isBuySuspended(p, before), false);
+    assert.equal(buyLong(p, 'MSFT', 1, 10, {}, []).ok, true);
+
+    // Teach catalog includes firstRevengeCooloff
+    const teach = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
+    assert.ok(teach.TEACH_MOMENTS.firstRevengeCooloff?.text);
+    const meta = { teachMomentsShown: {} };
+    assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), true);
+    assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), false);
+    assert.equal(teach.teachMomentShown(meta, 'firstRevengeCooloff'), true);
+
+    // Sanitize drops expired suspend; keeps future
+    const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
+    const expired = sanitizeRunData({
+      v: 2,
+      portfolio: {
+        cash: 500, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [],
+        buySuspendUntilMs: Date.now() - 5000,
+      },
+      perks: [],
+      licenses: ['retail'],
+      finance: { personalCredit: 600, businessCredit: 630, loans: [] },
+    });
+    assert.equal(expired.portfolio.buySuspendUntilMs, undefined);
+    const futureUntil = Date.now() + 20_000;
+    const active = sanitizeRunData({
+      v: 2,
+      portfolio: {
+        cash: 500, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [],
+        buySuspendUntilMs: futureUntil,
+      },
+      perks: [],
+      licenses: ['retail'],
+      finance: { personalCredit: 600, businessCredit: 630, loans: [] },
+    });
+    assert.ok(active.portfolio.buySuspendUntilMs >= futureUntil - 1);
+
+    // Sub-threshold loss math: $20 on $500 NW is under floor / under 15%
+    const loss = 20;
+    const nw = 500;
+    assert.ok(loss < 40 || loss / nw < 0.15);
   });
 
   test('overlapping limit buys respect shared cash pool', () => {

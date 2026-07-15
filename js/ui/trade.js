@@ -15,6 +15,7 @@ import { showAlert } from '../notify.js';
 import { trapFocus } from '../overlays.js';
 import {
   getBuyingPower, getEquity, generateOptionChain, optionGreeks,
+  isBuySuspended, clearExpiredBuySuspend,
 } from '../portfolio.js';
 import { getSymbolMeta } from '../symbols.js';
 import { getSelectedSym } from './selection.js';
@@ -23,6 +24,41 @@ import { fmt, fmtPnL, quoteForDisplay, setText } from './shared.js';
 let selectedListing = null;
 let pendingOrder = null;
 const lastRenderedPrices = new Map();
+/** One-shot timer to re-enable open controls when cool-down ends (no countdown DOM). */
+let buySuspendClearTimer = null;
+
+const BUY_SUSPEND_TITLE = 'Trading Desk Suspended: 30s cool-down from risk management';
+const BUY_OPEN_CONTROL_IDS = ['btn-buy-long', 'btn-short', 'btn-options', 'btn-quick-short'];
+
+/**
+ * In-place disable of open-side controls while buySuspendUntilMs is active.
+ * No millisecond countdown in the DOM (avoids tick thrash).
+ * @param {object} state
+ */
+export function patchBuySuspendControls(state) {
+  clearExpiredBuySuspend(state?.portfolio);
+  const suspended = isBuySuspended(state?.portfolio);
+  for (const id of BUY_OPEN_CONTROL_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.disabled = suspended;
+    if (suspended) el.title = BUY_SUSPEND_TITLE;
+    else if (el.title === BUY_SUSPEND_TITLE) el.title = '';
+  }
+  if (buySuspendClearTimer) {
+    clearTimeout(buySuspendClearTimer);
+    buySuspendClearTimer = null;
+  }
+  if (suspended) {
+    const until = Number(state.portfolio.buySuspendUntilMs);
+    const remain = Math.max(50, until - Date.now());
+    buySuspendClearTimer = setTimeout(() => {
+      buySuspendClearTimer = null;
+      clearExpiredBuySuspend(state.portfolio);
+      patchBuySuspendControls(state);
+    }, remain);
+  }
+}
 
 /**
  * Chart honesty pill — tape is simulated after boot; "live-seeded" means baselines
@@ -108,6 +144,7 @@ export function renderTradePanel(state) {
   renderPositionSummary(state);
   renderRecentTradesStrip(state);
   updateTradeEstValue(q.price);
+  patchBuySuspendControls(state);
   const sl = document.getElementById('stop-loss');
   const tp = document.getElementById('take-profit');
   const pos = state.portfolio.longs[selectedSym] || state.portfolio.shorts[selectedSym];
@@ -282,11 +319,11 @@ export function orderShareLimits(order, state) {
     return { min: owned > 0 ? 1 : 0, max: Math.max(0, owned) };
   }
   if (order?.action === 'long' && px > 0) {
-    const bp = getBuyingPower(state.portfolio, state.perks);
+    const bp = getBuyingPower(state.portfolio, state.perks, state.finance?.personalCredit);
     return { min, max: Math.max(1, Math.floor(bp / px)) };
   }
   if (order?.action === 'short' && px > 0) {
-    const bp = getBuyingPower(state.portfolio, state.perks);
+    const bp = getBuyingPower(state.portfolio, state.perks, state.finance?.personalCredit);
     const marginPer = px * CONFIG.MARGIN_REQUIREMENT;
     return { min, max: Math.max(1, Math.floor(bp / Math.max(marginPer, 1e-9))) };
   }
@@ -322,7 +359,7 @@ export function renderOrderConfirm(state) {
 
   const cost = pendingOrder.shares * pendingOrder.price;
   const equity = Math.max(1, getEquity(state.portfolio));
-  const buyingPower = getBuyingPower(state.portfolio, state.perks);
+  const buyingPower = getBuyingPower(state.portfolio, state.perks, state.finance?.personalCredit);
   const cashAfter = state.portfolio.cash + cashDeltaForOrder(pendingOrder, cost);
   const riskPerShare = pendingOrder.stopLoss
     ? Math.abs(pendingOrder.price - pendingOrder.stopLoss)
@@ -332,7 +369,7 @@ export function renderOrderConfirm(state) {
   if (grid) {
     grid.innerHTML = `
       <div class="modal-row"><span>Estimated cost / notional</span><span>${fmt(cost)}</span></div>
-      <div class="modal-row"><span>Buying power</span><span>${fmt(buyingPower)} → ${fmt(Math.max(0, buyingPower + cashDeltaForOrder(pendingOrder, cost)))}</span></div>
+      <div class="modal-row"><span>Available Buying Power</span><span>${fmt(buyingPower)} → ${fmt(Math.max(0, buyingPower + cashDeltaForOrder(pendingOrder, cost)))}</span></div>
       <div class="modal-row"><span>Cash impact</span><span class="${cashAfter >= 0 ? '' : 'down'}">${fmt(state.portfolio.cash)} → ${fmt(cashAfter)}</span></div>
       <div class="modal-row"><span>Risk of equity</span><span>${riskPct.toFixed(1)}%</span></div>
       ${pendingOrder.action === 'sell' || pendingOrder.action === 'cover'

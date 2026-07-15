@@ -24,6 +24,7 @@ import {
   getNetEquity, getFirmNetWorth,
   ensurePendingOrders, ensureOrderTickets,
   markPriceCorrectedNotices,
+  armBuySuspend, BUY_SUSPEND_LOSS_PCT, BUY_SUSPEND_MIN_LOSS,
 } from './portfolio.js';
 import {
   confirmOrderFlow,
@@ -71,6 +72,7 @@ import {
 } from './licenses.js';
 import {
   TEACH_MOMENTS, teachIdForLicense, markTeachMoment, pendingLoanTeachMoments,
+  teachMomentShown,
 } from './teach-moments.js';
 import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
 import {
@@ -112,6 +114,7 @@ import {
   getHotListingPool, reseedHotListingRotation, advanceHotListingRotation, getHotRotationOffset,
   pauseHotListingRotation, scheduleHotListingResume, isHotListingRotationPaused,
 } from './ui.js';
+import { patchBuySuspendControls } from './ui/trade.js';
 import { initGlossaryTooltips } from './glossary-tooltips.js';
 import { archiveRun } from './leaderboard.js';
 import { toast, clearToasts, showAlert, showConfirm, bindDialogUI, deferDaySummary, isCoachQuiet, clearDeferredNotifications } from './notify.js';
@@ -901,6 +904,34 @@ function maybeShowFirstLossTeach(pnl) {
   fireTeachMoment('firstLoss', TEACH_MOMENTS.firstLoss.text, 'realized');
 }
 
+/**
+ * Blowup close → wall-clock open-side cool-down.
+ * First time: teach moment. Later: muted toast only.
+ */
+function maybeArmRevengeCooloff(pnl) {
+  if (!(pnl < 0)) return;
+  const loss = Math.abs(Number(pnl) || 0);
+  if (loss < BUY_SUSPEND_MIN_LOSS) return;
+  const debt = state.finance
+    ? getFirmDebt(state.finance, state.estateCreditUsed)
+    : Math.max(0, Number(state.estateCreditUsed) || 0);
+  const nw = getFirmNetWorth(state.portfolio, {
+    debt,
+    vaultBook: getVaultBookValue(state),
+    estateEquity: Math.max(0, Number(state.estateEquity) || 0),
+  });
+  if (!(nw > 0) || loss / nw < BUY_SUSPEND_LOSS_PCT) return;
+
+  armBuySuspend(state.portfolio);
+  const first = !teachMomentShown(state.meta, 'firstRevengeCooloff');
+  if (first) {
+    fireTeachMoment('firstRevengeCooloff', TEACH_MOMENTS.firstRevengeCooloff.text, 'realized');
+  } else {
+    toast('Desk cool-down: new opens locked 30s after a heavy loss', { type: 'warn' });
+  }
+  try { patchBuySuspendControls(state); } catch (_) { /* ignore */ }
+}
+
 /** First position over half of equity in one name — sizing lesson. */
 function maybeShowOversizedTeach() {
   if (state.meta?.teachMomentsShown?.firstOversized) return;
@@ -929,6 +960,7 @@ function applyConfirmOrderResult(result) {
     if (result.action === 'cover') noteProfitableShort(result.pnl || 0);
     recordDayTrade(result.pnl || 0);
     maybeShowFirstLossTeach(result.pnl || 0);
+    maybeArmRevengeCooloff(result.pnl || 0);
     graduationShown = maybeShowGraduationCoach(state, { saveGame });
   } else if (result.kind === 'open') {
     if (result.incrementShortsOpened) state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
@@ -2655,7 +2687,7 @@ async function init() {
     getLongAck: (sym) => !!state.portfolio?.longs?.[String(sym || '').toUpperCase()]?.priceCorrectedAck,
     /** Add shares to an existing long (exercises buyLong ack-clear). */
     buyMoreLong: (sym, shares, price) => {
-      const r = buyLong(state.portfolio, sym, shares, price, {}, state.perks);
+      const r = buyLong(state.portfolio, sym, shares, price, {}, state.perks, state.finance?.personalCredit);
       renderAll(state);
       return r;
     },

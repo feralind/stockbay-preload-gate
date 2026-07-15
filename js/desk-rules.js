@@ -63,3 +63,18 @@ export function getDeskMarginGraceMinutes(state, baseMinutes = MARGIN_CALL_GRACE
   }
   return grace;
 }
+
+/**
+ * Quiet margin buying-power multiplier from personal credit (Series 7 spine).
+ * Good+ keeps classic 2×; Fair haircuts; Poor removes leverage.
+ * @param {number} [personalCredit]
+ * @returns {number}
+ */
+export function marginBuyingPowerMultiplier(personalCredit) {
+  const score = Number(personalCredit);
+  // Missing score → Good band (preserve classic 2× for callers/tests that omit finance).
+  if (!Number.isFinite(score)) return 2;
+  if (score >= 670) return 2;
+  if (score >= 580) return 1.5;
+  return 1;
+}

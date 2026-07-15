@@ -32,7 +32,8 @@ export const LICENSES = {
     blurb: 'The classic broker exam. Margin, shorts, and floor scale.',
     teaches: 'Leverage cuts both ways — the background check needs clean personal credit.',
     unlocks: 'Margin & shorts, Options Desk, Trading Floor, Smart Routing',
-    reqs: { tradesClosed: 25, personalCredit: 620 },
+    // Good-band FICO (670+) — must build from Day-1 Fair start (600).
+    reqs: { tradesClosed: 25, personalCredit: 670 },
   },
   research: {
     id: 'research',
@@ -56,7 +57,8 @@ export const LICENSES = {
     blurb: 'Institutional accreditation. Fund status and prime brokerage.',
     teaches: 'Institutions audit the firm: business credit, real net worth, and a clean payment record.',
     unlocks: 'Hedge Fund Status, Prime Broker, Legend Desk, The Seat',
-    reqs: { businessCredit: 700, netWorth: 150000, cleanDays: 30 },
+    // Strong business file (720+) — Day-1 thin firm (630) must earn it.
+    reqs: { businessCredit: 720, netWorth: 150000, cleanDays: 30 },
   },
 };
 

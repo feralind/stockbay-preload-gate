@@ -23,12 +23,14 @@ const HIDE_GRACE_MS = 220;
 /** Static tip sheets keyed by data-gloss id. */
 export const GLOSS_TIPS = {
   'buying-power': {
-    title: 'Buying Power',
-    blurb: 'Cash you can still put into new trades right now.',
+    title: 'Available Buying Power',
+    blurb: 'Cash you can still put into new long trades right now — scaled quietly by personal credit when Margin is unlocked.',
     rows: [
       { label: 'Without Margin', value: 'Equals spendable cash' },
-      { label: 'With Margin perk', value: 'About 2× cash on longs' },
-      { label: 'Shorts', value: 'Lock margin separately — not free BP' },
+      { label: 'Margin + Good credit (670+)', value: '2× cash on longs' },
+      { label: 'Margin + Fair (580–669)', value: '1.5× cash on longs' },
+      { label: 'Margin + Poor (<580)', value: '1× — no leverage boost' },
+      { label: 'Options / shorts', value: 'Cash or separate margin — not this BP line' },
     ],
     note: 'Vault book value does not add buying power. Thin cushion + shorts can trigger margin stress.',
     arcane: 'Pros size risk from buying power first — cash is oxygen; leverage is borrowed breath.',

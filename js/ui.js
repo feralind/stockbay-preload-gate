@@ -352,7 +352,7 @@ function renderHeader(state) {
   setText('cash', fmt(cash));
   setText('equity', fmt(firm));
   setText('pnl', fmtPnL(getUnrealizedPnL(portfolio)));
-  setText('buying-power', fmt(getBuyingPower(portfolio, perks)));
+  setText('buying-power', fmt(getBuyingPower(portfolio, perks, finance?.personalCredit)));
   const heldLicense = getHighestLicense(state.licenses);
   setText('reputation', heldLicense.short);
   const rankEl = document.getElementById('rep-rank');

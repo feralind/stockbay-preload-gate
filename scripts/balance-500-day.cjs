@@ -174,6 +174,34 @@ function maybeBuyLicense(mods, state, style, day, track) {
   return !!result.ok;
 }
 
+/**
+ * Skillful personal-credit building (careful/aggressive, pre-Series 7):
+ * carry one small personal loan, let it age past an interest tick, then pay it
+ * off on time. Mirrors what the Series 7 "background check" teaches — the
+ * Day-1 Fair file (600) has to be built up to the Good band (670+).
+ */
+function buildPersonalCredit(mods, state, style, day) {
+  if (style === 'afk') return;
+  if (mods.licenses.hasLicense(state.licenses, 'series7')) return;
+  const need = mods.licenses.LICENSES.series7.reqs.personalCredit || 670;
+  if ((state.finance.personalCredit || 0) >= need + 10) return;
+
+  const active = (state.finance.loans || []).filter((l) => l.type === 'personal' && l.balance > 0);
+  if (!active.length) {
+    if (state.portfolio.cash < 450) return;
+    const max = mods.finance.maxBorrowableAmount('capitalone', 'personal', state.finance, 50, day, { firmStrength: 0 });
+    if (max >= 100) {
+      mods.finance.takeLoan('capitalone', 'personal', Math.min(300, max), state.finance, state.portfolio, day);
+    }
+    return;
+  }
+  for (const loan of active) {
+    if ((loan.interestTicks || 0) >= 2 && state.portfolio.cash > loan.balance + 300) {
+      mods.finance.makeLoanPayment(loan.id, loan.balance, state.finance, state.portfolio, day);
+    }
+  }
+}
+
 function trainEligibleStaff(mods, state, reserve = 0) {
   let trained = 0;
   for (const member of [...(state.staff || [])]) {
@@ -416,6 +444,7 @@ async function runScenario(mods, style) {
       state.portfolio.cash += pnl;
       totalPnl += pnl;
 
+      buildPersonalCredit(mods, state, style, day);
       maybeBuyLicense(mods, state, style, day, track);
       progressDesk(mods, state, style, day, track);
       const borrowed = borrowIfNeeded(mods, state, style, day);

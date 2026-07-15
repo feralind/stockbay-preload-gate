@@ -21,6 +21,9 @@ export const TEACH_MOMENTS = {
   firstOversized: {
     text: 'That position is more than half your equity in one name. Pros size so one bad trade cannot end the run — consider smaller entries until the account can absorb a miss.',
   },
+  firstRevengeCooloff: {
+    text: 'Trading desk suspended for 30 seconds — cool-down from risk management. After a blowup loss, pause before revenge sizing. Watch the tape; do not chase the hole.',
+  },
 };
 
 /** One-shot license-earned moments use ids like license_series7. */

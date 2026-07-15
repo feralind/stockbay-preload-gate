@@ -187,6 +187,15 @@ function sanitizePortfolio(portfolio) {
     delete p.marginCall;
   }
 
+  {
+    const until = Number(p.buySuspendUntilMs);
+    if (Number.isFinite(until) && until > Date.now()) {
+      p.buySuspendUntilMs = Math.floor(until);
+    } else {
+      delete p.buySuspendUntilMs;
+    }
+  }
+
   const ta = p.taxAccrual && typeof p.taxAccrual === 'object' ? p.taxAccrual : {};
   p.taxAccrual = {
     shortTermGain: Math.max(0, Number(ta.shortTermGain) || 0),
@@ -408,8 +417,8 @@ export function sanitizeRunData(run) {
 
   if (out.finance && typeof out.finance === 'object') {
     const f = { ...createFinanceState(), ...out.finance };
-    f.personalCredit = clamp(Math.floor(Number(f.personalCredit) || 680), 300, 850);
-    f.businessCredit = clamp(Math.floor(Number(f.businessCredit) || 700), 300, 850);
+    f.personalCredit = clamp(Math.floor(Number(f.personalCredit) || 600), 300, 850);
+    f.businessCredit = clamp(Math.floor(Number(f.businessCredit) || 630), 300, 850);
     const lastLate = Math.floor(Number(f.lastLateDay));
     f.lastLateDay = Number.isFinite(lastLate) && lastLate >= 1 ? lastLate : null;
     if (!Array.isArray(f.loans)) f.loans = [];

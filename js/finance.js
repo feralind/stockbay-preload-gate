@@ -177,8 +177,10 @@ export const APR_CREDIT_TIERS = [
 
 export function createFinanceState() {
   return {
-    personalCredit: 680,
-    businessCredit: 700,
+    // Day-1 thin file: Fair personal / Fair+ new-firm business — license credit
+    // gates sit in Good+ so Series 7 / Reg D never light up green on a fresh desk.
+    personalCredit: 600,
+    businessCredit: 630,
     loans: [],
     paymentHistory: [],
     totalBorrowed: 0,
