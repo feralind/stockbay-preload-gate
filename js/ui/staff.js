@@ -455,7 +455,7 @@ function renderFullRoster(state, coverage) {
         <div class="roster-empty-title">Empty team board</div>
         <p class="roster-empty-copy">${hasHr
           ? 'Hire a buyer (Scout / Trader) and a seller (Exit Specialist / Risk Manager).'
-          : 'Unlock <strong>HR Department</strong> in Perks ($400 · Newcomer), then hire.'}</p>
+          : 'Unlock <strong>HR Department</strong> in Perks ($400 · Retail), then hire.'}</p>
       </div>`);
     return;
   }
@@ -891,7 +891,7 @@ export function renderStaff(state) {
   if (hrStatus) {
     hrStatus.textContent = hasHr
       ? `HR active · ${count}/${maxSlots} seats · $${salary.toLocaleString()}/day payroll`
-      : 'Unlock HR Department in Perks ($400 · Newcomer)';
+      : 'Unlock HR Department in Perks ($400 · Retail)';
   }
 
   const rosterCount = document.getElementById('roster-count');

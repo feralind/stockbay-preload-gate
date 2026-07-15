@@ -4,12 +4,13 @@
  * Defaults to BALANCE_DAYS=500; for ~500 real desk hours use BALANCE_DAYS=1000
  * (CONFIG.REAL_MINUTES_PER_GAME_DAY = 30 → 1000 game days ≈ 500 real hours).
  *
- * Findings from 2026-07-15 BALANCE_DAYS=1000 re-run (post Staff UI + E2):
- * - careful: mid-game NW trough (~D300–400 to ~−$10k), near-flat at D500 (−$983), recovery to ~$766k by D1000;
- *   0 late pays; business credit 850; facility $12.1k → $40.5k; 1 estate.
- * - aggressive: still high NW (~$2.24M) via cash + synthetic P&L, but credit 300 blocks property draws;
- *   989 late pays; facility $0; 2 cash estates.
- * - AFK: ends ~−$1.8k; payroll > synthetic P&L (~114%).
+ * Findings from 2026-07-15 BALANCE_DAYS=1000 re-run (post license framework, REP removed):
+ * - careful: earns all licenses (Series 7 D66, Research D523, Reg D D728); NW trough ~D200–500,
+ *   ends ~$663k; 0 late pays; business credit 850; facility $12.1k → $40.5k; 1 estate.
+ * - aggressive: Series 7 D5, Research D412; credit 300 (1259 late pays) permanently blocks Reg D,
+ *   so hedgeFund/primeBroker/legendDesk stay locked — earned licenses persist. Still ~$2.13M NW
+ *   via synthetic P&L; facility $0.
+ * - AFK: never qualifies for any exam (retail only); ends ~−$1.8k; payroll ~115% of P&L.
  *
  * E2 mechanical (no loud UI): HELOC needs 580+ business credit; Poor credit −5m margin grace;
  * estate closing 2%.
@@ -80,6 +81,7 @@ async function importLiveModules() {
     market,
     config,
     estates,
+    licenses,
   ] = await Promise.all([
     import(url('js/portfolio.js')),
     import(url('js/finance.js')),
@@ -89,8 +91,9 @@ async function importLiveModules() {
     import(url('js/market.js')),
     import(url('js/config.js')),
     import(url('js/estates.js')),
+    import(url('js/licenses.js')),
   ]);
-  return { portfolio, finance, staff, dayEnd, meta, market, config, estates };
+  return { portfolio, finance, staff, dayEnd, meta, market, config, estates, licenses };
 }
 
 function makeState(mods) {
@@ -99,9 +102,10 @@ function makeState(mods) {
     finance: mods.finance.createFinanceState(),
     meta: mods.meta.createMetaState(),
     perks: [],
+    licenses: ['retail'],
     staff: [],
     staffLog: [],
-    stats: {},
+    stats: { tradesClosed: 0, greenDays: 0, greenStreak: 0 },
     vaultOwned: [],
     vaultPledged: [],
     estateOwned: [],
@@ -139,16 +143,35 @@ function buyPerk(mods, state, perkId, reserve, track) {
   if (!perk) return false;
   const missing = (perk.requires || []).filter((id) => !state.perks.includes(id));
   if (missing.length) return false;
-  if ((state.meta.reputation || 0) < (perk.repRequired || 0)) return false;
+  if (!mods.licenses.hasLicense(state.licenses, perk.licenseRequired || 'retail')) return false;
   if (state.portfolio.cash < perk.cost + reserve) return false;
   state.portfolio.cash -= perk.cost;
   state.perks.push(perkId);
-  mods.meta.adjustReputation(state.meta, 15, `perk_${perkId}`);
   if (track) {
     track.perkSpendTotal += perk.cost;
     if (track.perkUnlockDay[perkId] == null) track.perkUnlockDay[perkId] = track.day;
   }
   return true;
+}
+
+/**
+ * Sit the next license exam when qualified. Careful keeps a cash reserve,
+ * aggressive buys the moment the gate opens, AFK only stumbles into it.
+ */
+function maybeBuyLicense(mods, state, style, day, track) {
+  const next = mods.licenses.getNextLicense(state.licenses);
+  if (!next) return false;
+  const reserve = style === 'careful' ? 1200 : style === 'aggressive' ? 100 : 800;
+  const netWorth = firmNetWorth(mods, state);
+  const snap = mods.licenses.licenseSnapshot(state, { day, netWorth });
+  if (!mods.licenses.canTakeLicenseExam(next.id, snap).ok) return false;
+  if (state.portfolio.cash < next.fee + reserve) return false;
+  const result = mods.licenses.purchaseLicense(state, next.id, { day, netWorth });
+  if (result.ok && track && track.licenseDay[next.id] == null) {
+    track.licenseDay[next.id] = day;
+    track.licenseSpendTotal += next.fee;
+  }
+  return !!result.ok;
 }
 
 function trainEligibleStaff(mods, state, reserve = 0) {
@@ -302,6 +325,7 @@ function setSyntheticDayCounters(mods, state, style, pnl, rand) {
       : 3 + Math.floor(rand() * 3);
   state.meta.dayBuys = Math.ceil(trades / 2);
   state.meta.daySells = Math.floor(trades / 2);
+  state.stats.tradesClosed = (state.stats.tradesClosed || 0) + trades;
   mods.meta.recordClosedTrade(state.meta, pnl);
   if (pnl > 0) state.meta.dayBestTrade = Math.max(state.meta.dayBestTrade || 0, Math.round(pnl * 0.55));
   else state.meta.dayWorstTrade = Math.min(state.meta.dayWorstTrade || 0, pnl);
@@ -327,7 +351,7 @@ function snapshot(mods, state, day, startFacility = null, track = null) {
     tiers[member.tier] = (tiers[member.tier] || 0) + 1;
     if (member.autopilot) autopilot += 1;
   }
-  const rank = mods.config.getRepRank(state.meta.reputation || 0);
+  const license = mods.licenses.getHighestLicense(state.licenses);
   return {
     day,
     netWorth: Math.round(netWorth),
@@ -338,8 +362,8 @@ function snapshot(mods, state, day, startFacility = null, track = null) {
     latePays: state.finance.latePayments || 0,
     personalCredit: Math.round(state.finance.personalCredit || 0),
     businessCredit: Math.round(state.finance.businessCredit || 0),
-    rep: Math.round(state.meta.reputation || 0),
-    repRank: rank?.id || 'newcomer',
+    license: license?.id || 'retail',
+    licenses: [...(state.licenses || [])],
     companyMax,
     companyBase,
     startFacility,
@@ -370,7 +394,9 @@ async function runScenario(mods, style) {
     const state = makeState(mods);
     const checkpoints = activeCheckpoints(DAYS);
     const history = [];
-    const track = { day: 1, perkSpendTotal: 0, perkUnlockDay: {} };
+    const track = {
+      day: 1, perkSpendTotal: 0, perkUnlockDay: {}, licenseDay: {}, licenseSpendTotal: 0,
+    };
     let totalPnl = 0;
     let payrollLifetime = 0;
     let greenDays = 0;
@@ -379,10 +405,6 @@ async function runScenario(mods, style) {
     let borrows = 0;
     let estatePurchases = 0;
     let startFacility = null;
-    let dayHitTrusted = null;
-    let dayHitVeteran = null;
-    let dayHitElite = null;
-    let dayHitLegend = null;
 
     for (let day = 1; day <= DAYS; day += 1) {
       const debtBefore = firmDebt(mods, state);
@@ -394,6 +416,7 @@ async function runScenario(mods, style) {
       state.portfolio.cash += pnl;
       totalPnl += pnl;
 
+      maybeBuyLicense(mods, state, style, day, track);
       progressDesk(mods, state, style, day, track);
       const borrowed = borrowIfNeeded(mods, state, style, day);
       if (borrowed?.ok) borrows += 1;
@@ -406,12 +429,6 @@ async function runScenario(mods, style) {
       loanEvents += (settlement.loanEvents || []).length;
       if ((settlement.stats?.equityDelta || 0) >= 100) greenDays += 1;
       if ((settlement.stats?.equityDelta || 0) < -100) redDays += 1;
-
-      const rep = state.meta.reputation || 0;
-      if (dayHitTrusted == null && rep >= 120) dayHitTrusted = day;
-      if (dayHitVeteran == null && rep >= 250) dayHitVeteran = day;
-      if (dayHitElite == null && rep >= 500) dayHitElite = day;
-      if (dayHitLegend == null && rep >= 1800) dayHitLegend = day;
 
       if (day === 1) startFacility = snapshot(mods, state, day, null, track).companyMax;
       if (checkpoints.has(day)) history.push(snapshot(mods, state, day, startFacility, track));
@@ -439,11 +456,12 @@ async function runScenario(mods, style) {
       estatePurchases,
       perkUnlockDay: track.perkUnlockDay,
       perkSpendTotal: Math.round(track.perkSpendTotal),
+      licenseDay: track.licenseDay,
+      licenseSpendTotal: Math.round(track.licenseSpendTotal),
       milestones: {
-        trustedTraderDay: dayHitTrusted,
-        marketVeteranDay: dayHitVeteran,
-        eliteDeskDay: dayHitElite,
-        marketLegendDay: dayHitLegend,
+        series7Day: track.licenseDay.series7 ?? null,
+        researchDay: track.licenseDay.research ?? null,
+        regdDay: track.licenseDay.regd ?? null,
       },
       staffDetail: (state.staff || []).map((member) => ({
         role: member.roleId,
@@ -507,8 +525,8 @@ function printDetails(result) {
   console.log(`Trading P&L ${money(result.totalPnl)}; payroll ${money(result.payrollLifetime)} (${pct(result.payrollLifetime, result.totalPnl)} of P&L)`);
   console.log(`Green/red days ${result.greenDays}/${result.redDays}; borrows ${result.borrows}; loan events ${result.loanEvents}; estate purchases ${result.estatePurchases}`);
   console.log(`Perk spend ${money(result.perkSpendTotal)}; unlocks ${JSON.stringify(result.perkUnlockDay)}`);
-  console.log(`Milestones ${JSON.stringify(result.milestones)}`);
-  console.log(`Credit personal ${result.final.personalCredit} / business ${result.final.businessCredit}; REP ${result.final.rep} (${result.final.repRank})`);
+  console.log(`License days ${JSON.stringify(result.licenseDay)}; license spend ${money(result.licenseSpendTotal)}`);
+  console.log(`Credit personal ${result.final.personalCredit} / business ${result.final.businessCredit}; license ${result.final.license} [${result.final.licenses.join(', ')}]`);
   console.log('Checkpoints:');
   for (const point of result.history) {
     console.log(

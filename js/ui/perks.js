@@ -1,5 +1,12 @@
 // @ts-check
-import { PERKS, REP_RANKS, getRepRank, getNextRepRank, canPurchasePerk } from '../config.js';
+import { PERKS, canPurchasePerk } from '../config.js';
+import {
+  LICENSES, LICENSE_ORDER, hasLicense, getHighestLicense, getNextLicense,
+  licenseSnapshot, getLicenseRequirements, canTakeLicenseExam,
+} from '../licenses.js';
+import { getDayCount } from '../market.js';
+import { getNetEquity } from '../portfolio.js';
+import { getFirmDebt } from '../finance.js';
 import { buildPerkInlineHtml, teardownPerkTooltips } from '../perk-tooltips.js';
 import { fmt } from './shared.js';
 
@@ -92,22 +99,22 @@ function perkMarkHtml(perk) {
   return `<div class="perk-mark" aria-hidden="true">${inner}</div>`;
 }
 
-function statusForPerk(p, state, rep) {
+function statusForPerk(p, state, licenses) {
   const owned = state.perks.includes(p.id);
   const gate = canPurchasePerk(p, {
     cash: state.portfolio.cash,
     perks: state.perks,
-    reputation: rep,
+    licenses,
   });
   const canBuy = gate.ok;
-  const lockedRep = !owned && (p.repRequired || 0) > rep;
-  const lockedPrereq = !owned && !lockedRep && gate.code === 'prereq';
+  const lockedLicense = !owned && !hasLicense(licenses, p.licenseRequired || 'retail');
+  const lockedPrereq = !owned && !lockedLicense && gate.code === 'prereq';
   const lockedCash = !owned && gate.code === 'cash';
   let status = 'Locked';
   let statusCls = 'locked';
   if (owned) { status = 'Owned'; statusCls = 'owned'; }
   else if (canBuy) { status = 'Available'; statusCls = 'buy'; }
-  else if (lockedRep) { status = `${p.repRequired} REP`; statusCls = 'rep'; }
+  else if (lockedLicense) { status = LICENSES[p.licenseRequired]?.short || 'License'; statusCls = 'rep'; }
   else if (lockedPrereq) { status = 'Prerequisite'; statusCls = 'prereq'; }
   else if (lockedCash) { status = 'Insufficient cash'; statusCls = 'cash'; }
   return { owned, canBuy, status, statusCls, gate };
@@ -118,34 +125,65 @@ function statusForPerk(p, state, rep) {
 const lastPerksRenderSig = new Map();
 
 /**
+ * Structure signature — met flags + coarse buckets only. Never raw NW/cash
+ * per tick (Estates lesson: fine-grained values in the snap remount every tick).
  * @param {Record<string, ReturnType<typeof statusForPerk>>} statusById
- * @param {number} rep
  * @param {boolean} isFull
- * @param {{ cash: number, ownedCount: number, progressPct: number, rankName: string, rankBlurb: string, nextName: string | null, nextMin: number | null }} header
+ * @param {{ ownedCount: number, licenseKey: string, cashBucket: number }} header
  */
-function perksRenderSignature(statusById, rep, isFull, header) {
+function perksRenderSignature(statusById, isFull, header) {
   const board = Object.values(PERKS).map((p) => {
     const s = statusById[p.id];
     return `${p.id}:${s.owned ? 1 : 0}:${s.canBuy ? 1 : 0}:${s.statusCls}:${s.status}`;
   }).join('|');
-  const tiers = [1, 2, 3, 4, 5, 6].map((t) => {
-    const need = REP_RANKS[t - 1]?.minRep ?? 0;
-    return `${t}:${rep >= need ? 1 : 0}`;
-  }).join('|');
-  if (!isFull) return `shop-v2|${board}|${tiers}`;
+  if (!isFull) return `shop-v3|${board}|${header.licenseKey}`;
   return [
-    'full-v2',
+    'full-v3',
     board,
-    tiers,
-    header.cash,
+    header.licenseKey,
     header.ownedCount,
-    header.progressPct,
-    header.rankName,
-    header.rankBlurb,
-    header.nextName ?? '',
-    header.nextMin ?? '',
-    header.rep,
+    header.cashBucket,
   ].join('|');
+}
+
+/** Requirement checklist rows for a license chapter card. */
+function licenseReqListHtml(licId, snap) {
+  const rows = getLicenseRequirements(licId, snap);
+  if (!rows.length) return '';
+  return `<ul class="license-req-list">${rows.map((r) => `
+    <li class="license-req ${r.met ? 'met' : 'unmet'}">
+      <span class="license-req-dot" aria-hidden="true">${r.met ? '&#10003;' : '&#9675;'}</span>
+      <span class="license-req-lbl">${r.label}</span>
+    </li>`).join('')}</ul>`;
+}
+
+/** License chapter cards — the exam UI. */
+function licenseBoardHtml(snap) {
+  return LICENSE_ORDER.map((id) => {
+    const lic = LICENSES[id];
+    const owned = hasLicense(snap.licenses, id);
+    const gate = owned ? null : canTakeLicenseExam(id, snap);
+    const canSit = !!gate?.ok;
+    const stateCls = owned ? 'is-held' : canSit ? 'is-ready' : 'is-locked';
+    const statusLbl = owned ? 'Licensed' : canSit ? 'Exam available' : 'Not yet qualified';
+    const feeLine = lic.fee > 0 ? `Exam fee ${fmt(lic.fee)}` : 'Granted on day 1';
+    return `
+      <article class="license-card ${stateCls}" data-license="${id}">
+        <header class="license-card-head">
+          <span class="license-card-tier">Tier ${lic.order + 1}</span>
+          <h4 class="license-card-name">${lic.name}</h4>
+          <span class="license-card-status ${stateCls}">${statusLbl}</span>
+        </header>
+        <p class="license-card-blurb">${lic.blurb}</p>
+        <p class="license-card-unlocks"><strong>Unlocks:</strong> ${lic.unlocks}</p>
+        <p class="license-card-teaches">${lic.teaches}</p>
+        ${owned ? '' : licenseReqListHtml(id, snap)}
+        <footer class="license-card-foot">
+          <span class="license-card-fee">${owned ? 'Held' : feeLine}</span>
+          ${canSit ? `<button type="button" class="btn btn-accent btn-sm license-exam-btn" data-license="${id}">Sit exam · ${fmt(lic.fee)}</button>` : ''}
+        </footer>
+      </article>`;
+  }).join('');
 }
 
 /**
@@ -160,16 +198,29 @@ function rebuildPreservingScroll(container, rebuild) {
   container.scrollLeft = left;
 }
 
+const TIER_ACCENTS = {
+  1: '#8b9cb3',
+  2: 'var(--blue)',
+  3: 'var(--accent)',
+  4: '#d4a017',
+};
+
 export function renderPerks(state, containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
 
-  const rep = state.meta?.reputation ?? 0;
-  const rank = getRepRank(rep);
-  const next = getNextRepRank(rep);
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
   const ownedCount = state.perks?.length || 0;
   const isFull = containerId === 'perks-full';
   const cash = state.portfolio.cash;
+
+  const debt = getFirmDebt(state.finance, state.estateCreditUsed);
+  const snap = licenseSnapshot(state, {
+    netWorth: getNetEquity(state.portfolio, debt),
+    day: getDayCount(),
+  });
+  const held = getHighestLicense(licenses);
+  const next = getNextLicense(licenses);
 
   const tiers = {};
   Object.values(PERKS).forEach((p) => {
@@ -178,35 +229,22 @@ export function renderPerks(state, containerId) {
     tiers[t].push(p);
   });
 
-  const tierMeta = {
-    1: { rank: REP_RANKS[0], accent: '#8b9cb3' },
-    2: { rank: REP_RANKS[1], accent: 'var(--blue)' },
-    3: { rank: REP_RANKS[2], accent: 'var(--accent)' },
-    4: { rank: REP_RANKS[3], accent: 'var(--orange)' },
-    5: { rank: REP_RANKS[4], accent: '#d4a017' },
-    6: { rank: REP_RANKS[5], accent: '#f0c674' },
-  };
-
-  const progressPct = next
-    ? Math.min(100, Math.round(((rep - rank.minRep) / Math.max(1, next.minRep - rank.minRep)) * 100))
-    : 100;
-
   const statusById = {};
   Object.values(PERKS).forEach((p) => {
-    statusById[p.id] = statusForPerk(p, state, rep);
+    statusById[p.id] = statusForPerk(p, state, licenses);
   });
 
+  // Coarse buckets so live cash/NW/credit drift can't remount the board every tick.
+  const reqFlags = LICENSE_ORDER.map((id) => {
+    if (hasLicense(licenses, id)) return `${id}:held`;
+    return `${id}:${getLicenseRequirements(id, snap).map((r) => (r.met ? 1 : 0)).join('')}:${canTakeLicenseExam(id, snap).ok ? 1 : 0}`;
+  }).join('|');
   const header = {
-    cash,
-    rep,
     ownedCount,
-    progressPct,
-    rankName: rank.name,
-    rankBlurb: rank.blurb || rank.name,
-    nextName: next?.name ?? null,
-    nextMin: next?.minRep ?? null,
+    licenseKey: `${held.id}|${reqFlags}|nw${Math.round(snap.netWorth / 5000)}|pc${Math.round(snap.personalCredit / 5)}|bc${Math.round(snap.businessCredit / 5)}|t${snap.tradesClosed}|g${snap.greenDays}|d${snap.day}`,
+    cashBucket: Math.round(cash / 100),
   };
-  const sig = perksRenderSignature(statusById, rep, isFull, header);
+  const sig = perksRenderSignature(statusById, isFull, header);
   const hasDom = !!container.querySelector(isFull ? '.perks-view' : '.perk[data-perk]');
   if (hasDom && lastPerksRenderSig.get(containerId) === sig) {
     return;
@@ -216,18 +254,17 @@ export function renderPerks(state, containerId) {
     <div class="perks-hero">
       <div class="perks-hero-copy">
         <p class="perks-eyebrow">Institutional upgrades</p>
-        <h3 class="perks-title">Desk Perks</h3>
-        <p class="perks-sub">Permanent unlocks gated by cash and <strong>REP rank</strong>. Each card shows purpose, effects, and requirements. Early Scanner and HR remain affordable.</p>
+        <h3 class="perks-title">Licenses &amp; Desk Perks</h3>
+        <p class="perks-sub">Progression works like a real trading career: qualify for a <strong>license</strong>, pay the exam fee, and its tier of perks opens up. Early Scanner and HR need no exam.</p>
       </div>
     </div>
     <div class="perks-summary">
       <div class="perks-summary-rank">
-        <span class="perks-summary-lbl">Your rank</span>
+        <span class="perks-summary-lbl">Your license</span>
         <div class="perks-summary-rank-row">
-          <span class="perks-summary-rank-val">${rank.name}</span>
-          <span class="perks-summary-rank-meta">REP ${rep}${next ? ` · next ${next.name} at ${next.minRep}` : ' · maximum title'}</span>
+          <span class="perks-summary-rank-val">${held.name}</span>
+          <span class="perks-summary-rank-meta">${next ? `next: ${next.short}` : 'top accreditation held'}</span>
         </div>
-        ${next ? `<div class="perks-rank-bar" aria-hidden="true"><div class="perks-rank-fill" style="width:${progressPct}%"></div></div>` : ''}
       </div>
       <div class="perks-summary-stats">
         <div class="perks-stat">
@@ -241,24 +278,28 @@ export function renderPerks(state, containerId) {
           <span class="perks-stat-hint">Available to allocate</span>
         </div>
         <div class="perks-stat">
-          <span class="perks-stat-lbl">REP</span>
-          <span class="perks-stat-val">${rep}</span>
-          <span class="perks-stat-hint">${rank.blurb || rank.name}</span>
+          <span class="perks-stat-lbl">Licenses</span>
+          <span class="perks-stat-val">${licenses.length}<span class="perks-stat-of"> / ${LICENSE_ORDER.length}</span></span>
+          <span class="perks-stat-hint">${held.blurb}</span>
         </div>
       </div>
-    </div>` : '';
+    </div>
+    <div class="license-board">${licenseBoardHtml(snap)}</div>` : '';
 
   const boardHtml = Object.keys(tiers).sort((a, b) => Number(a) - Number(b)).map((tierKey) => {
     const t = Number(tierKey);
-    const meta = tierMeta[t] || { rank: getRepRank(0), accent: 'var(--muted)' };
-    const need = meta.rank?.minRep ?? 0;
-    const unlocked = rep >= need;
-    const perks = tiers[tierKey];
-    const rows = perks.map((p) => {
+    const tierPerks = tiers[tierKey];
+    const licId = tierPerks[0]?.licenseRequired || 'retail';
+    const lic = LICENSES[licId] || LICENSES.retail;
+    const unlocked = hasLicense(licenses, licId);
+    const rows = tierPerks.map((p) => {
       const { owned, canBuy, status, statusCls } = statusById[p.id];
+      const licShort = p.licenseRequired && p.licenseRequired !== 'retail'
+        ? LICENSES[p.licenseRequired]?.short
+        : null;
       const costLine = owned
         ? 'OWNED'
-        : `${fmt(p.cost)}${p.repRequired ? ` · ${p.repRequired} REP` : ''}`;
+        : `${fmt(p.cost)}${licShort ? ` · ${licShort}` : ''}`;
 
       return `
         <div class="perk perk-t${t} ${owned ? 'owned' : ''} ${canBuy ? 'available' : ''} ${!owned && !canBuy ? 'is-locked' : ''}"
@@ -283,15 +324,15 @@ export function renderPerks(state, containerId) {
     }).join('');
 
     return `
-      <section class="perk-tier-band ${unlocked ? 'is-open' : 'is-dimmed'}" style="--tier-accent:${meta.accent}">
+      <section class="perk-tier-band ${unlocked ? 'is-open' : 'is-dimmed'}" style="--tier-accent:${TIER_ACCENTS[t] || 'var(--muted)'}">
         <header class="perk-tier-head">
           <div class="perk-tier-head-id">
             <span class="perk-tier-badge">Tier ${t}</span>
-            <h4 class="perk-tier-title">${meta.rank.name}</h4>
+            <h4 class="perk-tier-title">${lic.short}</h4>
           </div>
           <span class="perk-tier-req">${unlocked
             ? 'Unlocked'
-            : `Requires ${meta.rank.name} · ${need} REP`}</span>
+            : `Requires the ${lic.name} license`}</span>
         </header>
         <div class="perk-tier-list">${rows}</div>
       </section>`;
@@ -307,6 +348,9 @@ export function renderPerks(state, containerId) {
     } else {
       container.innerHTML = Object.values(PERKS).map((p) => {
         const { owned, canBuy } = statusById[p.id];
+        const licShort = p.licenseRequired && p.licenseRequired !== 'retail'
+          ? LICENSES[p.licenseRequired]?.short
+          : null;
         return `
         <div class="perk perk-t${p.tier || 1} ${owned ? 'owned' : ''} ${canBuy ? 'available' : ''} ${!owned && !canBuy ? 'is-locked' : ''}" data-perk="${p.id}">
           ${perkMarkHtml(p)}
@@ -314,7 +358,7 @@ export function renderPerks(state, containerId) {
             <div class="perk-name">${p.name}</div>
             <div class="perk-desc">${p.desc}</div>
             ${buildPerkInlineHtml(p.id)}
-            <div class="perk-cost">${owned ? 'OWNED' : `${fmt(p.cost)}${p.repRequired ? ` · ${p.repRequired} REP` : ''}`}</div>
+            <div class="perk-cost">${owned ? 'OWNED' : `${fmt(p.cost)}${licShort ? ` · ${licShort}` : ''}`}</div>
           </div>
         </div>`;
       }).join('');
@@ -328,6 +372,12 @@ export function renderPerks(state, containerId) {
         e.preventDefault();
         state.onBuyPerk?.(el.dataset.perk);
       }
+    };
+  });
+  container.querySelectorAll('.license-exam-btn').forEach((el) => {
+    el.onclick = (e) => {
+      e.stopPropagation();
+      state.onTakeLicenseExam?.(el.dataset.license);
     };
   });
 

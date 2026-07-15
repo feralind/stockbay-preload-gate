@@ -188,6 +188,35 @@ function bankLogoHtml(bank) {
   });
 }
 
+/**
+ * Locked-bank teaching card — requirement vs current score plus one
+ * concrete rebuild strategy. Empty string when both desks are approved.
+ */
+function bankTeachHtml(offers, finance) {
+  if (!offers || (offers.personalOk && offers.companyOk)) return '';
+  const rows = [];
+  if (!offers.personalOk) {
+    rows.push(`Personal desk locked — this bank wants <strong>${offers.personalMinCredit}+</strong> personal credit (you're at <strong>${finance.personalCredit}</strong>)`);
+  }
+  if (!offers.companyOk) {
+    rows.push(`Company desk locked — business file needs <strong>${offers.companyMinCredit}+</strong> (you're at <strong>${finance.businessCredit}</strong>)`);
+  }
+  return `<div class="bank-teach">
+    ${rows.map((r) => `<div class="bank-teach-row">${r}</div>`).join('')}
+    <div class="bank-teach-hint">Rebuild: keep utilization under 30%, hold cash for the daily auto-pay, and let paid-off loans age.</div>
+  </div>`;
+}
+
+function bankRateChipsHtml(bank, offers) {
+  return `
+    <span class="rate-chip">Your personal ${offers?.personalApr ?? bank.personalApr}% APR</span>
+    <span class="rate-chip">Your company ${offers?.companyApr ?? bank.companyApr}% APR</span>
+    <span class="rate-chip muted">Min personal ${offers?.personalMinCredit ?? bank.minCredit} · company ${offers?.companyMinCredit ?? bank.minCredit}</span>`;
+}
+
+/** Rebuild bank cards only when approval structure changes (no tick thrash). */
+let bankListStructureKey = '';
+
 function snapLoanDrafts(bankList) {
   bankList?.querySelectorAll('.loan-amt').forEach(input => {
     const bank = input.dataset.bank;
@@ -227,7 +256,7 @@ function syncLiveLoanInputs(bankList, finance, gameDay = 1, collatOpts = {}) {
     if (label) label.textContent = eligible ? `Amount · max $${ceil.toLocaleString()}` : 'Amount · apply anyway';
     input.title = eligible
       ? `Scroll to adjust · about $${ceil.toLocaleString()} available now`
-      : `Need ${bank?.minCredit ?? ''}+ credit — you can still apply and may be denied`;
+      : `Below this bank's credit floors — you can still apply and may be denied`;
     let v = parseFloat(input.value);
     if (!Number.isFinite(v)) v = loanStartAmount(bankId, ceil, eligible);
     if (eligible && v > ceil) v = ceil;
@@ -239,10 +268,17 @@ function syncLiveLoanInputs(bankList, finance, gameDay = 1, collatOpts = {}) {
     if (card && offers) {
       const chips = card.querySelector('.bank-rates');
       if (chips) {
-        chips.innerHTML = `
-          <span class="rate-chip">Your personal ${offers.personalApr}% APR</span>
-          <span class="rate-chip">Your company ${offers.companyApr}% APR</span>
-          <span class="rate-chip muted">Min credit ${bank.minCredit}</span>`;
+        const chipsHtml = bankRateChipsHtml(bank, offers);
+        if (chips.innerHTML !== chipsHtml) chips.innerHTML = chipsHtml;
+      }
+      const teach = card.querySelector('.bank-teach');
+      if (teach) {
+        const teachHtml = bankTeachHtml(offers, finance);
+        if (teachHtml) {
+          if (teach.outerHTML !== teachHtml) teach.outerHTML = teachHtml;
+        } else {
+          teach.remove();
+        }
       }
       const hint = card.querySelector('.bank-debt-hint');
       if (hint) {
@@ -341,11 +377,21 @@ export function renderFinance(state) {
   const bankList = document.getElementById('bank-list');
   if (bankList) {
     const live = liveLoanAmtInput(bankList);
-    if (live && bankList.childElementCount) {
+    // Structure key: approval/lock flags + debt presence only. Live APRs, ceilings,
+    // and scores patch in place via syncLiveLoanInputs (no per-tick remount).
+    const structureKey = BANKS.map((bank) => {
+      const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
+      const owed = bankDebt(finance, bank.id) > 0
+        || otherBanksDebt(finance, bank.id, 'personal') > 0
+        || otherBanksDebt(finance, bank.id, 'company') > 0;
+      return `${bank.id}:${offers?.personalOk ? 1 : 0}${offers?.companyOk ? 1 : 0}:${owed ? 1 : 0}`;
+    }).join('|');
+    if (bankList.childElementCount && (live || bankListStructureKey === structureKey)) {
       // Keep the focused/hovered input alive so wheel scroll isn't wiped by tick re-renders
       syncLiveLoanInputs(bankList, finance, gameDay, collatOpts);
       bindBankListActions(bankList, state, finance);
     } else {
+      bankListStructureKey = structureKey;
       snapLoanDrafts(bankList);
       const groups = ['National banks', 'Online lenders', 'Credit union'];
       const lenderRows = BANKS.map((bank) => {
@@ -396,11 +442,8 @@ export function renderFinance(state) {
                 </div>
               </div>
               <div class="bank-desc">${bank.desc}</div>
-              <div class="bank-rates">
-                <span class="rate-chip">Your personal ${offers?.personalApr ?? bank.personalApr}% APR</span>
-                <span class="rate-chip">Your company ${offers?.companyApr ?? bank.companyApr}% APR</span>
-                <span class="rate-chip muted">Min credit ${bank.minCredit}</span>
-              </div>
+              <div class="bank-rates">${bankRateChipsHtml(bank, offers)}</div>
+              ${bankTeachHtml(offers, finance)}
               ${debtHint}
               <div class="bank-actions">
                 <label class="loan-amt-field">
@@ -412,7 +455,7 @@ export function renderFinance(state) {
                     step="50"
                     title="${eligible
                       ? `Scroll to adjust · about $${ceil.toLocaleString()} available now`
-                      : `Underwriting may deny — credit min ${bank.minCredit}`}">
+                      : `Below this bank's credit floors — underwriting may deny`}">
                 </label>
                 <div class="loan-type-btns">
                   <button type="button" class="loan-btn loan-btn-personal borrow-btn ${personalMax < 100 ? 'is-tight' : ''}" data-bank="${bank.id}" data-type="personal"

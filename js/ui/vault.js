@@ -12,6 +12,7 @@ import {
 import { getSpendableCash } from '../portfolio.js';
 import { getProfile } from '../profile.js';
 import { formatMarketClock } from '../market.js';
+import { requiredLicenseForRep } from '../licenses.js';
 import { escapeAttr, escapeHtml, fmt } from './shared.js';
 
 let activeVaultFilter = 'all';
@@ -521,11 +522,8 @@ export function renderVaultFoilArt(item, variant = '') {
 function prestigeBonusChip(item) {
   const bonus = item?.prestigeBonus;
   if (!bonus) return '';
-  const bits = [];
-  if (bonus.repPerClose > 0) bits.push(`+${bonus.repPerClose} REP/close`);
-  if (bonus.dailyCap > 0) bits.push(`+${bonus.dailyCap} daily cap`);
-  if (!bits.length) return '';
-  return `<span class="vault-chip vault-chip-bonus">${escapeHtml(bits.join(' · '))}</span>`;
+  if (!(bonus.repPerClose > 0 || bonus.dailyCap > 0)) return '';
+  return `<span class="vault-chip vault-chip-bonus">Masterwork prestige</span>`;
 }
 
 function rarityClass(item) {
@@ -535,16 +533,17 @@ function rarityClass(item) {
 }
 
 function renderVaultCard(item, {
-  ownedSet, pledgedSet, pledgeLocked, cosmetics, cash, ownedIds, rep, state,
+  ownedSet, pledgedSet, pledgeLocked, cosmetics, cash, ownedIds, licenses, state,
 }) {
   const owned = ownedSet.has(item.id);
-  const gate = canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, reputation: rep });
+  const gate = canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, licenses });
   const slot = getVaultSlotForItem(item);
   const equipped = !!slot && cosmetics?.[slot] === item.id;
   const canEquip = owned && slot && !equipped;
   const pledged = pledgedSet.has(item.id);
   const buyDisabled = !gate.ok ? 'disabled' : '';
-  const repText = item.repRequired ? `${item.repRequired} REP` : 'No REP gate';
+  const itemLic = requiredLicenseForRep(item.repRequired);
+  const repText = itemLic.id !== 'retail' ? `${itemLic.short} license` : 'No license gate';
   const rarityLabel = item.rarity ? String(item.rarity).charAt(0).toUpperCase() + String(item.rarity).slice(1) : '';
   const presentation = presentationForItem(item);
   return `
@@ -587,7 +586,7 @@ function renderVaultCard(item, {
   `;
 }
 
-function salonSectionHtml(state, { day, ownedIds, rep, cash }) {
+function salonSectionHtml(state, { day, ownedIds, licenses, cash }) {
   const listing = getActiveSalonListing(day, { ownedIds });
   const item = listing.item;
   const seenExpired = Array.isArray(state.salonSeenExpired) ? state.salonSeenExpired : [];
@@ -602,7 +601,7 @@ function salonSectionHtml(state, { day, ownedIds, rep, cash }) {
     const gate = canPurchaseSalonItem(item, {
       cash,
       vaultOwned: ownedIds,
-      reputation: rep,
+      licenses,
       listingActive: true,
     });
     const profile = getProfile();
@@ -625,7 +624,7 @@ function salonSectionHtml(state, { day, ownedIds, rep, cash }) {
         <div class="vault-meta">
           <span class="vault-chip">Crown</span>
           <span class="vault-chip">${escapeHtml(presentation.period)}</span>
-          <span class="vault-chip">${item.repRequired} REP</span>
+          <span class="vault-chip">${escapeHtml(requiredLicenseForRep(item.repRequired).short)} license</span>
           <span class="vault-chip">Appraisal ${fmt(item.cost)}</span>
           ${prestigeBonusChip(item)}
           <span class="vault-chip">${daysLeft}d left</span>
@@ -687,7 +686,7 @@ function cardStatusHtml({ owned, equipped, gate }) {
   if (owned && equipped) return '<span class="vault-status equipped">Equipped</span>';
   if (owned) return '<span class="vault-status owned">Owned</span>';
   if (gate.ok) return '<span class="vault-status buy">Available</span>';
-  if (gate.code === 'rep') return `<span class="vault-status locked">${escapeHtml(gate.reason)}</span>`;
+  if (gate.code === 'license') return `<span class="vault-status locked">${escapeHtml(gate.reason)}</span>`;
   if (gate.code === 'cash') return '<span class="vault-status locked">Need cash</span>';
   return `<span class="vault-status locked">${escapeHtml(gate.reason || 'Locked')}</span>`;
 }
@@ -695,14 +694,14 @@ function cardStatusHtml({ owned, equipped, gate }) {
 /**
  * Structure fingerprint — ownership / gates / filter. Not market-tick churn.
  * @param {object} state
- * @param {{ day: number, cash: number, rep: number, ownedIds: string[], bookValue: number, pledgedValue: number, spentTotal: number, auraTier: number, auraUsed: number, cosmeticsKey: string, salonKey: string, buyGateKey: string, pledgeLockKey: string }} snap
+ * @param {{ day: number, cash: number, licenseKey: string, ownedIds: string[], bookValue: number, pledgedValue: number, spentTotal: number, auraTier: number, auraUsed: number, cosmeticsKey: string, salonKey: string, buyGateKey: string, pledgeLockKey: string }} snap
  */
 function vaultStructureKey(snap) {
   return [
     activeVaultFilter,
     snap.day,
     snap.cash,
-    snap.rep,
+    snap.licenseKey,
     snap.ownedIds.join(','),
     snap.bookValue,
     snap.pledgedValue,
@@ -787,7 +786,7 @@ export function renderVault(state) {
   }
 
   const day = formatMarketClock()?.day || 1;
-  const rep = state.meta?.reputation || 0;
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
   const cash = getSpendableCash(state.portfolio || { cash: 0 });
   const ownedIds = Array.isArray(state.vaultOwned) ? state.vaultOwned : [];
   const ownedSet = new Set(ownedIds);
@@ -800,7 +799,6 @@ export function renderVault(state) {
   const cosmetics = profile?.cosmetics || {};
   const ownedSetForEquip = new Set(ownedIds);
   const aura = getVaultDeskAura({ cosmetics, vaultOwned: ownedIds, perks: state.perks });
-  const auraUsed = Math.max(0, Math.floor(Number(state.meta?.vaultAuraRepToday) || 0));
   const equippedSummary = [
     { slot: 'dashboard', label: VAULT_EQUIP_SLOT_LABELS.dashboard },
     { slot: 'background', label: VAULT_EQUIP_SLOT_LABELS.background },
@@ -822,7 +820,7 @@ export function renderVault(state) {
   const buyGateKey = Object.values(VAULT_ITEMS)
     .map((item) => {
       if (ownedSet.has(item.id)) return `${item.id}:own`;
-      const gate = canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, reputation: rep });
+      const gate = canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, licenses });
       return `${item.id}:${gate.ok ? 'ok' : (gate.code || gate.reason || 'no')}`;
     })
     .join(',');
@@ -833,13 +831,13 @@ export function renderVault(state) {
   const key = vaultStructureKey({
     day,
     cash,
-    rep,
+    licenseKey: licenses.join(','),
     ownedIds: ownedIds.slice().sort(),
     bookValue,
     pledgedValue,
     spentTotal,
     auraTier: aura.tier,
-    auraUsed,
+    auraUsed: 0,
     cosmeticsKey,
     salonKey,
     buyGateKey,
@@ -879,20 +877,20 @@ export function renderVault(state) {
     cosmetics,
     cash,
     ownedIds,
-    rep,
+    licenses,
     state,
   };
   const pledgeLockedFor = (itemId) => pledgedSet.has(itemId) && loanLocksVaultPledge(state.finance, itemId);
 
   const canBuyAny = [...shownCore, ...shownMasterworks].some((item) => {
     if (ownedSet.has(item.id)) return false;
-    return canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, reputation: rep }).ok;
+    return canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, licenses }).ok;
   });
   const starterItems = coreItems.filter((item) => (item.repRequired || 0) === 0);
   const roadmapHtml = (!canBuyAny && ownedSet.size === 0)
     ? `<div class="vault-roadmap" role="note">
         <strong>Build toward your first piece</strong>
-        <p>Starter vault items need cash, not REP -
+        <p>Starter vault items need cash, no license -
           ${starterItems.map((i) => `${escapeHtml(i.name)} (${fmt(i.cost)})`).join(' · ') || 'check the grid below'}.
           Trade on the desk, then come back to book them into Net Worth.</p>
       </div>`
@@ -906,7 +904,7 @@ export function renderVault(state) {
       </div>`
     : '';
 
-  const salonHtml = activeVaultFilter === 'all' ? salonSectionHtml(state, { day, ownedIds, rep, cash }) : '';
+  const salonHtml = activeVaultFilter === 'all' ? salonSectionHtml(state, { day, ownedIds, licenses, cash }) : '';
   const masterworksSection = shownMasterworks.length
     ? `<section class="vault-collection-section vault-collection-section--masterworks">
         <div class="vault-section-head">
@@ -961,7 +959,7 @@ export function renderVault(state) {
               <h3>${escapeHtml(aura.label)}</h3>
               <p>${aura.equipped}/4 slots · ${escapeHtml(aura.summary)}</p>
             </div>
-            <div class="vault-aura-meter">${aura.tier > 0 ? `${auraUsed}/${aura.dailyCap} REP today` : 'Equip to activate'}</div>
+            <div class="vault-aura-meter">${aura.tier > 0 ? `Prestige tier ${aura.tier}` : 'Equip to activate'}</div>
           </div>
         </div>
         <div class="vault-equipped-strip">

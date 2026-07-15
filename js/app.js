@@ -63,10 +63,16 @@ import {
   BANKS, bankDebt, otherBanksDebt, typeDebt,
 } from './finance.js';
 import {
-  createMetaState, adjustReputation, recordEquityPoint, rollDailyChallenge,
-  updateChallengeProgress, claimChallenge, resetDayCounters, recordClosedTrade, repTitle, repFromPnL,
+  createMetaState, recordEquityPoint, rollDailyChallenge,
+  updateChallengeProgress, claimChallenge, resetDayCounters, recordClosedTrade,
 } from './meta.js';
-import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
+import {
+  LICENSES, sanitizeLicenses, licenseSnapshot, canTakeLicenseExam, purchaseLicense, getHighestLicense,
+} from './licenses.js';
+import {
+  TEACH_MOMENTS, teachIdForLicense, markTeachMoment, pendingLoanTeachMoments,
+} from './teach-moments.js';
+import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
 import {
   getBlackMarketItem, getTodaysBlackMarketListing, maybeShowBlackMarketLegendaryCoach, purchaseBlackMarketItem,
   recordExpiredBlackMarketSeen, BLACKMARKET_ITEM_POOL,
@@ -81,7 +87,7 @@ import { purchaseOfficeUpgrade, sanitizeOfficeProgress } from './office.js';
 import { purchaseLuxury, sanitizeLuxuryProgress } from './luxury.js';
 import {
   purchaseEstate, sanitizeEstateProgress, syncEstateDerived, drawEstateCredit, repayEstateCredit,
-  cashOutEstateEquity, getEstateLiquidationScale, getEstatePrestigeAura,
+  cashOutEstateEquity, getEstateLiquidationScale,
 } from './estates.js';
 import { claimMegaGoal } from './mega-goals.js';
 import {
@@ -137,6 +143,7 @@ import {
 const state = {
   portfolio: createPortfolio(),
   perks: [],
+  licenses: ['retail'],
   staff: [],
   staffLog: [],
   listings: [],
@@ -147,6 +154,7 @@ const state = {
   stats: {
     hires: 0, fires: 0, shortsOpened: 0, greenDays: 0, greenStreak: 0,
     profitableShorts: 0, loansPaidEarly: 0, alertsSet: 0, staffMistakes: 0,
+    tradesClosed: 0,
   },
   finance: createFinanceState(),
   meta: createMetaState(),
@@ -364,6 +372,7 @@ function buildSaveData() {
     savedAt: Date.now(),
     portfolio: state.portfolio,
     perks: state.perks,
+    licenses: state.licenses,
     staff: state.staff,
     staffLog: state.staffLog,
     market: serializeMarket(),
@@ -416,13 +425,17 @@ function writeSaveToDisk() {
   if (window.__stockwayDisableSave) return false;
   // Another tab archived & reset — never push this tab's stale run back.
   if (shouldBlockSaveAfterForeignWipe()) return false;
+  const key = CONFIG.SAVE_KEY;
+  const tmpKey = `${key}__tmp`;
+  let stagedTmp = false;
   try {
     const data = buildSaveData();
     const payload = JSON.stringify(data);
-    const key = CONFIG.SAVE_KEY;
-    localStorage.setItem(`${key}__tmp`, payload);
+    // Stage first so a crash mid-primary write leaves __tmp recoverable.
+    localStorage.setItem(tmpKey, payload);
+    stagedTmp = true;
     localStorage.setItem(key, payload);
-    localStorage.removeItem(`${key}__tmp`);
+    localStorage.removeItem(tmpKey);
 
     try {
       const day = data?.market?.dayCount ?? data?.meta?.dayCount ?? 0;
@@ -441,6 +454,10 @@ function writeSaveToDisk() {
     return true;
   } catch (e) {
     console.warn('Save failed', e);
+    // Leave __tmp in place if primary never landed — loadGame can recover it.
+    if (!stagedTmp) {
+      try { localStorage.removeItem(tmpKey); } catch (_) { /* ignore */ }
+    }
     return false;
   }
 }
@@ -452,7 +469,6 @@ function clearAllSaveData({ archive = true, keepQuoteBaseline = false } = {}) {
       archiveRun({
         equity: getNetEquity(state.portfolio, firmDebt()),
         day: getDayCount(),
-        rep: state.meta?.reputation || 0,
         label: 'Reset desk',
       });
     } catch (_) { /* best-effort */ }
@@ -684,8 +700,13 @@ function bindListingsViewportRefresh() {
 }
 
 function bindSaveLifecycle() {
+  // Electron close awaits this (sync flush wrapped for executeJavaScript Promise).
   window.__stockwayFlushSave = () => {
-    try { return flushSave(); } catch { return false; }
+    try {
+      return Promise.resolve(flushSave());
+    } catch {
+      return Promise.resolve(false);
+    }
   };
 
   const onLeave = () => { flushSave(); };
@@ -718,16 +739,28 @@ function loadGame() {
     // checkpoint cannot undo Archive & reset across a slow reload.
     if (consumeDeskWipeOnBoot()) return false;
 
-    let raw = localStorage.getItem(CONFIG.SAVE_KEY);
-    if (!raw) {
-      // Recover from rotating slot if main key missing (crash / partial write only)
+    const key = CONFIG.SAVE_KEY;
+    /** @returns {object|null} */
+    function tryParseSave(raw) {
+      if (!raw) return null;
       try {
-        const slots = JSON.parse(localStorage.getItem(`${CONFIG.SAVE_KEY}_slot`) || '[]');
-        if (slots[0]?.data) raw = JSON.stringify(slots[0].data);
-      } catch (_) {}
+        return sanitizeRunData(JSON.parse(raw));
+      } catch {
+        return null;
+      }
     }
-    if (!raw) return false;
-    const data = sanitizeRunData(JSON.parse(raw));
+
+    // Ordered recovery: primary → staged __tmp → rotating _slot checkpoint
+    let data = tryParseSave(localStorage.getItem(key));
+    if (!data) {
+      data = tryParseSave(localStorage.getItem(`${key}__tmp`));
+    }
+    if (!data) {
+      try {
+        const slots = JSON.parse(localStorage.getItem(`${key}_slot`) || '[]');
+        if (slots[0]?.data) data = sanitizeRunData(slots[0].data);
+      } catch (_) { /* ignore */ }
+    }
     if (!data) return false;
     if (data.portfolio) {
       state.portfolio = data.portfolio;
@@ -743,6 +776,7 @@ function loadGame() {
       }
     }
     if (data.perks) state.perks = data.perks;
+    state.licenses = sanitizeLicenses(data.licenses);
     if (data.staff) {
       state.staff = data.staff.map(s => ({
         tier: 'newbie', profitGenerated: 0, mistakes: 0, status: 'Ready', progress: 0, history: [],
@@ -832,32 +866,52 @@ function noteBuy(isDeal = false) {
 
 function noteSell(pnl = 0) {
   state.meta.daySells = (state.meta.daySells || 0) + 1;
+  state.stats.tradesClosed = (state.stats.tradesClosed || 0) + 1;
   recordClosedTrade(state.meta, pnl);
-}
-
-function maybeApplyVaultDeskAura(pnl = 0) {
-  const profile = getProfile();
-  const aura = getVaultDeskAura({
-    cosmetics: profile?.cosmetics || {},
-    vaultOwned: state.vaultOwned,
-    perks: state.perks,
-  });
-  const estateAura = getEstatePrestigeAura(state);
-  const merged = {
-    ...aura,
-    repPerClose: (Number(aura.repPerClose) || 0) + (Number(estateAura.repPerClose) || 0),
-    dailyCap: (Number(aura.dailyCap) || 0) + (Number(estateAura.dailyCap) || 0),
-  };
-  const result = applyVaultDeskAuraOnClose(state.meta, pnl, merged);
-  if (result.applied > 0) {
-    adjustReputation(state.meta, result.applied, 'vault_aura');
-    toast(`Desk Prestige +${result.applied} REP`, { type: 'info' });
-  }
-  return result;
 }
 
 function noteProfitableShort(pnl) {
   if (pnl > 0) state.stats.profitableShorts = (state.stats.profitableShorts || 0) + 1;
+}
+
+/**
+ * One-shot teach moment: mark + show as a quiet coachmark (toast fallback).
+ * Quiet walkthrough/tour modes never mark it, so it can fire later.
+ */
+function fireTeachMoment(id, text, targetId = null) {
+  if (!text || isCoachQuiet()) return false;
+  const overlay = document.getElementById('onboard-overlay');
+  if (overlay && !overlay.classList.contains('hidden')) return false;
+  if (!markTeachMoment(state.meta, id)) return false;
+  saveGame({ immediate: true });
+  const target = (targetId && document.getElementById(targetId)) || 'body';
+  showCoachmark({
+    target,
+    text,
+    showNext: true,
+    onNext: () => hideCoachmark(),
+    onSkip: () => hideCoachmark(),
+  });
+  return true;
+}
+
+/** First realized losing close — losses are tuition, keep them small. */
+function maybeShowFirstLossTeach(pnl) {
+  if (!(pnl < 0)) return;
+  fireTeachMoment('firstLoss', TEACH_MOMENTS.firstLoss.text, 'realized');
+}
+
+/** First position over half of equity in one name — sizing lesson. */
+function maybeShowOversizedTeach() {
+  if (state.meta?.teachMomentsShown?.firstOversized) return;
+  const equity = getNetEquity(state.portfolio, firmDebt());
+  if (equity <= 0) return;
+  const positions = [
+    ...Object.values(state.portfolio?.longs || {}),
+    ...Object.values(state.portfolio?.shorts || {}),
+  ];
+  const oversized = positions.some((p) => (Number(p?.shares) || 0) * (Number(p?.avgPrice) || 0) > equity * 0.5);
+  if (oversized) fireTeachMoment('firstOversized', TEACH_MOMENTS.firstOversized.text);
 }
 
 function applyConfirmOrderResult(result) {
@@ -874,14 +928,13 @@ function applyConfirmOrderResult(result) {
     noteSell(result.pnl || 0);
     if (result.action === 'cover') noteProfitableShort(result.pnl || 0);
     recordDayTrade(result.pnl || 0);
-    adjustReputation(state.meta, repFromPnL(result.pnl || 0), result.action === 'cover' ? 'cover' : 'close');
-    maybeApplyVaultDeskAura(result.pnl || 0);
+    maybeShowFirstLossTeach(result.pnl || 0);
     graduationShown = maybeShowGraduationCoach(state, { saveGame });
   } else if (result.kind === 'open') {
     if (result.incrementShortsOpened) state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
     noteBuy(!!result.isDeal);
     recordDayTrade();
-    adjustReputation(state.meta, result.reputationDelta, result.reputationReason);
+    maybeShowOversizedTeach();
     if (result.updateChallengeProgress) {
       updateChallengeProgress(state.meta, {
         trades: (state.meta.dayBuys || 0) + (state.meta.daySells || 0),
@@ -907,7 +960,7 @@ function applyCloseOptionResult(result) {
   if (!result?.ok) return;
   if (result.noteSell) {
     noteSell(result.pnl || 0);
-    maybeApplyVaultDeskAura(result.pnl || 0);
+    maybeShowFirstLossTeach(result.pnl || 0);
     maybeShowGraduationCoach(state, { saveGame });
   }
   if (result.recordDayTrade) recordDayTrade();
@@ -1036,22 +1089,22 @@ function bindState() {
     const gate = canPurchasePerk(perk, {
       cash: state.portfolio.cash,
       perks: state.perks,
-      reputation: state.meta?.reputation ?? 0,
+      licenses: state.licenses,
     });
     if (!gate.ok) {
       sfxError();
       showAlert(gate.reason, {
-        title: gate.code === 'rep' ? 'REP required' : 'Locked perk',
+        title: gate.code === 'license' ? 'License required' : 'Locked perk',
         label: 'SHOP',
       });
       return;
     }
     if (perk.cost >= CONFIG.CONFIRM_PERK_COST) {
-      const repNote = perk.repRequired
-        ? `<br><span style="color:var(--muted);font-size:12px">${perk.tierLabel || 'Rank'} · ${perk.repRequired} REP met</span>`
+      const licNote = perk.licenseRequired && perk.licenseRequired !== 'retail'
+        ? `<br><span style="color:var(--muted);font-size:12px">${LICENSES[perk.licenseRequired]?.short || ''} license held</span>`
         : '';
       const ok = await showConfirm(
-        `Unlock <strong>${perk.name}</strong> for <strong>$${perk.cost.toLocaleString()}</strong>?${repNote}`,
+        `Unlock <strong>${perk.name}</strong> for <strong>$${perk.cost.toLocaleString()}</strong>?${licNote}`,
         { title: 'Confirm perk purchase', label: 'SHOP', okText: `Buy $${perk.cost.toLocaleString()}`, cancelText: 'Cancel' },
       );
       if (!ok) return;
@@ -1060,7 +1113,7 @@ function bindState() {
     if (!result.ok) {
       sfxError();
       showAlert(result.msg || 'Cannot unlock perk.', {
-        title: result.code === 'rep' ? 'REP required' : 'Locked perk',
+        title: result.code === 'license' ? 'License required' : 'Locked perk',
         label: 'SHOP',
       });
       return;
@@ -1077,13 +1130,51 @@ function bindState() {
     if (id === 'aiAdvisor') refreshAiAnalysis(state);
   };
 
+  state.onTakeLicenseExam = async (licenseId) => {
+    const lic = LICENSES[licenseId];
+    if (!lic || (state.licenses || []).includes(licenseId)) return;
+    const snap = licenseSnapshot(state, {
+      netWorth: getNetEquity(state.portfolio, firmDebt()),
+      day: getDayCount(),
+    });
+    const gate = canTakeLicenseExam(licenseId, snap);
+    if (!gate.ok) {
+      sfxError();
+      showAlert(gate.reason, { title: `${lic.short} exam`, label: 'LICENSE' });
+      return;
+    }
+    const ok = await showConfirm(
+      `Sit the <strong>${lic.name}</strong> exam for <strong>$${lic.fee.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">Unlocks: ${lic.unlocks}</span>`,
+      { title: 'Confirm license exam', label: 'LICENSE', okText: `Pay $${lic.fee.toLocaleString()}`, cancelText: 'Not yet' },
+    );
+    if (!ok) return;
+    const result = purchaseLicense(state, licenseId, {
+      netWorth: getNetEquity(state.portfolio, firmDebt()),
+      day: getDayCount(),
+    });
+    if (!result.ok) {
+      sfxError();
+      showAlert(result.msg || 'Exam not available.', { title: `${lic.short} exam`, label: 'LICENSE' });
+      return;
+    }
+    sfxSuccess();
+    toast(`Licensed: ${lic.name}`, { type: 'success' });
+    const gradShown = maybeShowGraduationCoach(state, { saveGame });
+    if (!gradShown && lic.teaches) {
+      fireTeachMoment(teachIdForLicense(licenseId), `${lic.name} earned. ${lic.teaches}`, 'rep-stat-cell');
+    }
+    checkAchievements();
+    saveGame();
+    renderAll(state);
+  };
+
   state.onBuyVaultItem = async (itemId) => {
     const item = getVaultItem(itemId);
     if (!item || state.vaultOwned.includes(item.id)) return;
     const isMasterwork = String(item.rarity || '').toLowerCase() === 'masterwork';
     const confirmNote = isMasterwork
       ? 'Masterwork collectible — books into Net Worth with extra Desk Prestige when equipped. Not buying power.'
-      : 'Collectible appraisal books into Net Worth. Equip for Desk Prestige (capped REP on profitable closes). Not buying power.';
+      : 'Collectible appraisal books into Net Worth. Equip for Desk Prestige display. Not buying power.';
     if (item.cost >= CONFIG.CONFIRM_NOTIONAL_USD) {
       const ok = await showConfirm(
         `Purchase <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">${confirmNote}</span>`,
@@ -1176,10 +1267,8 @@ function bindState() {
       showAlert(result.msg || 'Cannot claim.', { title: 'Collection Log', label: 'COLLECTION' });
       return;
     }
-    if (result.rep > 0) adjustReputation(state.meta, result.rep, 'collection_milestone');
     sfxSuccess();
     const bits = [result.milestone.label];
-    if (result.rep) bits.push(`+${result.rep} REP`);
     if (result.cash) bits.push(`$${result.cash.toLocaleString()}`);
     if (result.flair) bits.push(result.flair);
     toast(`Claimed ${bits.join(' · ')}`, { type: 'success' });
@@ -1237,7 +1326,7 @@ function bindState() {
   state.onBuySeat = async () => {
     if (state.seatOwned) return;
     const listingActive = isSeatListingActive(getDayCount(), {
-      reputation: state.meta?.reputation || 0,
+      licenses: state.licenses,
       seatOwned: state.seatOwned,
     });
     if (!listingActive) {
@@ -1274,7 +1363,6 @@ function bindState() {
     const r = hireStaff(roleId, state);
     if (r.ok) {
       state.staffLog.unshift({ time: Date.now(), staff: 'HR', action: `Hired ${r.member.name} as ${roleId}` });
-      adjustReputation(state.meta, 10, 'hire');
       sfxSuccess();
       toast(`Hired ${r.member.name}`, { type: 'success' });
       checkAchievements();
@@ -1289,7 +1377,6 @@ function bindState() {
     });
     if (!ok) return;
     fireStaff(staffId, state);
-    adjustReputation(state.meta, -5, 'fire');
     toast('Employee released · severance paid if cash allowed', { type: 'warn' });
     document.getElementById('staff-history-overlay')?.classList.add('hidden');
     const profile = document.getElementById('staff-roster-profile');
@@ -1311,7 +1398,6 @@ function bindState() {
   state.onTrainStaff = (staffId) => {
     const r = trainStaff(staffId, state);
     if (r.ok) {
-      adjustReputation(state.meta, r.tier === 'expert' ? 25 : 12, 'train');
       sfxSuccess();
       checkAchievements();
       saveGame();
@@ -1343,7 +1429,6 @@ function bindState() {
   state.onClaimAchievement = (id) => {
     const r = claimAchievement(id, state.achievements, state.portfolio);
     if (r.ok) {
-      adjustReputation(state.meta, 8, 'achievement');
       state.apiStatus = { mode: 'online', label: `Claimed ${r.name} (+$${r.reward.toLocaleString()})` };
       toast(`Claimed ${r.name} (+$${r.reward.toLocaleString()})`, { type: 'success' });
       saveGame();
@@ -1367,7 +1452,7 @@ function bindState() {
     const net = firmNetWorth();
     const r = purchaseOfficeUpgrade(state, {
       netWorth: net,
-      reputation: state.meta?.reputation || 0,
+      licenses: state.licenses,
     });
     if (r.ok) {
       toast(`Office upgraded: ${r.tier.name}`, { type: 'success' });
@@ -1564,7 +1649,6 @@ function bindState() {
 
     const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day, collateralOpts);
     if (r.ok) {
-      adjustReputation(state.meta, -3, 'loan_inquiry');
       sfxSuccess();
       toast(`Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}%`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}% APR` };
@@ -1580,7 +1664,6 @@ function bindState() {
     const r = makeLoanPayment(loanId, amount, state.finance, state.portfolio, getDayCount());
     if (r.ok) {
       if (r.earlyPayoff) state.stats.loansPaidEarly = (state.stats.loansPaidEarly || 0) + 1;
-      if (r.rep) adjustReputation(state.meta, r.rep, 'loan_pay');
       sfxSuccess();
       const creditNote = r.creditSkipped
         ? ' · credit unchanged (need 1 day-end interest first)'
@@ -1645,7 +1728,6 @@ function checkRiskOrders() {
     noteSell,
     noteProfitableShort,
     recordDayTrade,
-    adjustReputation,
   });
 
   for (const t of risk.margin.toasts) toast(t.msg, { type: t.type || 'warn' });
@@ -1692,8 +1774,12 @@ function setPauseButton(running) {
   btn.title = running ? 'Pause' : 'Resume';
 }
 
+/** Loan-lesson teach ids queued at day end; fired after the summary closes. */
+let queuedLoanTeachIds = [];
+
 function handleDayEnd(day) {
   const result = runDayEndSettlement(state, day);
+  queuedLoanTeachIds = pendingLoanTeachMoments(result.loanEvents, state.meta);
 
   if (result.bestRun?.isRecord) toast('New personal best equity!', { type: 'success' });
 
@@ -1753,6 +1839,10 @@ function continueNextDay() {
   resumeMarket();
   setPauseButton(true);
   checkAchievements();
+  const teachId = queuedLoanTeachIds.shift();
+  if (teachId && TEACH_MOMENTS[teachId]) {
+    fireTeachMoment(teachId, TEACH_MOMENTS[teachId].text);
+  }
   saveGame({ immediate: true });
   renderAll(state);
 }
@@ -2238,7 +2328,6 @@ async function init() {
     document.getElementById('btn-claim-all')?.addEventListener('click', () => {
       const r = claimAllAchievements(state.achievements, state.portfolio);
       if (r.total) {
-        adjustReputation(state.meta, r.claimed.length * 8, 'claim_all');
         state.apiStatus = { mode: 'online', label: `Claimed $${r.total.toLocaleString()}` };
         saveGame();
         renderAll(state);
@@ -2624,7 +2713,7 @@ async function init() {
       return r;
     },
     disableSave: () => { window.__stockwayDisableSave = true; },
-    /** Unlock intern hire path for UI smoke without grinding REP. */
+    /** Unlock intern hire path for UI smoke without grinding cash. */
     ensureSmokeStaffUnlock: () => {
       if (!state.perks.includes('scanner')) state.perks.push('scanner');
       if (!state.perks.includes('hrDept')) state.perks.push('hrDept');

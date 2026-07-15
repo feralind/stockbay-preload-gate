@@ -1,10 +1,12 @@
 // @ts-check
 import { getSpendableCash } from './portfolio.js';
 import { PRIVATE_SALON_ITEMS } from './private-salon.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
 
 /**
  * Trophy Vault catalog — display names/descs are collectible-themed (Phase A).
  * Ids, cost, repRequired, and category are save/economy keys — do not rename ids.
+ * `repRequired` is legacy data mapped to a license tier via requiredLicenseForRep.
  * Art is foil SVG in ui/vault.js (no per-item icon string keys).
  */
 export const VAULT_ITEMS = {
@@ -149,7 +151,7 @@ export const VAULT_ITEMS = {
   augustusLaurel: {
     id: 'augustusLaurel',
     name: 'Laurel Wreath, Roman Imperial',
-    desc: 'Imperial laurel bronze. Masterwork flex that adds REP per profitable close when equipped.',
+    desc: 'Imperial laurel bronze. Masterwork flex that headlines your desk when equipped.',
     cost: 280000,
     category: 'trophy',
     repRequired: 500,
@@ -179,7 +181,7 @@ export const VAULT_ITEMS = {
   diademProvenance: {
     id: 'diademProvenance',
     name: 'Diadem of Verified Lineage',
-    desc: 'Crown-jewel recognition title. The top always-available masterwork — heavy REP per close when worn.',
+    desc: 'Crown-jewel recognition title. The top always-available masterwork — peak desk prestige when worn.',
     cost: 1200000,
     category: 'title',
     repRequired: 1200,
@@ -304,7 +306,7 @@ export function getVaultBookValue(state = {}) {
 
 /**
  * Desk Prestige from equipped vault collectibles.
- * Narrow power: profitable closes grant bonus REP (daily capped).
+ * Cosmetic display only since the licensing framework — no REP, no mechanical effect.
  * Never touches buying power / margin / slippage.
  */
 export function getVaultDeskAura({ cosmetics = {}, vaultOwned = [], perks = [] } = {}) {
@@ -333,7 +335,7 @@ export function getVaultDeskAura({ cosmetics = {}, vaultOwned = [], perks = [] }
       label: 'Desk Prestige I',
       repPerClose: 1,
       dailyCap: 3,
-      summary: 'Profitable closes grant +1 REP (max +3 / day).',
+      summary: 'Your desk shows collector taste.',
     };
   } else if (equipped === 3) {
     aura = {
@@ -342,7 +344,7 @@ export function getVaultDeskAura({ cosmetics = {}, vaultOwned = [], perks = [] }
       label: 'Desk Prestige II',
       repPerClose: 2,
       dailyCap: 6,
-      summary: 'Profitable closes grant +2 REP (max +6 / day).',
+      summary: 'A curated desk — visitors notice.',
     };
   } else {
     aura = {
@@ -351,16 +353,16 @@ export function getVaultDeskAura({ cosmetics = {}, vaultOwned = [], perks = [] }
       label: 'Desk Prestige III',
       repPerClose: 3,
       dailyCap: 9,
-      summary: 'Full set: profitable closes grant +3 REP (max +9 / day).',
+      summary: 'Full set equipped — a gallery-grade desk.',
     };
   }
 
-  // Vault Prestige perk: stronger close bonus + higher daily cap (never touches BP/margin).
+  // Vault Prestige perk: raises the displayed prestige (display flair only — never BP/margin).
   if (aura.tier > 0 && Array.isArray(perks) && perks.includes('auraAmp')) {
     aura.repPerClose += 1;
     aura.dailyCap = Math.round(aura.dailyCap * 1.5) + 3;
     aura.label = `${aura.label} + Prestige`;
-    aura.summary = `Vault Prestige: profitable closes grant +${aura.repPerClose} REP (max +${aura.dailyCap} / day).`;
+    aura.summary = 'Vault Prestige: your collection headlines the desk.';
   }
 
   const itemBonuses = sumEquippedItemBonuses(cosmetics, owned);
@@ -368,36 +370,21 @@ export function getVaultDeskAura({ cosmetics = {}, vaultOwned = [], perks = [] }
   if (aura.tier > 0 && (itemBonuses.repPerClose > 0 || itemBonuses.dailyCap > 0)) {
     aura.repPerClose += itemBonuses.repPerClose;
     aura.dailyCap += itemBonuses.dailyCap;
-    const bonusBits = [];
-    if (itemBonuses.repPerClose > 0) bonusBits.push(`+${itemBonuses.repPerClose} REP/close from masterworks`);
-    if (itemBonuses.dailyCap > 0) bonusBits.push(`+${itemBonuses.dailyCap} daily cap from masterworks`);
-    aura.summary = `${aura.summary} ${bonusBits.join('; ')}.`.trim();
+    aura.summary = `${aura.summary} Masterworks on display.`.trim();
   }
 
   return aura;
 }
 
-/** Apply capped Desk Prestige REP on a profitable close. Mutates meta. */
-export function applyVaultDeskAuraOnClose(meta, pnl, aura) {
-  if (!meta || !aura || aura.tier <= 0) return { applied: 0 };
-  if (!(Number(pnl) > 0)) return { applied: 0 };
-  const used = Math.max(0, Math.floor(Number(meta.vaultAuraRepToday) || 0));
-  const room = Math.max(0, (aura.dailyCap || 0) - used);
-  const grant = Math.min(aura.repPerClose || 0, room);
-  if (grant <= 0) return { applied: 0, capped: true };
-  meta.vaultAuraRepToday = used + grant;
-  return { applied: grant, capped: false };
-}
-
-export function canPurchaseVaultItem(item, { cash = 0, vaultOwned = [], reputation = 0 } = {}) {
+export function canPurchaseVaultItem(item, { cash = 0, vaultOwned = [], licenses = ['retail'] } = {}) {
   if (!item?.id) return { ok: false, reason: 'Unknown item', code: 'unknown' };
   if (item.salonOnly) return { ok: false, reason: 'Private Salon listing only', code: 'salon' };
   if (Array.isArray(vaultOwned) && vaultOwned.includes(item.id)) {
     return { ok: false, reason: 'Already owned', code: 'owned' };
   }
-  const repNeed = Number(item.repRequired) || 0;
-  if (Number(reputation) < repNeed) {
-    return { ok: false, reason: `Requires ${repNeed} REP`, code: 'rep' };
+  const licNeed = requiredLicenseForRep(item.repRequired);
+  if (!hasLicense(licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
   }
   if (Number(cash) < Number(item.cost || 0)) {
     return { ok: false, reason: 'Insufficient cash', code: 'cash' };
@@ -410,11 +397,10 @@ export function purchaseVaultItem(state, itemId) {
   if (!item) return { ok: false, msg: 'Unknown vault item.' };
   if (!Array.isArray(state?.vaultOwned)) state.vaultOwned = [];
   if (!state?.portfolio) return { ok: false, msg: 'Portfolio not ready.' };
-  if (!state?.meta) state.meta = { reputation: 0 };
   const gate = canPurchaseVaultItem(item, {
     cash: getSpendableCash(state.portfolio),
     vaultOwned: state.vaultOwned,
-    reputation: state.meta.reputation || 0,
+    licenses: state.licenses,
   });
   if (!gate.ok) {
     return { ok: false, msg: gate.reason, code: gate.code };

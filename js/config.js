@@ -46,43 +46,18 @@ export const CONFIG = {
   AUTOSAVE_DEBOUNCE_MS: 1500,
   /** Heartbeat while the desk is open (market drift, staff, clock) */
   AUTOSAVE_INTERVAL_MS: 30000,
+  /** Soft lag catch-up cap — game minutes advanced after minimize/lag (no day-end) */
+  MAX_CATCHUP_GAME_MINUTES: 240,
   CONFIRM_NOTIONAL_USD: 500,
   CONFIRM_PERK_COST: 600,
   TICKER_SYMBOLS: ['AAPL','MSFT','NVDA','TSLA','GOOGL','META','AMZN','AMD','NFLX','SPY','QQQ','JPM','XOM','UNH','COIN'],
 };
 
-/**
- * Named REP ranks — gate stronger desk perks and show progress in UI.
- * Tuned for Day 1–3 early unlocks; OP tools need sustained trading / challenges.
- */
-export const REP_RANKS = [
-  { id: 'newcomer', name: 'Newcomer', minRep: 0, blurb: 'Open the desk — Scanner & HR' },
-  { id: 'deskHand', name: 'Desk Hand', minRep: 40, blurb: 'News, charts, margin & compliance' },
-  { id: 'trusted', name: 'Trusted Trader', minRep: 120, blurb: 'Floor scale, options & routing' },
-  { id: 'veteran', name: 'Market Veteran', minRep: 250, blurb: 'Insider network, AI desk & vault prestige' },
-  { id: 'elite', name: 'Elite Desk', minRep: 500, blurb: 'Hedge fund status & prime brokerage' },
-  { id: 'legend', name: 'Market Legend', minRep: 1800, blurb: 'Legend Desk — maximum floor scale' },
-];
-
-/** Resolve current REP rank (highest whose minRep ≤ rep). */
-export function getRepRank(rep = 0) {
-  const r = Math.max(0, Number(rep) || 0);
-  let current = REP_RANKS[0];
-  for (const rank of REP_RANKS) {
-    if (r >= rank.minRep) current = rank;
-  }
-  return current;
-}
-
-/** Next rank above current, or null at the top. */
-export function getNextRepRank(rep = 0) {
-  const current = getRepRank(rep);
-  const idx = REP_RANKS.findIndex((r) => r.id === current.id);
-  return idx >= 0 && idx < REP_RANKS.length - 1 ? REP_RANKS[idx + 1] : null;
-}
+import { LICENSES, hasLicense } from './licenses.js';
 
 /**
- * Desk perks — tier bands map to REP_RANKS.
+ * Desk perks — gated by cash, perk prereqs, and institutional licenses
+ * (Retail → Series 7 → Series 86/87 Research → Reg D).
  * Owned perks from old saves remain active even if new gates would block rebuy.
  */
 export const PERKS = {
@@ -93,8 +68,8 @@ export const PERKS = {
     cost: 250,
     icon: 'scan',
     tier: 1,
-    tierLabel: 'Newcomer',
-    repRequired: 0,
+    tierLabel: 'Retail',
+    licenseRequired: 'retail',
   },
   hrDept: {
     id: 'hrDept',
@@ -103,19 +78,8 @@ export const PERKS = {
     cost: 400,
     icon: 'hr',
     tier: 1,
-    tierLabel: 'Newcomer',
-    repRequired: 0,
-    requires: ['scanner'],
-  },
-  newsWire: {
-    id: 'newsWire',
-    name: 'News Wire',
-    desc: 'Full simulated desk briefs, plus live headlines about two minutes before price impact.',
-    cost: 650,
-    icon: 'news',
-    tier: 2,
-    tierLabel: 'Desk Hand',
-    repRequired: 40,
+    tierLabel: 'Retail',
+    licenseRequired: 'retail',
     requires: ['scanner'],
   },
   analyst: {
@@ -124,20 +88,9 @@ export const PERKS = {
     desc: 'Moving averages and support/resistance on the chart. Unlocks Research Analyst.',
     cost: 700,
     icon: 'chart',
-    tier: 2,
-    tierLabel: 'Desk Hand',
-    repRequired: 40,
-    requires: ['scanner'],
-  },
-  margin: {
-    id: 'margin',
-    name: 'Margin Account',
-    desc: 'Enables short selling and doubles long buying power.',
-    cost: 950,
-    icon: 'margin',
-    tier: 2,
-    tierLabel: 'Desk Hand',
-    repRequired: 40,
+    tier: 1,
+    tierLabel: 'Retail',
+    licenseRequired: 'retail',
     requires: ['scanner'],
   },
   complianceSuite: {
@@ -146,10 +99,21 @@ export const PERKS = {
     desc: 'Cuts firm-wide staff mistake rate by about 40%. Stacks with a Compliance Officer.',
     cost: 900,
     icon: 'compliance',
-    tier: 2,
-    tierLabel: 'Desk Hand',
-    repRequired: 45,
+    tier: 1,
+    tierLabel: 'Retail',
+    licenseRequired: 'retail',
     requires: ['hrDept'],
+  },
+  margin: {
+    id: 'margin',
+    name: 'Margin Account',
+    desc: 'Enables short selling and doubles long buying power.',
+    cost: 950,
+    icon: 'margin',
+    tier: 2,
+    tierLabel: 'Series 7',
+    licenseRequired: 'series7',
+    requires: ['scanner'],
   },
   tradingFloor: {
     id: 'tradingFloor',
@@ -157,9 +121,9 @@ export const PERKS = {
     desc: 'Raises staff capacity to 8 seats and speeds automation by 25%.',
     cost: 2800,
     icon: 'floor',
-    tier: 3,
-    tierLabel: 'Trusted Trader',
-    repRequired: 120,
+    tier: 2,
+    tierLabel: 'Series 7',
+    licenseRequired: 'series7',
     requires: ['hrDept'],
   },
   options: {
@@ -168,9 +132,9 @@ export const PERKS = {
     desc: 'Trade calls and puts with Black–Scholes pricing on listed symbols.',
     cost: 4800,
     icon: 'options',
-    tier: 3,
-    tierLabel: 'Trusted Trader',
-    repRequired: 150,
+    tier: 2,
+    tierLabel: 'Series 7',
+    licenseRequired: 'series7',
     requires: ['margin'],
   },
   smartRouting: {
@@ -179,9 +143,20 @@ export const PERKS = {
     desc: 'Reduces fill slippage by about 35% on market orders and staff trades.',
     cost: 3600,
     icon: 'routing',
+    tier: 2,
+    tierLabel: 'Series 7',
+    licenseRequired: 'series7',
+    requires: ['scanner'],
+  },
+  newsWire: {
+    id: 'newsWire',
+    name: 'News Wire',
+    desc: 'Full simulated desk briefs, plus live headlines about two minutes before price impact.',
+    cost: 650,
+    icon: 'news',
     tier: 3,
-    tierLabel: 'Trusted Trader',
-    repRequired: 130,
+    tierLabel: 'Series 86/87',
+    licenseRequired: 'research',
     requires: ['scanner'],
   },
   insider: {
@@ -190,9 +165,9 @@ export const PERKS = {
     desc: 'Improves listing estimates and can reveal simulated events early. Not always correct.',
     cost: 16500,
     icon: 'eye',
-    tier: 4,
-    tierLabel: 'Market Veteran',
-    repRequired: 250,
+    tier: 3,
+    tierLabel: 'Series 86/87',
+    licenseRequired: 'research',
     requires: ['scanner'],
   },
   aiAdvisor: {
@@ -201,20 +176,20 @@ export const PERKS = {
     desc: 'Signals, daily picks, and desk chat. Unlocks the Junior Trader hire.',
     cost: 18500,
     icon: 'ai',
-    tier: 4,
-    tierLabel: 'Market Veteran',
-    repRequired: 280,
+    tier: 3,
+    tierLabel: 'Series 86/87',
+    licenseRequired: 'research',
     requires: ['scanner', 'analyst'],
   },
   auraAmp: {
     id: 'auraAmp',
     name: 'Vault Prestige',
-    desc: 'Raises reputation from equipped Vault cosmetics on profitable closes; higher daily cap.',
+    desc: 'Boosts the Desk Prestige tier shown from equipped Vault cosmetics. Display flair only.',
     cost: 12500,
     icon: 'prestige',
-    tier: 4,
-    tierLabel: 'Market Veteran',
-    repRequired: 300,
+    tier: 3,
+    tierLabel: 'Series 86/87',
+    licenseRequired: 'research',
     requires: ['scanner'],
   },
   hedgeFund: {
@@ -223,9 +198,9 @@ export const PERKS = {
     desc: 'Covers 50% of staff salaries and unlocks the Managing Partner hire.',
     cost: 28000,
     icon: 'fund',
-    tier: 5,
-    tierLabel: 'Elite Desk',
-    repRequired: 500,
+    tier: 4,
+    tierLabel: 'Reg D',
+    licenseRequired: 'regd',
     requires: ['tradingFloor', 'margin'],
   },
   primeBroker: {
@@ -234,9 +209,9 @@ export const PERKS = {
     desc: 'Adds eight minutes of margin-call grace before forced liquidation.',
     cost: 22000,
     icon: 'prime',
-    tier: 5,
-    tierLabel: 'Elite Desk',
-    repRequired: 550,
+    tier: 4,
+    tierLabel: 'Reg D',
+    licenseRequired: 'regd',
     requires: ['margin', 'tradingFloor'],
   },
   legendDesk: {
@@ -245,24 +220,24 @@ export const PERKS = {
     desc: 'Staff capacity to 10 seats, plus a further 10% payroll subsidy atop Hedge Fund Status.',
     cost: 50000,
     icon: 'legend',
-    tier: 6,
-    tierLabel: 'Market Legend',
-    repRequired: 1800,
+    tier: 4,
+    tierLabel: 'Reg D',
+    licenseRequired: 'regd',
     requires: ['hedgeFund'],
   },
 };
 
-/** Shared purchase gate — cash, perk prereqs, and REP. Owned = always ok for effect checks. */
-export function canPurchasePerk(perk, { cash = 0, perks = [], reputation = 0 } = {}) {
+/** Shared purchase gate — cash, perk prereqs, and license. Owned = always ok for effect checks. */
+export function canPurchasePerk(perk, { cash = 0, perks = [], licenses = ['retail'] } = {}) {
   if (!perk) return { ok: false, reason: 'Unknown perk' };
   if (perks.includes(perk.id)) return { ok: false, reason: 'Already owned' };
-  const repNeed = perk.repRequired || 0;
-  if (reputation < repNeed) {
-    const rank = getRepRank(repNeed);
+  const licNeed = perk.licenseRequired || 'retail';
+  if (!hasLicense(licenses, licNeed)) {
+    const lic = LICENSES[licNeed] || LICENSES.retail;
     return {
       ok: false,
-      reason: `Requires ${perk.tierLabel || rank.name} · ${repNeed} REP`,
-      code: 'rep',
+      reason: `Requires the ${lic.name} license`,
+      code: 'license',
     };
   }
   if (perk.requires?.length && !perk.requires.every((r) => perks.includes(r))) {

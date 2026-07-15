@@ -25,6 +25,8 @@ export const BANKS = [
     maxPersonal: 2500,
     maxCompany: 12000,
     minCredit: 580,
+    minPersonalCredit: 580,
+    minCompanyCredit: 600,
     desc: 'Big-bank reliability. Competitive business rates.',
   },
   {
@@ -41,6 +43,8 @@ export const BANKS = [
     maxPersonal: 2000,
     maxCompany: 10000,
     minCredit: 600,
+    minPersonalCredit: 600,
+    minCompanyCredit: 620,
     desc: 'Solid personal loans. Stricter credit floor.',
   },
   {
@@ -57,6 +61,8 @@ export const BANKS = [
     maxPersonal: 1800,
     maxCompany: 15000,
     minCredit: 620,
+    minPersonalCredit: 620,
+    minCompanyCredit: 645,
     desc: 'Best company APR. Higher personal rates.',
   },
   {
@@ -73,6 +79,8 @@ export const BANKS = [
     maxPersonal: 3000,
     maxCompany: 8000,
     minCredit: 640,
+    minPersonalCredit: 640,
+    minCompanyCredit: 660,
     desc: 'Lowest personal APR if your score is strong.',
   },
   {
@@ -89,6 +97,8 @@ export const BANKS = [
     maxPersonal: 1200,
     maxCompany: 5000,
     minCredit: 560,
+    minPersonalCredit: 560,
+    minCompanyCredit: 575,
     desc: 'Easier approval for thinner credit files.',
   },
   {
@@ -105,6 +115,8 @@ export const BANKS = [
     maxPersonal: 3500,
     maxCompany: 6000,
     minCredit: 680,
+    minPersonalCredit: 680,
+    minCompanyCredit: 700,
     desc: 'Fintech-fast funding. Best rates need excellent credit.',
   },
   {
@@ -121,12 +133,27 @@ export const BANKS = [
     maxPersonal: 1500,
     maxCompany: 4000,
     minCredit: 650,
+    minPersonalCredit: 650,
+    minCompanyCredit: 670,
     desc: 'Credit-union rates. Needs good credit.',
   },
 ];
 
 /**
- * Hold rule: positive credit / REP from voluntary repay only after the loan has
+ * Split approval floors: banks read personal and company files separately
+ * (company underwriting runs slightly stricter, like real B2B lending).
+ * Falls back to legacy `minCredit` for any bank without split fields.
+ * @param {object} bank
+ * @param {'personal'|'company'} type
+ */
+export function bankMinCredit(bank, type) {
+  if (!bank) return 0;
+  const split = type === 'personal' ? bank.minPersonalCredit : bank.minCompanyCredit;
+  return Number.isFinite(Number(split)) ? Number(split) : (Number(bank.minCredit) || 0);
+}
+
+/**
+ * Hold rule: positive credit from voluntary repay only after the loan has
  * accrued interest through at least one game day-end (interestTicks >= 1).
  * Same-morning borrow→repay never builds score.
  */
@@ -158,12 +185,15 @@ export function createFinanceState() {
     totalRepaid: 0,
     latePayments: 0,
     onTimePayments: 0,
+    /** Game day of the most recent late auto-payment (null = never late). */
+    lastLateDay: null,
     firstCreditDay: null,
     typesUsed: { personal: false, business: false },
     recentBorrowDays: [],
     creditGainDay: 0,
     creditGainsToday: { personal: 0, business: 0 },
     utilAdjDay: 0,
+    reserveAdjDay: 0,
   };
 }
 
@@ -252,7 +282,8 @@ export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0
   }
   const isPersonal = type === 'personal';
   const credit = isPersonal ? finance.personalCredit : finance.businessCredit;
-  if (credit < bank.minCredit) {
+  const minNeeded = bankMinCredit(bank, type);
+  if (credit < minNeeded) {
     return {
       max: 0,
       bankMax: 0,
@@ -261,7 +292,7 @@ export function underwriteMaxAmount(bankId, type, finance, { collateralValue = 0
       collateralBonus: 0,
       strengthMult,
       strengthPct,
-      reason: `Need ${bank.minCredit}+ ${isPersonal ? 'personal' : 'business'} credit (you have ${credit})`,
+      reason: `Need ${minNeeded}+ ${isPersonal ? 'personal' : 'business'} credit (you have ${credit})`,
     };
   }
   const tier = aprTierForScore(credit);
@@ -299,7 +330,7 @@ export function typeCreditLimit(finance, type, firmStrength = 0) {
   const strengthMult = firmStrengthMultiplier(firmStrength);
   let sum = 0;
   for (const bank of BANKS) {
-    if (credit < bank.minCredit) continue;
+    if (credit < bankMinCredit(bank, isPersonal ? 'personal' : 'company')) continue;
     const base = isPersonal ? bank.maxPersonal : bank.maxCompany;
     const mult = aprTierForScore(credit).limitMult;
     sum += base * mult * strengthMult;
@@ -391,8 +422,10 @@ export function quoteBankOffers(bankId, finance, gameDay = 1, opts = {}) {
     companyApr: priceApr(bank, 'company', finance, gameDay, opts),
     personalMax: maxBorrowableAmount(bankId, 'personal', finance, 50, gameDay, opts),
     companyMax: maxBorrowableAmount(bankId, 'company', finance, 50, gameDay, opts),
-    personalOk: finance.personalCredit >= bank.minCredit,
-    companyOk: finance.businessCredit >= bank.minCredit,
+    personalOk: finance.personalCredit >= bankMinCredit(bank, 'personal'),
+    companyOk: finance.businessCredit >= bankMinCredit(bank, 'company'),
+    personalMinCredit: bankMinCredit(bank, 'personal'),
+    companyMinCredit: bankMinCredit(bank, 'company'),
     strengthPct: firmStrengthBoostPct(opts.firmStrength || 0),
   };
 }
@@ -402,7 +435,7 @@ export function quoteLoan(bankId, type, amount, finance, gameDay = 1, opts = {})
   if (!bank) return { ok: false, msg: 'Unknown bank' };
   const isPersonal = type === 'personal';
   const credit = isPersonal ? finance.personalCredit : finance.businessCredit;
-  const minCredit = bank.minCredit;
+  const minCredit = bankMinCredit(bank, type);
   const baseApr = isPersonal ? bank.personalApr : bank.companyApr;
   const tier = aprTierForScore(credit);
   const firmStrength = opts.firmStrength ?? 0;
@@ -634,19 +667,16 @@ export function makeLoanPayment(loanId, amount, finance, portfolio, gameDay = 1)
       && (loan.daysLeft || 0) > Math.floor((loan.termDays || 30) * 0.5);
 
     let creditDelta = 0;
-    let rep = 0;
     if (qualifies) {
       // Full payoff after aging — meaningful but not overnight rocket
       const want = (loan.type === 'personal' ? 10 : 8) + mixBonus;
       creditDelta = applyCreditGain(finance, loan.type, want, gameDay);
-      rep = creditDelta > 0 ? 18 : 4;
       finance.onTimePayments = (finance.onTimePayments || 0) + 1;
     }
     return {
       ok: true,
       paid: pay,
       remaining: loan.balance,
-      rep,
       earlyPayoff: early,
       creditDelta,
       creditSkipped: !qualifies,
@@ -654,7 +684,6 @@ export function makeLoanPayment(loanId, amount, finance, portfolio, gameDay = 1)
   }
 
   let creditDelta = 0;
-  let rep = 0;
   // Partial: aged loan + meaningful size + once per game day per loan
   const minAmt = Math.max(MIN_PARTIAL_CREDIT_ABS, balanceBefore * MIN_PARTIAL_CREDIT_PCT);
   if (qualifies && pay >= minAmt && (loan.lastPartialCreditDay || 0) !== (Number(gameDay) || 0)) {
@@ -667,17 +696,13 @@ export function makeLoanPayment(loanId, amount, finance, portfolio, gameDay = 1)
         loan.lastPartialCreditDay = Number(gameDay) || 0;
         finance.onTimePayments = (finance.onTimePayments || 0) + 1;
       }
-      rep = creditDelta > 0 ? 4 : 1;
     }
-  } else if (!qualifies) {
-    // too new — no credit
   }
 
   return {
     ok: true,
     paid: pay,
     remaining: loan.balance,
-    rep,
     creditDelta,
     creditSkipped: !qualifies,
   };
@@ -698,9 +723,23 @@ export function processDailyLoans(finance, portfolio, gameDay = 1) {
         events.push({
           type: 'utilization',
           msg: `High ${type} credit utilization (${Math.round(util * 100)}%) — score pressure`,
-          rep: -4,
         });
       }
+    }
+  }
+
+  // Reserve pressure once per day: running the firm with more company debt
+  // than cash on hand reads as thin reserves to lenders (teaching moment).
+  if (finance.reserveAdjDay !== gameDay) {
+    finance.reserveAdjDay = gameDay;
+    const companyDebt = typeDebt(finance, 'company');
+    const cashOnHand = Math.max(0, Number(portfolio?.cash) || 0);
+    if (companyDebt > 0 && companyDebt > cashOnHand) {
+      applyCreditHit(finance, 'business', 2);
+      events.push({
+        type: 'reserve',
+        msg: `Reserves thin: company debt $${Math.round(companyDebt).toLocaleString()} exceeds cash — small business credit hit`,
+      });
     }
   }
 
@@ -725,7 +764,6 @@ export function processDailyLoans(finance, portfolio, gameDay = 1) {
       events.push({
         type: 'payment',
         msg: `${loan.bankName}: auto-paid $${due.toFixed(2)} (interest $${interest.toFixed(2)})`,
-        rep: 4,
         creditDelta: payCredit,
       });
       if (loan.balance <= 0.5) {
@@ -736,7 +774,6 @@ export function processDailyLoans(finance, portfolio, gameDay = 1) {
         events.push({
           type: 'paid_off',
           msg: `Paid off ${loan.type} loan at ${loan.bankName}`,
-          rep: 16,
           creditDelta,
         });
       }
@@ -744,6 +781,7 @@ export function processDailyLoans(finance, portfolio, gameDay = 1) {
       const fee = Math.min(5, loan.balance * 0.01);
       loan.balance += fee;
       finance.latePayments = (finance.latePayments || 0) + 1;
+      finance.lastLateDay = gameDay;
       // Payment history is the heaviest real-life factor — asymmetric damage
       if (loan.type === 'personal') applyCreditHit(finance, 'personal', 28);
       else applyCreditHit(finance, 'business', 22);
@@ -751,13 +789,12 @@ export function processDailyLoans(finance, portfolio, gameDay = 1) {
         type: 'late',
         loanId: loan.id,
         msg: `LATE: ${loan.bankName} — missed $${due.toFixed(2)}, fee $${fee.toFixed(2)}, credit hit`,
-        rep: -35,
       });
     }
 
     if (loan.daysLeft <= 0 && loan.balance > 0) {
       loan.status = 'overdue';
-      events.push({ type: 'overdue', msg: `${loan.bankName} loan matured — $${loan.balance.toFixed(2)} still owed`, rep: -15 });
+      events.push({ type: 'overdue', msg: `${loan.bankName} loan matured — $${loan.balance.toFixed(2)} still owed` });
     }
   }
   return events;

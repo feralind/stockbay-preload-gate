@@ -16,10 +16,10 @@ import { COLLECTION_MILESTONES, getCollectionClaimedCashTotal } from './collecti
 import { COLLECTION_SETS } from './collection-flavor.js';
 import { createMetaState } from './meta.js';
 import { getDayCount } from './market.js';
+import { LICENSE_ORDER } from './licenses.js';
 
 export const GM_SESSION_KEY = 'stockway_desk_support_v1';
 export const GM_CASH = 250_000_000;
-export const GM_REP = 5000;
 
 /** @type {boolean | null} */
 let gmActiveCache = null;
@@ -117,8 +117,8 @@ export const GM_SHORTCUTS = [
 
 /** @type {{ id: string, label: string, hint: string }[]} */
 export const GM_PANEL_ACTIONS = [
-  { id: 'fullLoadout', label: 'Full playtest loadout', hint: 'Cash, REP, perks, vault, BM, seat, office, luxury, collections' },
-  { id: 'cashRep', label: 'Cash + REP only', hint: `$${GM_CASH.toLocaleString()} cash · ${GM_REP} REP · max credit` },
+  { id: 'fullLoadout', label: 'Full playtest loadout', hint: 'Cash, licenses, perks, vault, BM, seat, office, luxury, collections' },
+  { id: 'cashRep', label: 'Cash + licenses only', hint: `$${GM_CASH.toLocaleString()} cash · all licenses · max credit` },
   { id: 'allPerks', label: 'Unlock all perks', hint: 'Every perk id owned' },
   { id: 'allCollectibles', label: 'All collectibles', hint: 'Vault + salon + Black Market + Seat (ledgers justified)' },
   { id: 'maxOfficeLuxury', label: 'Max office + luxury', hint: 'Investment Empire + all luxury sinks' },
@@ -138,7 +138,7 @@ export function applyGmAction(state, actionId) {
       return { ok: true, msg: 'Full playtest loadout applied' };
     case 'cashRep':
       applyGmCashRep(state);
-      return { ok: true, msg: 'Cash, REP, and credit boosted' };
+      return { ok: true, msg: 'Cash, licenses, and credit boosted' };
     case 'allPerks':
       applyGmAllPerks(state);
       return { ok: true, msg: 'All perks unlocked' };
@@ -167,7 +167,7 @@ export function applyGmCashRep(state) {
     state.portfolio.cash = GM_CASH;
   }
   if (!state.meta || typeof state.meta !== 'object') state.meta = createMetaState();
-  state.meta.reputation = GM_REP;
+  state.licenses = LICENSE_ORDER.slice();
   if (!state.finance || typeof state.finance !== 'object') {
     state.finance = { personalCredit: 850, businessCredit: 850, loans: [] };
   } else {

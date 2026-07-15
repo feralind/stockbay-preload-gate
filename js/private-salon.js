@@ -1,5 +1,6 @@
 // @ts-check
 import { getSpendableCash } from './portfolio.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
 
 /**
  * Ultra-rare crown jewels — Private Salon rotation only.
@@ -100,15 +101,15 @@ export function isSalonListingActive(currentDay, { ownedIds = [] } = {}) {
   return !!listing.item;
 }
 
-export function canPurchaseSalonItem(item, { cash = 0, vaultOwned = [], reputation = 0, listingActive = false } = {}) {
+export function canPurchaseSalonItem(item, { cash = 0, vaultOwned = [], licenses = ['retail'], listingActive = false } = {}) {
   if (!item?.id) return { ok: false, reason: 'Unknown listing', code: 'unknown' };
   if (!listingActive) return { ok: false, reason: 'Salon listing not active', code: 'window' };
   if (Array.isArray(vaultOwned) && vaultOwned.includes(item.id)) {
     return { ok: false, reason: 'Already owned', code: 'owned' };
   }
-  const repNeed = Number(item.repRequired) || 0;
-  if (Number(reputation) < repNeed) {
-    return { ok: false, reason: `Requires ${repNeed} REP`, code: 'rep' };
+  const licNeed = requiredLicenseForRep(item.repRequired);
+  if (!hasLicense(licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
   }
   if (Number(cash) < Number(item.cost || 0)) {
     return { ok: false, reason: 'Insufficient cash', code: 'cash' };
@@ -125,7 +126,7 @@ export function purchaseSalonItem(state, item, currentDay) {
   const gate = canPurchaseSalonItem(item, {
     cash: getSpendableCash(state.portfolio),
     vaultOwned: state.vaultOwned,
-    reputation: state.meta?.reputation || 0,
+    licenses: state.licenses,
     listingActive,
   });
   if (!gate.ok) return { ok: false, msg: gate.reason, code: gate.code };

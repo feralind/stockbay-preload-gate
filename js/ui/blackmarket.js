@@ -7,6 +7,7 @@ import { getProfile } from '../profile.js';
 import { getRelicEffect, getRelicSlotLimit } from '../relics.js';
 import { canPurchaseSeat, isSeatListingActive, THE_SEAT } from '../the-seat.js';
 import { getVaultSlotForItem } from '../vault.js';
+import { requiredLicenseForRep, hasLicense } from '../licenses.js';
 import { escapeHtml, fmt } from './shared.js';
 
 const ITEM_BY_ID = new Map(BLACKMARKET_ITEM_POOL.map((item) => [item.id, item]));
@@ -21,7 +22,7 @@ export function renderBlackMarket(state) {
   const day = formatMarketClock()?.day || 1;
   const ownedIds = Array.isArray(state.blackMarketOwned) ? state.blackMarketOwned : [];
   const ownedSet = new Set(ownedIds);
-  const rep = state.meta?.reputation || 0;
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
   const cash = state.portfolio?.cash || 0;
   const profile = getProfile();
   const equippedRelics = Array.isArray(state.blackMarketEquippedRelics) ? state.blackMarketEquippedRelics : [];
@@ -29,30 +30,27 @@ export function renderBlackMarket(state) {
   const relicSlotLimit = getRelicSlotLimit({ seatOwned: !!state.seatOwned });
   const listing = getTodaysBlackMarketListing(day, { ownedIds });
   const daysLeft = Math.max(0, listing.expiresDay - day);
-  const seatActive = isSeatListingActive(day, { reputation: rep, seatOwned: state.seatOwned });
+  const seatActive = isSeatListingActive(day, { licenses, seatOwned: state.seatOwned });
   const seatGate = canPurchaseSeat({
     cash,
-    reputation: rep,
+    licenses,
     seatOwned: !!state.seatOwned,
     seatListingActive: seatActive,
   });
   const seenExpired = Array.isArray(state.blackMarketSeenExpired) ? state.blackMarketSeenExpired : [];
-  const minListingRep = BLACKMARKET_ITEM_POOL.reduce(
-    (min, item) => Math.min(min, Number(item.repRequired) || 0),
-    Number.POSITIVE_INFINITY,
-  );
   const affordableNow = listing.items.filter((item) => canPurchaseBlackMarketItem(item, {
     cash,
     blackMarketOwned: ownedIds,
-    reputation: rep,
+    licenses,
   }).ok);
+  const lockedByLicense = listing.items.some((item) => !hasLicense(licenses, requiredLicenseForRep(item.repRequired).id));
   const showRoadmap = listing.items.length < 2 || affordableNow.length === 0;
   const roadmapHtml = showRoadmap
     ? `<div class="blackmarket-roadmap" role="note">
         <strong>Black Market roadmap</strong>
-        <p>${rep < minListingRep
-    ? `Your first listings unlock around <strong>${minListingRep} REP</strong>. Trade, climb the ranks, then come back for the rotation.`
-    : `Today's window is out of reach on your current cash/REP. Keep trading — the rotation refreshes by in-game day.`}</p>
+        <p>${lockedByLicense
+    ? `Some listings need a higher <strong>license</strong>. Pass exams on the Perks view, then come back for the rotation.`
+    : `Today's window is out of reach on your current cash/license. Keep trading — the rotation refreshes by in-game day.`}</p>
       </div>`
     : '';
 
@@ -87,7 +85,7 @@ export function renderBlackMarket(state) {
           const gate = canPurchaseBlackMarketItem(item, {
             cash,
             blackMarketOwned: ownedIds,
-            reputation: rep,
+            licenses,
           });
           const disabled = !gate.ok ? 'disabled' : '';
           return `
@@ -99,7 +97,7 @@ export function renderBlackMarket(state) {
               <p>${escapeHtml(item.desc)}</p>
               <div class="blackmarket-meta">
                 <span class="blackmarket-chip">${fmt(item.cost)}</span>
-                <span class="blackmarket-chip">${item.repRequired || 0} REP</span>
+                <span class="blackmarket-chip">${escapeHtml(requiredLicenseForRep(item.repRequired).short)} license</span>
                 <span class="blackmarket-chip">${escapeHtml(item.category)}</span>
               </div>
               <div class="blackmarket-actions">
@@ -127,7 +125,7 @@ export function renderBlackMarket(state) {
         <p>${escapeHtml(THE_SEAT.desc)}</p>
         <div class="blackmarket-meta">
           <span class="blackmarket-chip">${fmt(THE_SEAT.cost)}</span>
-          <span class="blackmarket-chip">${THE_SEAT.repRequired} REP</span>
+          <span class="blackmarket-chip">${escapeHtml(requiredLicenseForRep(THE_SEAT.repRequired).short)} license</span>
           <span class="blackmarket-chip">${seatActive ? 'Active window' : 'Inactive'}</span>
         </div>
         <div class="blackmarket-actions">

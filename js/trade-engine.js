@@ -195,8 +195,6 @@ export function confirmOrder(state, draft, deps = {}) {
     result,
     isDeal: !!listing.isDeal,
     incrementShortsOpened: side === 'short',
-    reputationDelta: side === 'long' ? 1 : 2,
-    reputationReason: 'trade',
     updateChallengeProgress: true,
     regenerateListings: true,
     closeModal: true,
@@ -273,7 +271,6 @@ export function processPendingOrders(state, deps = {}) {
       if (side === 'short') state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
       deps.noteBuy?.(false);
       deps.recordDayTrade?.();
-      deps.adjustReputation?.(state.meta, side === 'long' ? 2 : 3, 'limit_fill');
     } else {
       const pnl = attempt.result?.pnl || 0;
       deps.noteSell?.(pnl);

@@ -11,7 +11,7 @@ export const HELP_SECTIONS = [
 <ol>
 <li>Open <strong>Trade</strong> — buy a few shares of a familiar name (AAPL, NVDA). Start small.</li>
 <li>Check <strong>Listings</strong> for off-market asks; sniping a <strong>GREAT DEAL</strong> stretches your cash.</li>
-<li>Unlock <strong>Pro Scanner</strong> ($250 · Newcomer) in Perks — better listings and the gateway to everything else.</li>
+<li>Unlock <strong>Pro Scanner</strong> ($250 · Retail) in Perks — better listings and the gateway to everything else.</li>
 <li>Watch Morning → Afternoon → Evening, then the day summary (P&amp;L, payroll, trades).</li>
 <li>When you have ~$400 spare, unlock <strong>HR Department</strong> and hire an Intern or Scout.</li>
 </ol>
@@ -64,7 +64,7 @@ Large notional trades may ask for confirmation. Thin sessions and larger size ad
 <br><br>
 <strong>Simulated stories</strong> include a desk write-up, why it matters (sectors / tickers), and what the desk might do. Without <strong>News Wire</strong> you still see headlines and teasers; the full story stays locked with an unlock CTA.
 <br><br>
-<strong>News Wire</strong> ($650 · Desk Hand) unlocks those in-depth sim briefs and also surfaces live headlines ~2 minutes before they hit prices. Live items keep a source link — we don’t invent long copy for real headlines.
+<strong>News Wire</strong> ($650 · Series 86/87) unlocks those in-depth sim briefs and also surfaces live headlines ~2 minutes before they hit prices. Live items keep a source link — we don’t invent long copy for real headlines.
 <br><br>
 The Trade chart <strong>News</strong> tab lists live API headlines when a Finnhub key is configured.`,
   },
@@ -99,28 +99,24 @@ Offline note: credit math still runs on the sim clock; only live quote refreshes
   },
   {
     id: 'perks',
-    title: 'Perks &amp; REP Ranks',
-    body: `Perks are permanent desk upgrades. Each sits on a <strong>tier band</strong> gated by cash and <strong>REP rank</strong>. Owned perks from older saves keep working even if new gates would block a rebuy.
+    title: 'Perks &amp; Licenses',
+    body: `Perks are permanent desk upgrades. Each sits on a <strong>license tier</strong> — you qualify for a license, pay its exam fee, and that tier of perks opens up. Owned perks from older saves keep working even if new gates would block a rebuy.
 <br><br>
-<strong>REP rank ladder</strong>
+<strong>License ladder</strong>
 <ol>
-<li><strong>Newcomer</strong> — 0+ REP</li>
-<li><strong>Desk Hand</strong> — 40+ REP</li>
-<li><strong>Trusted Trader</strong> — 120+ REP</li>
-<li><strong>Market Veteran</strong> — 250+ REP</li>
-<li><strong>Elite Desk</strong> — 500+ REP</li>
-<li><strong>Market Legend</strong> — 1,800+ REP (Legend Desk unlock)</li>
+<li><strong>Retail Trading Account</strong> — everyone starts here. No exam.</li>
+<li><strong>Series 7</strong> — ~$1,500 exam · ~25 closed trades · personal credit ≥ 620. Unlocks margin, shorts, the trading floor.</li>
+<li><strong>Series 86/87 Research</strong> — ~$8,000 exam · ~15 green days · ~60 days on the desk. Unlocks research, news, AI advisor.</li>
+<li><strong>Reg D Institutional</strong> — ~$35,000 exam · business credit ≥ 700 · net worth floor · no late payments in 30 days. Unlocks hedge fund, prime broker, Legend Desk.</li>
 </ol>
-REP rises mainly from profitable closes, challenges, green days (and 3-day streaks), on-time loans, and achievements. Open trades grant a small bump; loan auto-pays taper at high REP so grinding stays paced.
+Licenses are earned by <em>doing the work</em> — closing trades, keeping credit clean, staying patient. There is no grind meter; the requirements read like the real thing.
 <br><br>
 <strong>Tier board</strong>
 <ul>
-<li><strong>Tier 1 · Newcomer</strong> — Pro Scanner ($250), HR Department ($400)</li>
-<li><strong>Tier 2 · Desk Hand</strong> — News Wire ($650 · 40), Analyst Reports ($700 · 40; MA + S/R), Margin ($950 · 40), Compliance Suite ($900 · 45)</li>
-<li><strong>Tier 3 · Trusted Trader</strong> — Trading Floor ($2,800 · 120), Smart Routing ($3,600 · 130), Options Desk ($4,800 · 150)</li>
-<li><strong>Tier 4 · Market Veteran</strong> — Vault Prestige ($12,500 · 300), Insider Network ($16,500 · 250), AI Advisor ($18,500 · 280)</li>
-<li><strong>Tier 5 · Elite Desk</strong> — Prime Broker ($22,000 · 550), Hedge Fund Status ($28,000 · 500)</li>
-<li><strong>Tier 6 · Market Legend</strong> — Legend Desk ($50,000 · 1,800; 10 seats + extra payroll cover)</li>
+<li><strong>Retail</strong> — Pro Scanner ($250), HR Department ($400), Analyst Reports ($700), Compliance Suite</li>
+<li><strong>Series 7</strong> — Margin Trading, Trading Floor, Smart Routing, Options Desk</li>
+<li><strong>Series 86/87</strong> — News Wire, Insider Network, AI Advisor, Vault Prestige</li>
+<li><strong>Reg D</strong> — Prime Broker, Hedge Fund Status, Legend Desk (10 seats + extra payroll cover)</li>
 </ul>
 Start with Scanner, then HR. Save Insider / AI / Legend for late game — they are expensive edges, not impulse buys.`,
   },
@@ -175,10 +171,10 @@ Theme, sound, sidebar width, and hotkeys live under Settings.`,
   },
   {
     id: 'achievements',
-    title: 'Achievements &amp; REP',
+    title: 'Achievements &amp; Licenses',
     body: `<strong>Achievements</strong> unlock as you trade, hire, grow equity, and clear challenges. Claim cash rewards on the Achievements tab (Claim / Claim All). Tiers run Bronze → Master.
 <br><br>
-<strong>REP</strong> starts at 0 and unlocks named ranks (Newcomer → Desk Hand → Trusted Trader → Market Veteran → Elite Desk → Market Legend). It rises with profits, on-time loan payments, and challenges; it falls on losses, late debt, and firings. Daily challenges pay cash + REP when completed. Higher ranks gate stronger Perks.`,
+<strong>Licenses</strong> replace an abstract reputation meter: Retail → Series 7 → Series 86/87 Research → Reg D Institutional. Each has real requirements (closed trades, credit score, green days, clean payment history) plus an exam fee. Daily challenges pay cash when completed. Higher licenses gate stronger Perks.`,
   },
   {
     id: 'risk-options',
@@ -235,7 +231,7 @@ export const GLOSSARY = [
   { cat: 'MARKET', term: 'Implied volatility', def: 'Priced-in expectation of how wild moves might be; higher IV usually means richer option premiums.', glossId: 'implied-volatility' },
   { cat: 'MARKET', term: 'Margin call', def: 'Equity cushion below maintenance. Cover or sell to restore it, or the desk liquidates after grace.', glossId: 'margin-stress' },
   { cat: 'MARKET', term: 'Fed funds (sim)', def: 'Simulated policy rate — nudges loan APRs and Fed hike/cut event impact. Not a live Fed quote.', glossId: 'fed-rate' },
-  { cat: 'STAFF', term: 'HR Department', def: 'Perk required before any hire ($400 · Newcomer, needs Scanner).' },
+  { cat: 'STAFF', term: 'HR Department', def: 'Perk required before any hire ($400 · Retail, needs Scanner).' },
   { cat: 'STAFF', term: 'Newbie', def: 'Entry tier — more mistakes, slower actions.' },
   { cat: 'STAFF', term: 'Veteran', def: 'Trained staff — fewer mistakes ($450 upgrade).' },
   { cat: 'STAFF', term: 'Expert', def: 'Top tier — rare mistakes ($1200 upgrade).' },
@@ -251,10 +247,10 @@ export const GLOSSARY = [
   { cat: 'FINANCE', term: 'APR', def: 'Annual percentage rate. Accrues daily (APR/365). Quote = bank base ± credit tier, relationship, utilization, inquiries.' },
   { cat: 'FINANCE', term: 'Credit score', def: '300–850. Hold rule: need one day-end of interest before voluntary repay builds credit. Lates hurt hard; rebuilds are capped daily.' },
   { cat: 'FINANCE', term: 'Credit utilization', def: 'Open debt ÷ available bank limits. High util raises APR and can pressure the score.' },
-  { cat: 'PROGRESS', term: 'REP', def: 'Reputation starts at 0. Named ranks gate perk tiers. Rises with profits, on-time payments, challenges. Falls on losses, late debt, firings.' },
-  { cat: 'PROGRESS', term: 'REP rank', def: 'Newcomer (0) → Desk Hand (40) → Trusted Trader (120) → Market Veteran (250) → Elite Desk (500) → Market Legend (1800).' },
-  { cat: 'PROGRESS', term: 'Challenge', def: 'Daily goal with cash + REP reward if completed.', glossId: 'challenge' },
-  { cat: 'PROGRESS', term: 'Perk', def: 'Permanent unlock bought with cash + REP rank (Scanner, Margin, HR, AI, etc.).' },
+  { cat: 'PROGRESS', term: 'License', def: 'Retail → Series 7 → Series 86/87 → Reg D. Each needs real qualifications (trades, credit, patience) plus an exam fee. Gates perk tiers.' },
+  { cat: 'PROGRESS', term: 'Exam fee', def: 'One-time cash cost to sit a license exam once you qualify. Paid on the Perks view.' },
+  { cat: 'PROGRESS', term: 'Challenge', def: 'Daily goal with a cash reward if completed.', glossId: 'challenge' },
+  { cat: 'PROGRESS', term: 'Perk', def: 'Permanent unlock bought with cash + the right license (Scanner, Margin, HR, AI, etc.).' },
   { cat: 'PROGRESS', term: 'Speed', def: '1x/2x/5x/10x — at 1x, ~30 real minutes = one game day.', glossId: 'game-speed' },
 ];
 

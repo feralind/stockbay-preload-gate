@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * End-of-day settlement core — challenge, loans, payroll, day REP, options expiry, summary DTO.
+ * End-of-day settlement core — challenge, loans, payroll, options expiry, summary DTO.
  * UI (toasts, day-summary modal, clock/pause) stays in app.js.
  */
 import { getNetEquity, settleExpiredOptions } from './portfolio.js';
@@ -11,22 +11,12 @@ import { collectProcessWins } from './process-wins.js';
 import {
   updateChallengeProgress,
   claimChallenge,
-  adjustReputation,
 } from './meta.js';
 import { recordBestRun } from './leaderboard.js';
+import { lessonLineForDay, updateRecoveryHint } from './teach-moments.js';
 import { repossessVaultForLateLoans, getVaultSlotForItem, getVaultItem } from './vault.js';
 import { setProfileCosmetic } from './profile.js';
 import { processDailyEstates, syncEstateDerived } from './estates.js';
-
-/** Soft-taper loan auto-pay REP so late ranks don't farm as fast as early Desk Hand. */
-export function taperLoanRep(rep, currentReputation) {
-  let next = Number(rep) || 0;
-  if (!(next > 0)) return next;
-  const cur = Number(currentReputation) || 0;
-  if (cur >= 400) return Math.max(1, Math.round(next * 0.5));
-  if (cur >= 200) return Math.max(1, Math.round(next * 0.75));
-  return next;
-}
 
 /**
  * Mutate run state for day close; return summary DTO + toast hints.
@@ -41,7 +31,6 @@ export function taperLoanRep(rep, currentReputation) {
  *   staffActions: number,
  *   challengeDone: boolean,
  *   challengeReward: number,
- *   dayRepDelta: number,
  *   loanEvents: object[],
  *   payroll: number,
  *   bestRun: { isRecord?: boolean },
@@ -73,11 +62,6 @@ export function runDayEndSettlement(state, day) {
     }
   }
 
-  let dayRepDelta = 0;
-  const addRep = (delta, reason) => {
-    dayRepDelta += adjustReputation(state.meta, delta, reason).delta;
-  };
-
   const loanEvents = processDailyLoans(state.finance, state.portfolio, day);
   const estateDay = processDailyEstates(state);
   const repossessions = repossessVaultForLateLoans(state, loanEvents);
@@ -88,12 +72,6 @@ export function runDayEndSettlement(state, day) {
       if (slot) setProfileCosmetic(slot, null);
     }
   }
-  for (const ev of loanEvents) {
-    if (!ev.rep) continue;
-    const rep = taperLoanRep(ev.rep, state.meta.reputation || 0);
-    addRep(rep, ev.type);
-  }
-
   tickStaffTenureDay(state);
   const payroll = payDailySalaries(state);
   if (!state.stats) state.stats = {};
@@ -101,22 +79,13 @@ export function runDayEndSettlement(state, day) {
   if (stats.equityDelta >= 100) {
     state.stats.greenDays = (state.stats.greenDays || 0) + 1;
     state.stats.greenStreak = (state.stats.greenStreak || 0) + 1;
-    addRep(20, 'green_day');
-    if (state.stats.greenStreak > 0 && state.stats.greenStreak % 3 === 0) {
-      addRep(8, 'green_streak');
-    }
-  } else if (stats.equityDelta < -100) {
-    state.stats.greenStreak = 0;
-    addRep(-10, 'red_day');
   } else {
     state.stats.greenStreak = 0;
-    addRep(3, 'day_complete');
   }
 
   const bestRun = recordBestRun({
     equity,
     day,
-    rep: state.meta.reputation,
     cash: state.portfolio.cash,
   }) || {};
 
@@ -145,13 +114,14 @@ export function runDayEndSettlement(state, day) {
     worstTrade: state.meta.dayWorstTrade || 0,
     challengeDone,
     challengeReward,
-    repDelta: dayRepDelta,
     loanEvents,
     estateEvents: estateDay.events,
     estateNetIncome: estateDay.netIncome,
     optionsExpired: expiredOpts.length,
     repossessions,
     processWins,
+    lessonLine: lessonLineForDay({ loanEvents }),
+    recoveryHint: updateRecoveryHint(state, equity),
   };
 
   return {
@@ -161,7 +131,6 @@ export function runDayEndSettlement(state, day) {
     staffActions,
     challengeDone,
     challengeReward,
-    dayRepDelta,
     loanEvents,
     estateEvents: estateDay.events,
     repossessions,

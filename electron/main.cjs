@@ -459,15 +459,46 @@ async function createMainWindow() {
   });
 
   let closingAfterSave = false;
+  const CLOSE_SAVE_TIMEOUT_MS = 3000;
+
+  function finishCloseAfterSave(ok) {
+    if (closingAfterSave) return;
+    closingAfterSave = true;
+    if (!ok) {
+      console.warn('[StockWay] Emergency save did not confirm; quitting anyway.');
+    }
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+    } catch (_) { /* ignore */ }
+    mainWindow = null;
+    app.quit();
+  }
+
   mainWindow.on('close', (e) => {
     if (closingAfterSave || isQuitting) return;
     e.preventDefault();
-    mainWindow.webContents.executeJavaScript(
-      'typeof window.__stockwayFlushSave==="function"&&window.__stockwayFlushSave()',
-      true,
-    ).catch(() => null).finally(() => {
-      closingAfterSave = true;
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      finishCloseAfterSave(false);
+    }, CLOSE_SAVE_TIMEOUT_MS);
+
+    Promise.resolve(
+      mainWindow.webContents.executeJavaScript(
+        `(function(){try{var f=window.__stockwayFlushSave;return typeof f==="function"?Promise.resolve(f()):false;}catch(e){return false;}})()`,
+        true,
+      ),
+    ).then((ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finishCloseAfterSave(!!ok);
+    }).catch(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finishCloseAfterSave(false);
     });
   });
 

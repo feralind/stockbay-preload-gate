@@ -70,7 +70,7 @@ export const PERK_CALLOUT_HOOKS = {
     helpSec: 'perks',
   },
   auraAmp: {
-    why: 'Equipped Vault cosmetics already grant Desk Prestige reputation on profitable closes. This raises the per-close bonus and the daily cap.',
+    why: 'Equipped Vault cosmetics give your desk a Prestige display. This perk raises that display flair — pure collector bragging rights.',
     helpSec: 'perks',
   },
   hedgeFund: {
@@ -177,22 +177,22 @@ export function getWalkthroughSuggestMeta() {
 }
 
 /** True when perk is not owned, not yet callout-shown, and canPurchasePerk just became ok. */
-export function shouldShowPerkCallout(perkId, { cash, perks, reputation, perkCalloutsShown } = {}) {
+export function shouldShowPerkCallout(perkId, { cash, perks, licenses, perkCalloutsShown } = {}) {
   if (!CALLOUT_PERK_IDS.includes(perkId)) return false;
   if ((perks || []).includes(perkId)) return false;
   if (perkCalloutsShown?.[perkId]) return false;
   const perk = PERKS[perkId];
   if (!perk) return false;
-  return canPurchasePerk(perk, { cash, perks, reputation }).ok;
+  return canPurchasePerk(perk, { cash, perks, licenses }).ok;
 }
 
 export function listPendingPerkCallouts(state) {
   const cash = state?.portfolio?.cash ?? 0;
   const perks = state?.perks || [];
-  const reputation = state?.meta?.reputation ?? 0;
+  const licenses = Array.isArray(state?.licenses) ? state.licenses : ['retail'];
   const perkCalloutsShown = state?.meta?.perkCalloutsShown || {};
   return CALLOUT_PERK_IDS.filter((id) => shouldShowPerkCallout(id, {
-    cash, perks, reputation, perkCalloutsShown,
+    cash, perks, licenses, perkCalloutsShown,
   }));
 }
 
@@ -258,11 +258,10 @@ export function markSimStatusCoachShown(meta) {
   return meta;
 }
 
-/** Pure: first trusted-rank graduation coachmark for this save. */
-export function shouldShowGraduationCoach(meta) {
+/** Pure: first graduation coachmark for this save — fires once Series 7 is earned. */
+export function shouldShowGraduationCoach(meta, licenses = []) {
   if (!meta || meta.graduationCoachShown) return false;
-  // Fire once at/above Trusted Trader (120+), including jumps past that band.
-  return (Number(meta.reputation) || 0) >= 120;
+  return Array.isArray(licenses) && licenses.includes('series7');
 }
 
 export function markGraduationCoachShown(meta) {
@@ -287,7 +286,7 @@ const SIM_STATUS_COACH_TEXT =
   + 'Offline uses cached baselines or seeds; paper money never leaves the browser except quote lookups.';
 
 const GRADUATION_COACH_TEXT =
-  'Trusted Trader: you are past the tutorial desk now. '
+  'Series 7 earned: you are past the tutorial desk now. '
   + 'From here, judgment and firm identity matter more than prompts — what you buy, what you pass on, and how you size risk become the story of this shop. '
   + 'No more hand-holding: run the desk like your name is on the door.';
 
@@ -387,11 +386,11 @@ export function maybeShowSimStatusCoach(state, { saveGame } = {}) {
 }
 
 /**
- * One-shot coachmark when REP first reaches Trusted Trader.
+ * One-shot coachmark when the Series 7 license is first earned.
  * Quiet walkthrough/tour modes never mark it shown, so it can fire later.
  */
 export function maybeShowGraduationCoach(state, { saveGame } = {}) {
-  if (!state?.meta || !shouldShowGraduationCoach(state.meta)) return false;
+  if (!state?.meta || !shouldShowGraduationCoach(state.meta, state.licenses)) return false;
   if (isCoachQuiet()) return false;
   if (!canShowDomCoachmark()) {
     markGraduationCoachShown(state.meta);

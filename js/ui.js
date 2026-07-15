@@ -76,7 +76,8 @@ import { syncEstateDerived, getHighestOwnedEstate } from './estates.js';
 import { getPlayerStanding } from './meta.js';
 import { toast, showAlert } from './notify.js';
 import { sfxError } from './sfx.js';
-import { CONFIG, REP_RANKS, getRepRank, getNextRepRank } from './config.js';
+import { CONFIG } from './config.js';
+import { LICENSES, LICENSE_ORDER, hasLicense, getHighestLicense, getNextLicense } from './licenses.js';
 import { trapFocus } from './overlays.js';
 import {
   loadProfile, getProfile, saveProfile, clearAvatar, profileInitials, fileToAvatarDataUrl,
@@ -249,25 +250,26 @@ function fillEquityPopover(el, state) {
 }
 
 function fillRepPopover(el, state) {
-  const rep = state.meta?.reputation ?? 0;
-  const current = getRepRank(rep);
-  const next = getNextRepRank(rep);
-  const ranks = REP_RANKS.map((rank) => {
-    const unlocked = rep >= rank.minRep;
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
+  const current = getHighestLicense(licenses);
+  const next = getNextLicense(licenses);
+  const rows = LICENSE_ORDER.map((id) => {
+    const lic = LICENSES[id];
+    const unlocked = hasLicense(licenses, id);
     return `<div class="stat-popover-rank ${unlocked ? 'unlocked' : 'locked'}">
       <span class="stat-popover-rank-mark">${unlocked ? '✓' : ''}</span>
-      <span class="stat-popover-rank-name">${rank.name}</span>
-      <span class="stat-popover-rank-meta">${rank.minRep}+ · ${unlocked ? 'Unlocked' : 'Locked'}</span>
+      <span class="stat-popover-rank-name">${lic.short}</span>
+      <span class="stat-popover-rank-meta">${lic.fee > 0 ? `$${lic.fee.toLocaleString()} exam` : 'Default'} · ${unlocked ? 'Held' : 'Locked'}</span>
     </div>`;
   }).join('');
   const progress = next
-    ? `${rep} / ${next.minRep} to ${next.name}`
-    : 'Max rank';
+    ? `Next: ${next.name} — qualify on the Perks page`
+    : 'Top accreditation held';
   el.innerHTML = `
-    <div class="stat-popover-title">Reputation</div>
-    <p class="stat-popover-blurb">Earned from trades, day performance, achievements, challenges, hiring/training, and on-time credit. Lost on losses, late debt, and firings. Ranks gate desk perk tiers.</p>
-    <div class="stat-popover-current">${current.name} · ${rep} REP</div>
-    <div class="stat-popover-ranks">${ranks}</div>
+    <div class="stat-popover-title">Licenses</div>
+    <p class="stat-popover-blurb">Real-career progression: qualify with your track record and credit, pay the exam fee, and each license opens its tier of desk perks.</p>
+    <div class="stat-popover-current">${current.name}</div>
+    <div class="stat-popover-ranks">${rows}</div>
     <div class="stat-popover-sep"></div>
     <div class="stat-popover-footer">${progress}</div>
   `;
@@ -287,9 +289,9 @@ function updateStatPopovers(state) {
     vaultBook: getVaultBookValue(state),
     estateEquity: state.estateEquity,
   });
-  const rep = state.meta?.reputation ?? 0;
-  const rank = getRepRank(rep);
-  const next = getNextRepRank(rep);
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
+  const rank = getHighestLicense(licenses);
+  const next = getNextLicense(licenses);
   const equityCell = document.getElementById('equity-stat-cell');
   const repCell = document.getElementById('rep-stat-cell');
   if (equityCell) {
@@ -297,8 +299,8 @@ function updateStatPopovers(state) {
   }
   if (repCell) {
     const tip = next
-      ? `${rank.name} · ${rep} REP · ${next.minRep - rep} to ${next.name}`
-      : `${rank.name} · ${rep} REP · Max rank`;
+      ? `${rank.name} · next: ${next.short} (see Perks)`
+      : `${rank.name} · top accreditation`;
     repCell.title = tip;
   }
   if (activeStatPopover?.id === 'equity-popover') {
@@ -351,10 +353,10 @@ function renderHeader(state) {
   setText('equity', fmt(firm));
   setText('pnl', fmtPnL(getUnrealizedPnL(portfolio)));
   setText('buying-power', fmt(getBuyingPower(portfolio, perks)));
-  const rep = meta?.reputation ?? 0;
-  setText('reputation', String(rep));
+  const heldLicense = getHighestLicense(state.licenses);
+  setText('reputation', heldLicense.short);
   const rankEl = document.getElementById('rep-rank');
-  if (rankEl) rankEl.textContent = getRepRank(rep).name;
+  if (rankEl) rankEl.textContent = heldLicense.name;
   updateStatPopovers(state);
   renderFeedStatus(apiStatus);
   const marginBanner = document.getElementById('margin-stress-banner');
@@ -701,7 +703,7 @@ function updatePlayerTier(state, profile = getProfile()) {
     seatItem: THE_SEAT,
     salonPool: PRIVATE_SALON_POOL,
   });
-  const main = `${standing.rankName} · REP ${standing.rep}`;
+  const main = standing.licenseName || standing.rankName;
   const secondary = [];
   secondary.push(`Collection ${standing.collectionScore}`);
   if (standing.deskLabel) secondary.push(standing.deskLabel);
@@ -835,8 +837,11 @@ export function showDaySummary(stats) {
     if (stats.challengeDone) {
       chips.push(`<span class="eod-chip challenge">Challenge cleared · +$${stats.challengeReward?.toLocaleString() || 0}</span>`);
     }
-    if (stats.repDelta) {
-      chips.push(`<span class="eod-chip rep">${stats.repDelta > 0 ? '+' : ''}${stats.repDelta} REP</span>`);
+    if (stats.lessonLine) {
+      chips.push(`<span class="eod-chip rep">${stats.lessonLine}</span>`);
+    }
+    if (stats.recoveryHint) {
+      chips.push(`<span class="eod-chip warn">${stats.recoveryHint}</span>`);
     }
     if (stats.optionsExpired) {
       chips.push(`<span class="eod-chip warn">${stats.optionsExpired} option(s) expired</span>`);

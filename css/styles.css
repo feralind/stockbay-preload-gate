@@ -2540,6 +2540,50 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .perks-stat-of { font-size: 13px; color: var(--muted); font-weight: 600; }
 .perks-stat-hint { font-size: 11px; color: var(--muted); font-weight: 500; }
 
+/* License chapters — the exam board (structure remounts only on met-flag changes) */
+.license-board {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+.license-card {
+  display: flex; flex-direction: column; gap: 8px;
+  border-radius: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--glass-stroke-soft);
+  background: color-mix(in srgb, #fff 3%, transparent);
+}
+.license-card.is-held { border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.license-card.is-ready { border-color: color-mix(in srgb, var(--up, #37c98b) 45%, transparent); }
+.license-card.is-locked { opacity: 0.78; }
+.license-card-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.license-card-tier {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--muted);
+}
+.license-card-name { margin: 0; font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em; flex: 1 1 auto; }
+.license-card-status {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--glass-stroke-soft); color: var(--muted);
+}
+.license-card-status.is-held { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.license-card-status.is-ready { color: var(--up, #37c98b); border-color: color-mix(in srgb, var(--up, #37c98b) 45%, transparent); }
+.license-card-blurb { margin: 0; font-size: 12px; color: var(--text); line-height: 1.5; }
+.license-card-unlocks { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.license-card-teaches {
+  margin: 0; font-size: 11.5px; color: var(--muted); font-style: italic; line-height: 1.5;
+}
+.license-req-list { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.license-req { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; line-height: 1.45; }
+.license-req.met { color: var(--up, #37c98b); }
+.license-req.unmet { color: var(--muted); }
+.license-req-dot { font-size: 10px; }
+.license-card-foot {
+  margin-top: auto; display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding-top: 8px;
+}
+.license-card-fee { font-size: 11.5px; color: var(--muted); font-weight: 600; }
+
 .perks-board {
   display: flex; flex-direction: column; gap: 30px; padding-bottom: 8px;
   border: 0;
@@ -6247,6 +6291,17 @@ body.is-resizing-right * { cursor: col-resize !important; }
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
 }
 .bank-debt-hint.muted-text { color: var(--muted); }
+/* Locked-bank teaching card — requirement vs current score + one rebuild hint */
+.bank-teach {
+  font-size: 11px; line-height: 1.5;
+  padding: 8px 10px; border-radius: 8px;
+  background: color-mix(in srgb, var(--orange, #e8a145) 7%, var(--bg2));
+  border: 1px solid color-mix(in srgb, var(--orange, #e8a145) 24%, transparent);
+  display: flex; flex-direction: column; gap: 3px;
+}
+.bank-teach-row { color: var(--text); }
+.bank-teach-row strong { color: var(--orange, #e8a145); }
+.bank-teach-hint { color: var(--muted); }
 .loan-btn.is-tight { opacity: 0.72; }
 .rate-chip {
   padding: 4px 8px; border-radius: 999px; background: var(--bg2);

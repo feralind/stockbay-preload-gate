@@ -45,6 +45,7 @@ Balance is in a good place. **Do not casually raise** Intern `hireCost` / `salar
 ## Hard rules
 
 - Never rename staff save `id`s or role catalog keys (`intern`, `scout`, …).
+- **REP is gone** — staff hires/fires/training grant no reputation. Progression is licenses (`js/licenses.js`); HR perk stays retail-tier so day-1 hire path is license-free.
 - Wages are **game-day burn**, not wall-clock hourly — comment in `staff.js` stands.
 - Do not add AFK money printers (free staff, zero payroll, unbounded autopilot).
 - Autopilot stays gated (Veteran+, XP floor, trading lanes only).

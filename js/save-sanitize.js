@@ -22,6 +22,7 @@ import {
   COLLECTION_MILESTONE_BY_ID,
 } from './collection-log.js';
 import { sanitizeSetClaims, getSetById } from './collection-flavor.js';
+import { sanitizeLicenses, licensesFromLegacyRep } from './licenses.js';
 
 const MAX_CASH = 1e12;
 const MAX_SHARES = 1_000_000;
@@ -214,6 +215,15 @@ export function sanitizeRunData(run) {
     out.perks = [];
   }
 
+  // Licensing migration: pre-license saves earn licenses from their old REP total.
+  // meta.reputation stays on the save but is inert.
+  if (Array.isArray(out.licenses)) {
+    out.licenses = sanitizeLicenses(out.licenses);
+  } else {
+    const legacyRep = Math.max(0, Math.floor(Number(out.meta?.reputation) || 0));
+    out.licenses = licensesFromLegacyRep(legacyRep);
+  }
+
   if (Array.isArray(out.vaultOwned)) {
     out.vaultOwned = [...new Set(out.vaultOwned.filter((id) => KNOWN_VAULT_IDS.has(id)))];
   } else {
@@ -345,7 +355,10 @@ export function sanitizeRunData(run) {
     m.simStatusCoachShown = !!m.simStatusCoachShown;
     m.graduationCoachShown = !!m.graduationCoachShown;
     m.blackMarketLegendCoachShown = !!m.blackMarketLegendCoachShown;
-    m.vaultAuraRepToday = Math.max(0, Math.floor(Number(m.vaultAuraRepToday) || 0));
+    m.teachMomentsShown = m.teachMomentsShown && typeof m.teachMomentsShown === 'object'
+      ? Object.fromEntries(Object.entries(m.teachMomentsShown).filter(([, v]) => v === true).slice(0, 64))
+      : {};
+    delete m.vaultAuraRepToday;
     const claimedFlairs = new Set(
       out.collectionClaims
         .map((id) => COLLECTION_MILESTONE_BY_ID.get(id)?.flair)
@@ -397,6 +410,8 @@ export function sanitizeRunData(run) {
     const f = { ...createFinanceState(), ...out.finance };
     f.personalCredit = clamp(Math.floor(Number(f.personalCredit) || 680), 300, 850);
     f.businessCredit = clamp(Math.floor(Number(f.businessCredit) || 700), 300, 850);
+    const lastLate = Math.floor(Number(f.lastLateDay));
+    f.lastLateDay = Number.isFinite(lastLate) && lastLate >= 1 ? lastLate : null;
     if (!Array.isArray(f.loans)) f.loans = [];
     out.finance = f;
   }

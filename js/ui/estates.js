@@ -190,7 +190,7 @@ function financialsHtml(asset) {
   if (asset.vaultPrestige) {
     cells.push({
       label: 'Prestige',
-      value: `+${asset.vaultPrestige.repPerClose} REP/close`,
+      value: 'Flagship holding',
     });
   }
   return `

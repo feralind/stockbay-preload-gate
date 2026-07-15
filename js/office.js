@@ -5,6 +5,7 @@
  */
 
 import { getSpendableCash } from './portfolio.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
 
 /** @typedef {{ id: string, name: string, minNet: number, minRep: number, price: number, blurb: string }} OfficeTier */
 
@@ -64,17 +65,21 @@ export function getEffectiveOfficeTier(state = {}) {
   return getOfficeTier(state.officeTierId || DEFAULT_OFFICE_TIER_ID);
 }
 
+/** License tier gating an office stage (legacy minRep mapped to license). */
+export function officeTierLicense(tier) {
+  return requiredLicenseForRep(tier?.minRep);
+}
+
 /**
- * Soft eligibility from NW + REP (gates the next purchase; does not drive visuals).
+ * Soft eligibility from NW + license (gates the next purchase; does not drive visuals).
  * @param {number} netWorth
- * @param {number} rep
+ * @param {string[]} [licenses]
  */
-export function getEligibleOfficeTier(netWorth = 0, rep = 0) {
+export function getEligibleOfficeTier(netWorth = 0, licenses = ['retail']) {
   const nw = Math.max(0, Number(netWorth) || 0);
-  const r = Math.max(0, Number(rep) || 0);
   let current = OFFICE_TIERS[0];
   for (const stage of OFFICE_TIERS) {
-    if (nw >= stage.minNet && r >= stage.minRep) current = stage;
+    if (nw >= stage.minNet && hasLicense(licenses, officeTierLicense(stage).id)) current = stage;
   }
   const idx = OFFICE_TIERS.findIndex((s) => s.id === current.id);
   const next = idx >= 0 && idx < OFFICE_TIERS.length - 1 ? OFFICE_TIERS[idx + 1] : null;
@@ -93,19 +98,19 @@ export function getNextOfficeUpgrade(state = {}) {
 
 /**
  * @param {{ portfolio?: object, officeTierId?: string, officeSpentTotal?: number }} state
- * @param {{ netWorth?: number, reputation?: number }} [opts]
+ * @param {{ netWorth?: number, licenses?: string[] }} [opts]
  */
 export function canPurchaseOfficeUpgrade(state, opts = {}) {
   const next = getNextOfficeUpgrade(state);
   if (!next) return { ok: false, reason: 'Peak office already owned', code: 'max' };
 
   const nw = Math.max(0, Number(opts.netWorth) || 0);
-  const rep = Math.max(0, Number(opts.reputation) || 0);
   if (nw < next.minNet) {
     return { ok: false, reason: `Requires ${next.minNet.toLocaleString()} Net Worth`, code: 'net' };
   }
-  if (rep < next.minRep) {
-    return { ok: false, reason: `Requires ${next.minRep} REP`, code: 'rep' };
+  const licNeed = officeTierLicense(next);
+  if (!hasLicense(opts.licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
   }
 
   const cash = getSpendableCash(state.portfolio || { cash: 0 });
@@ -118,7 +123,7 @@ export function canPurchaseOfficeUpgrade(state, opts = {}) {
 /**
  * Buy the next office tier. Cosmetic cash sink only.
  * @param {{ portfolio: { cash: number }, officeTierId?: string, officeSpentTotal?: number }} state
- * @param {{ netWorth?: number, reputation?: number }} [opts]
+ * @param {{ netWorth?: number, licenses?: string[] }} [opts]
  */
 export function purchaseOfficeUpgrade(state, opts = {}) {
   const gate = canPurchaseOfficeUpgrade(state, opts);

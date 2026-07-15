@@ -1,7 +1,7 @@
 // @ts-check
 /**
  * Desk glossary tips — 0.5s dwell, equity-popover visual language, anti-flicker across re-renders.
- * One-shot coachmarks / equity+REP rich popovers stay separate; this covers ongoing “what is this?” help.
+ * One-shot coachmarks / equity+license rich popovers stay separate; this covers ongoing “what is this?” help.
  */
 import { getHaltInfo, CIRCUIT_BREAK_PCT, CIRCUIT_HALT_MINUTES } from './market.js';
 
@@ -59,7 +59,7 @@ export const GLOSS_TIPS = {
     title: 'Office Progression',
     blurb: 'Cosmetic cash ladder for firm status — no fill, margin, or APR changes.',
     rows: [
-      { label: 'Gates', value: 'Net Worth + REP + cash for next tier' },
+      { label: 'Gates', value: 'Net Worth + license + cash for next tier' },
       { label: 'Owned tier', value: 'Purchased look (ambient)' },
       { label: 'Peak', value: 'Investment Empire' },
     ],
@@ -217,7 +217,7 @@ export const GLOSS_TIPS = {
   },
   challenge: {
     title: 'Daily Challenge',
-    blurb: 'A day goal with cash and REP if you finish it before the day ends.',
+    blurb: 'A day goal with a cash reward if you finish it before the day ends.',
   },
   payroll: {
     title: 'Payroll',

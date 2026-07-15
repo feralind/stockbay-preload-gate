@@ -14,6 +14,7 @@ import {
   getEffectiveOfficeTier,
   getEligibleOfficeTier,
   getNextOfficeUpgrade,
+  officeTierLicense,
 } from '../office.js';
 import {
   canPurchaseLuxury,
@@ -27,6 +28,7 @@ import { PRIVATE_SALON_POOL } from '../private-salon.js';
 import { getFirmDebt } from '../finance.js';
 import { getLeaderboard } from '../leaderboard.js';
 import { getPlayerStanding } from '../meta.js';
+import { getHighestLicense } from '../licenses.js';
 import { getEquity, getFirmNetWorth } from '../portfolio.js';
 import { getProfile } from '../profile.js';
 import { getRelicEffect, getRelicSlotLimit } from '../relics.js';
@@ -216,8 +218,7 @@ function renderDashHero(profile, standing, office, net) {
   setTextIfChanged(titleEl, 'heroTitle', name);
   if (blurbEl) {
     const bits = [
-      standing.rankName,
-      `REP ${standing.rep}`,
+      standing.licenseName || standing.rankName,
       `Net Worth ${fmt(net)}`,
     ];
     if (standing.deskLabel) bits.push(standing.deskLabel);
@@ -230,7 +231,7 @@ function renderDashStanding(standing, state) {
   if (!el) return;
   const setSummary = getCollectionSetSummary(state || {});
   const chips = [
-    `<span class="dash-standing-chip"><em>Rank</em> ${escapeHtml(standing.rankName)} · REP ${standing.rep}</span>`,
+    `<span class="dash-standing-chip"><em>License</em> ${escapeHtml(standing.rankName)}</span>`,
     `<span class="dash-standing-chip" data-gloss="diversification"><em>Collection</em> ${standing.collectionScore}</span>`,
     `<span class="dash-standing-chip" title="Immersion sets — flair only"><em>Sets</em> ${setSummary.complete}/${setSummary.total}</span>`,
   ];
@@ -265,9 +266,8 @@ function renderDashEstates(state) {
  * @param {object} state
  * @param {{ id: string, name: string, blurb: string }} office
  * @param {number} net
- * @param {number} rep
  */
-function renderOfficeStageCard(state, office, net, rep) {
+function renderOfficeStageCard(state, office, net) {
   const el = document.getElementById('dash-office-stage');
   if (!el) return;
   const next = getNextOfficeUpgrade(state);
@@ -275,8 +275,8 @@ function renderOfficeStageCard(state, office, net, rep) {
   let nextLine = 'Peak office secured — Investment Empire owned.';
   let ctaHtml = '';
   if (next) {
-    const gate = canPurchaseOfficeUpgrade(state, { netWorth: net, reputation: rep });
-    const gateBits = `${fmt(next.minNet)} NW · ${next.minRep} REP · ${fmt(next.price)}`;
+    const gate = canPurchaseOfficeUpgrade(state, { netWorth: net, licenses: state.licenses });
+    const gateBits = `${fmt(next.minNet)} NW · ${officeTierLicense(next).short} · ${fmt(next.price)}`;
     if (gate.ok) {
       tag = 'Ready';
       nextLine = `Next: ${escapeHtml(next.name)} · Ready to upgrade`;
@@ -339,7 +339,7 @@ function buildLuxuryCtaHtml(state) {
 function formatMegaProgressMeta(goal, progress) {
   if (!progress) return '';
   if (progress.unit === 'nw') return `${fmt(progress.current)} / ${fmt(progress.target)} · Vault book counts`;
-  if (progress.unit === 'rep') return `${progress.current} / ${progress.target} REP`;
+  if (progress.unit === 'licenses') return `${progress.current} / ${progress.target} licenses held`;
   if (progress.unit === 'office') return progress.complete ? 'Empire office owned' : 'Purchase Investment Empire';
   if (progress.unit === 'pct') return `${progress.current}% / ${progress.target}% collection`;
   if (progress.unit === 'count') return `${progress.current} / ${progress.target} legendaries`;
@@ -416,9 +416,9 @@ function ensureDashStatsShell(stats) {
       <span class="dash-index-delta muted" data-stat-delta="debt">Outstanding</span>
     </div>
     <div class="dash-stat-card dash-index-card interactive-card">
-      <span class="stat-lbl">REP</span>
+      <span class="stat-lbl">License</span>
       <span class="stat-num" data-stat="rep"></span>
-      <span class="dash-index-delta muted" data-stat-delta="rep">Standing</span>
+      <span class="dash-index-delta muted" data-stat-delta="rep">Accreditation</span>
     </div>
   `;
   dashSnap.statsShell = '3';
@@ -438,7 +438,7 @@ function renderDashStats(state, net, debt, meta, delta) {
   const cash = fmt(state.portfolio.cash);
   const nw = fmt(net);
   const debtTxt = fmt(debt);
-  const rep = String(meta.reputation ?? 0);
+  const rep = getHighestLicense(state.licenses).short;
   const spyQ = quoteForDisplay('SPY');
   const spyPx = spyQ?.price > 0
     ? spyQ.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -905,7 +905,7 @@ export function renderDashboard(state) {
 
   renderDashHero(profile, standing, officeView, net);
   renderDashStanding(standing, state);
-  renderOfficeStageCard(state, office, net, standing.rep);
+  renderOfficeStageCard(state, office, net);
   renderMegaGoalCard(state, activeMega);
   renderDashEstates(state);
   renderDashStats(state, net, debt, meta, delta);
@@ -949,7 +949,7 @@ export function renderDashboard(state) {
     <div class="challenge-card interactive-card ${ch.completed ? 'done' : ''}">
       <div class="challenge-name">${ch.completed ? '✓ ' : ''}${escapeHtml(ch.name)}</div>
       <div class="challenge-desc">${escapeHtml(ch.desc)}</div>
-      <div class="challenge-meta">Progress: ${Math.round(ch.progress || 0)} / ${ch.target} · Reward $${ch.reward.toLocaleString()} +${ch.rep} REP</div>
+      <div class="challenge-meta">Progress: ${Math.round(ch.progress || 0)} / ${ch.target} · Reward $${ch.reward.toLocaleString()}</div>
       ${ch.completed && !ch.claimed ? '<button type="button" class="btn btn-accent btn-claim-challenge">Claim reward</button>' : ''}
       ${ch.claimed ? '<span class="ach-claimed">CLAIMED</span>' : ''}
     </div>` : '<div class="empty">Challenge loads at day start — keep trading until then.</div>';
@@ -976,7 +976,7 @@ export function renderDashboard(state) {
       ${flagship ? `<div class="dash-row" title="Highest-appraisal equipped collectible"><span>Flagship</span><span>${escapeHtml(flagship.name)} · ${fmt(flagship.cost)}</span></div>` : ''}
       <div class="dash-row" data-gloss="credit-score"><span>Personal credit</span><span>${pCredit}</span></div>
       <div class="dash-row" data-gloss="credit-score"><span>Business credit</span><span>${bCredit}</span></div>
-      <div class="dash-row"><span>Rank</span><span>${escapeHtml(standing.rankName)}</span></div>
+      <div class="dash-row"><span>License</span><span>${escapeHtml(standing.rankName)}</span></div>
       ${standing.deskLabel ? `<div class="dash-row" title="${escapeAttr(aura.summary || '')}"><span>Desk</span><span>${escapeHtml(standing.deskLabel)}</span></div>` : ''}
       ${standing.flair ? `<div class="dash-row"><span>Flair</span><span>${escapeHtml(standing.flair)}</span></div>` : ''}
     `;
@@ -995,7 +995,7 @@ export function renderDashboard(state) {
     const lbHtml = runs.length
       ? identity + runs.slice(0, 5).map((r, i) => `
         <div class="dash-row ${i === 0 ? 'lb-best' : ''}">
-          <span>#${i + 1} Day ${r.day} · REP ${r.rep ?? 0}</span>
+          <span>#${i + 1} Day ${r.day}</span>
           <span>$${r.equity.toLocaleString()}</span>
         </div>`).join('')
       : identity + '<div class="empty">Your best runs appear here — grow equity to set a record.</div>';

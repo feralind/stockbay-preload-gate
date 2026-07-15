@@ -593,15 +593,21 @@ async function main() {
     assert.equal(isPlausibleQuote(100, 41), true);
   });
 
-  // --- Perk tiers / REP gates ---
+  // --- Perk tiers / license gates ---
   const cfg = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
-  const { PERKS, REP_RANKS, getRepRank, getNextRepRank, canPurchasePerk, CONFIG } = cfg;
+  const { PERKS, canPurchasePerk, CONFIG } = cfg;
+  const licensesMod = await import(pathToFileURL(path.join(__dirname, '../js/licenses.js')).href);
+  const {
+    LICENSES, LICENSE_ORDER, hasLicense, getHighestLicense, getNextLicense,
+    sanitizeLicenses, licensesFromLegacyRep, requiredLicenseForRep,
+    licenseSnapshot, getLicenseRequirements, canTakeLicenseExam, purchaseLicense,
+  } = licensesMod;
   const vaultMod = await import(pathToFileURL(path.join(__dirname, '../js/vault.js')).href);
   const {
     VAULT_ITEMS, KNOWN_VAULT_IDS, VAULT_CATEGORY_LABELS, VAULT_EQUIP_SLOT_LABELS,
     VAULT_COLLATERAL_LTV, MASTERWORK_ITEM_BONUS_CAPS,
     canPurchaseVaultItem, purchaseVaultItem, getVaultItem, isMasterworkVaultItem,
-    getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose,
+    getVaultBookValue, getVaultDeskAura,
     getCategoryDisplayLabel, getVaultPledgedAppraisal, sanitizeVaultPledged,
     togglePledgedVaultItem, repossessVaultForLoan, loanLocksVaultPledge,
   } = vaultMod;
@@ -673,42 +679,94 @@ async function main() {
     assert.match(CONFIG.QUOTE_BASELINE_KEY, /v3/);
   });
 
-  test('REP ranks resolve Newcomer → Elite Desk', () => {
-    assert.equal(getRepRank(0).id, 'newcomer');
-    assert.equal(getRepRank(39).id, 'newcomer');
-    assert.equal(getRepRank(40).name, 'Desk Hand');
-    assert.equal(getRepRank(120).name, 'Trusted Trader');
-    assert.equal(getRepRank(250).name, 'Market Veteran');
-    assert.equal(getRepRank(500).name, 'Elite Desk');
-    assert.equal(getRepRank(1800).name, 'Market Legend');
-    assert.equal(getNextRepRank(0).minRep, 40);
-    assert.equal(getNextRepRank(1800), null);
-    assert.ok(REP_RANKS.length >= 6);
+  test('license ladder resolves Retail → Reg D', () => {
+    assert.deepEqual(LICENSE_ORDER, ['retail', 'series7', 'research', 'regd']);
+    assert.equal(getHighestLicense(['retail']).id, 'retail');
+    assert.equal(getHighestLicense(['retail', 'series7']).short, 'Series 7');
+    assert.equal(getHighestLicense(['retail', 'series7', 'research', 'regd']).id, 'regd');
+    assert.equal(getNextLicense(['retail']).id, 'series7');
+    assert.equal(getNextLicense(['retail', 'series7', 'research', 'regd']), null);
+    assert.equal(hasLicense(undefined, 'retail'), true, 'retail is always held');
+    assert.equal(hasLicense(['retail'], 'series7'), false);
+    // Prereq chain fill: a save cannot hold regd without series7/research.
+    assert.deepEqual(sanitizeLicenses(['regd']), ['retail', 'series7', 'research', 'regd']);
+    assert.deepEqual(sanitizeLicenses(['bogus']), ['retail']);
   });
 
-  test('cannot buy high-tier perk with low REP even with cash', () => {
+  test('legacy REP migrates to licenses (≥120 S7, ≥250 research, ≥500 regd)', () => {
+    assert.deepEqual(licensesFromLegacyRep(0), ['retail']);
+    assert.deepEqual(licensesFromLegacyRep(119), ['retail']);
+    assert.deepEqual(licensesFromLegacyRep(120), ['retail', 'series7']);
+    assert.deepEqual(licensesFromLegacyRep(250), ['retail', 'series7', 'research']);
+    assert.deepEqual(licensesFromLegacyRep(5000), ['retail', 'series7', 'research', 'regd']);
+    // Legacy catalog thresholds map to tiers for vault/BM/salon/office gates.
+    assert.equal(requiredLicenseForRep(0).id, 'retail');
+    assert.equal(requiredLicenseForRep(100).id, 'series7');
+    assert.equal(requiredLicenseForRep(300).id, 'research');
+    assert.equal(requiredLicenseForRep(1400).id, 'regd');
+  });
+
+  test('license exam gates on qualifications then fee; purchase debits fee', () => {
+    const mkState = (over = {}) => ({
+      licenses: ['retail'],
+      portfolio: { cash: 5000 },
+      stats: { tradesClosed: 30, greenDays: 0 },
+      finance: { personalCredit: 700, businessCredit: 700, latePayments: 0, lastLateDay: null },
+      ...over,
+    });
+    // Qualified: 30 closed trades + 700 personal credit + fee cash
+    const okSnap = licenseSnapshot(mkState(), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', okSnap).ok, true);
+    // Not enough trades
+    const fewTrades = licenseSnapshot(mkState({ stats: { tradesClosed: 3, greenDays: 0 } }), { day: 5, netWorth: 5000 });
+    const noTrades = canTakeLicenseExam('series7', fewTrades);
+    assert.equal(noTrades.ok, false);
+    assert.equal(noTrades.code, 'trades');
+    // Bad credit blocks the background check
+    const badCredit = licenseSnapshot(mkState({ finance: { personalCredit: 500, businessCredit: 700 } }), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', badCredit).code, 'personalCredit');
+    // Qualified but broke → fee gate
+    const broke = licenseSnapshot(mkState({ portfolio: { cash: 100 } }), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', broke).code, 'cash');
+    // Purchase debits exactly the fee and grants the license
+    const state = mkState();
+    const result = purchaseLicense(state, 'series7', { day: 5, netWorth: 5000 });
+    assert.equal(result.ok, true, result.msg);
+    assert.equal(state.portfolio.cash, 5000 - LICENSES.series7.fee);
+    assert.ok(state.licenses.includes('series7'));
+    // Reg D needs clean payment history in the last 30 days
+    const late = licenseSnapshot({
+      licenses: ['retail', 'series7', 'research'],
+      portfolio: { cash: 100000 },
+      stats: { tradesClosed: 100, greenDays: 40 },
+      finance: { personalCredit: 750, businessCredit: 750, latePayments: 2, lastLateDay: 95 },
+    }, { day: 100, netWorth: 300000 });
+    assert.equal(canTakeLicenseExam('regd', late).code, 'cleanDays');
+  });
+
+  test('cannot buy high-tier perk with low license even with cash', () => {
     const insider = PERKS.insider;
     const gate = canPurchasePerk(insider, {
       cash: 100000,
       perks: ['scanner'],
-      reputation: 10,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
-    assert.equal(gate.code, 'rep');
-    assert.ok(/250|Market Veteran|REP/i.test(gate.reason));
+    assert.equal(gate.code, 'license');
+    assert.ok(/license|Series|Research/i.test(gate.reason));
   });
 
-  test('can buy mid perk when REP and cash met', () => {
+  test('can buy mid perk when license and cash met', () => {
     const news = PERKS.newsWire;
-    const blocked = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], reputation: 10 });
+    const blocked = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], licenses: ['retail', 'series7'] });
     assert.equal(blocked.ok, false);
-    assert.equal(blocked.code, 'rep');
-    const ok = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], reputation: 40 });
+    assert.equal(blocked.code, 'license');
+    const ok = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], licenses: ['retail', 'series7', 'research'] });
     assert.equal(ok.ok, true, ok.reason);
   });
 
-  test('can buy Newcomer scanner with starting cash and 0 REP', () => {
-    const gate = canPurchasePerk(PERKS.scanner, { cash: 500, perks: [], reputation: 0 });
+  test('can buy Retail scanner with starting cash and no exams', () => {
+    const gate = canPurchasePerk(PERKS.scanner, { cash: 500, perks: [], licenses: ['retail'] });
     assert.equal(gate.ok, true, gate.reason);
   });
 
@@ -716,7 +774,7 @@ async function main() {
     const gate = canPurchasePerk(PERKS.insider, {
       cash: 100000,
       perks: ['scanner', 'insider'],
-      reputation: 0,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
     assert.match(gate.reason, /owned/i);
@@ -726,18 +784,19 @@ async function main() {
     const perksShopMod = await import(pathToFileURL(path.join(__dirname, '../js/perks.js')).href);
     const { purchasePerk } = perksShopMod;
 
-    test('purchasePerk unlocks perk, debits exact cost, and grants +15 REP', () => {
+    test('purchasePerk unlocks perk and debits exact cost (no REP mint)', () => {
       const cost = PERKS.scanner.cost;
       const state = {
         portfolio: { cash: cost + 50 },
         perks: [],
+        licenses: ['retail'],
         meta: { reputation: 0 },
       };
       const result = purchasePerk(state, 'scanner');
       assert.equal(result.ok, true, result.msg);
       assert.equal(state.portfolio.cash, 50);
       assert.deepEqual(state.perks, ['scanner']);
-      assert.equal(state.meta.reputation, 15);
+      assert.equal(state.meta.reputation, 0, 'perks no longer mint REP');
     });
 
     test('purchasePerk cannot rebuy an owned perk or double-spend cash', () => {
@@ -745,18 +804,17 @@ async function main() {
       const state = {
         portfolio: { cash: cost * 3 },
         perks: [],
+        licenses: ['retail'],
         meta: { reputation: 0 },
       };
       const first = purchasePerk(state, 'scanner');
       assert.equal(first.ok, true, first.msg);
       const cashAfter = state.portfolio.cash;
-      const repAfter = state.meta.reputation;
       const second = purchasePerk(state, 'scanner');
       assert.equal(second.ok, false);
       assert.match(second.msg || '', /owned/i);
       assert.equal(state.portfolio.cash, cashAfter);
       assert.deepEqual(state.perks, ['scanner']);
-      assert.equal(state.meta.reputation, repAfter);
     });
 
     test('purchasePerk rejects when cash is short without mutating state', () => {
@@ -764,6 +822,7 @@ async function main() {
       const state = {
         portfolio: { cash: Math.max(0, cost - 1) },
         perks: [],
+        licenses: ['retail'],
         meta: { reputation: 0 },
       };
       const result = purchasePerk(state, 'scanner');
@@ -771,13 +830,12 @@ async function main() {
       assert.equal(result.code, 'cash');
       assert.equal(state.portfolio.cash, Math.max(0, cost - 1));
       assert.deepEqual(state.perks, []);
-      assert.equal(state.meta.reputation, 0);
     });
   }
 
   {
     const dayEndMod = await import(pathToFileURL(path.join(__dirname, '../js/day-end.js')).href);
-    const { runDayEndSettlement, taperLoanRep } = dayEndMod;
+    const { runDayEndSettlement } = dayEndMod;
     const metaMod = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const { createMetaState } = metaMod;
     const marketMod = await import(pathToFileURL(path.join(__dirname, '../js/market.js')).href);
@@ -793,15 +851,7 @@ async function main() {
       Object.defineProperty(globalThis, 'localStorage', { value: mem, configurable: true });
     }
 
-    test('taperLoanRep soft-tapers positive loan REP at higher ranks', () => {
-      assert.equal(taperLoanRep(10, 0), 10);
-      assert.equal(taperLoanRep(10, 199), 10);
-      assert.equal(taperLoanRep(10, 200), 8);
-      assert.equal(taperLoanRep(10, 400), 5);
-      assert.equal(taperLoanRep(-3, 500), -3);
-    });
-
-    test('runDayEndSettlement awards green-day REP and builds day-summary DTO', () => {
+    test('runDayEndSettlement tracks green days and builds day-summary DTO (no REP)', () => {
       snapshotDayStart(500, 500, 0);
       const state = {
         portfolio: createPortfolio(650),
@@ -815,16 +865,17 @@ async function main() {
       assert.equal(result.stats.equityDelta, 150);
       assert.equal(state.stats.greenDays, 1);
       assert.equal(state.stats.greenStreak, 1);
-      assert.ok(result.dayRepDelta >= 20, `expected green_day REP, got ${result.dayRepDelta}`);
+      assert.equal(result.dayRepDelta, undefined, 'REP is gone from day end');
       assert.equal(result.daySummary.day, 1);
-      assert.equal(result.daySummary.repDelta, result.dayRepDelta);
       assert.equal(result.daySummary.challengeDone, false);
       assert.ok('payroll' in result.daySummary);
+      assert.ok('lessonLine' in result.daySummary, 'teach recap field present');
+      assert.ok('recoveryHint' in result.daySummary, 'recovery hint field present');
       assert.ok(Array.isArray(result.daySummary.loanEvents));
       assert.ok(Array.isArray(result.daySummary.processWins));
     });
 
-    test('runDayEndSettlement awards day_complete REP on flat days and red_day on losses', () => {
+    test('runDayEndSettlement resets green streak on flat/red days without REP swings', () => {
       snapshotDayStart(500, 500, 0);
       const flat = {
         portfolio: createPortfolio(500),
@@ -836,7 +887,6 @@ async function main() {
       const flatResult = runDayEndSettlement(flat, 2);
       assert.equal(flatResult.stats.equityDelta, 0);
       assert.equal(flat.stats.greenStreak, 0);
-      assert.equal(flatResult.dayRepDelta, 3);
 
       snapshotDayStart(500, 500, 0);
       const red = {
@@ -849,8 +899,31 @@ async function main() {
       const redResult = runDayEndSettlement(red, 3);
       assert.equal(redResult.stats.equityDelta, -150);
       assert.equal(red.stats.greenStreak, 0);
-      assert.equal(redResult.dayRepDelta, -10);
-      assert.equal(red.meta.reputation, 40);
+      assert.equal(red.meta.reputation, 50, 'legacy REP field stays inert');
+    });
+
+    test('recovery hint appears after 5 consecutive negative-NW days', () => {
+      const state = {
+        portfolio: createPortfolio(100),
+        finance: createFinanceState(),
+        meta: createMetaState(),
+        staff: [],
+        stats: {},
+      };
+      // Force debt so net equity goes negative
+      state.finance.loans = [{
+        id: 'L1', type: 'company', bankName: 'Test', balance: 10000, dailyRate: 0,
+        status: 'active', daysLeft: 100, interestTicks: 5,
+      }];
+      let hint = '';
+      for (let d = 1; d <= 5; d++) {
+        snapshotDayStart(100, 100, 10000);
+        const r = runDayEndSettlement(state, d);
+        hint = r.daySummary.recoveryHint;
+        // keep cash pinned so equity stays negative despite auto-pays
+        state.portfolio.cash = 100;
+      }
+      assert.ok(hint && /payroll|loan|size/i.test(hint), `expected recovery levers, got "${hint}"`);
     });
 
     test('runDayEndSettlement auto-claims a completed unclaimed challenge', () => {
@@ -892,17 +965,17 @@ async function main() {
     assert.ok(PERKS.hrDept.cost <= 500);
     assert.ok(PERKS.insider.cost >= 15000);
     assert.ok(PERKS.aiAdvisor.cost >= 17000);
-    assert.ok(PERKS.insider.repRequired >= 250);
-    assert.ok(PERKS.aiAdvisor.repRequired >= 250);
-    assert.ok(PERKS.hedgeFund.repRequired >= 500);
+    assert.equal(PERKS.insider.licenseRequired, 'research');
+    assert.equal(PERKS.aiAdvisor.licenseRequired, 'research');
+    assert.equal(PERKS.hedgeFund.licenseRequired, 'regd');
     assert.ok(PERKS.hedgeFund.cost >= 25000);
     assert.ok(PERKS.primeBroker.cost >= 20000);
     assert.ok(PERKS.legendDesk.cost >= 45000);
     assert.ok(PERKS.smartRouting.cost >= 3000);
     assert.ok(PERKS.options.cost >= 4000);
-    assert.equal(PERKS.margin.repRequired, 40, 'margin aligns with Desk Hand');
-    assert.ok(PERKS.legendDesk.repRequired >= 1800);
-    assert.ok(PERKS.primeBroker.repRequired >= 550);
+    assert.equal(PERKS.margin.licenseRequired, 'series7', 'margin needs the Series 7');
+    assert.equal(PERKS.legendDesk.licenseRequired, 'regd');
+    assert.equal(PERKS.primeBroker.licenseRequired, 'regd');
     assert.ok(Object.keys(PERKS).length >= 15, 'expanded perk board');
     // OP stack should dwarf early Desk Hand total
     const early = PERKS.scanner.cost + PERKS.hrDept.cost + PERKS.newsWire.cost + PERKS.analyst.cost + PERKS.margin.cost;
@@ -911,21 +984,21 @@ async function main() {
     assert.ok(PERKS.legendDesk.cost > PERKS.hedgeFund.cost * 1.5, 'Legend is a prestige cash sink');
   });
 
-  test('new mid/late perks gate on cash + REP + prereqs', () => {
+  test('new mid/late perks gate on cash + license + prereqs', () => {
     assert.equal(canPurchasePerk(PERKS.complianceSuite, {
-      cash: 5000, perks: ['scanner'], reputation: 100,
+      cash: 5000, perks: ['scanner'], licenses: ['retail'],
     }).ok, false, 'needs hrDept');
     assert.equal(canPurchasePerk(PERKS.complianceSuite, {
-      cash: 5000, perks: ['scanner', 'hrDept'], reputation: 45,
+      cash: 5000, perks: ['scanner', 'hrDept'], licenses: ['retail'],
     }).ok, true);
     assert.equal(canPurchasePerk(PERKS.smartRouting, {
-      cash: 5000, perks: ['scanner'], reputation: 130,
+      cash: 5000, perks: ['scanner'], licenses: ['retail', 'series7'],
     }).ok, true);
     assert.equal(canPurchasePerk(PERKS.legendDesk, {
-      cash: 50000, perks: ['hedgeFund'], reputation: 1799,
-    }).ok, false);
+      cash: 50000, perks: ['hedgeFund'], licenses: ['retail', 'series7', 'research'],
+    }).ok, false, 'Legend Desk needs Reg D');
     assert.equal(canPurchasePerk(PERKS.legendDesk, {
-      cash: 50000, perks: ['hedgeFund'], reputation: 1800,
+      cash: 50000, perks: ['hedgeFund'], licenses: ['retail', 'series7', 'research', 'regd'],
     }).ok, true);
   });
 
@@ -1509,7 +1582,7 @@ async function main() {
   test('masterwork purchase books exact cost into vault book value', () => {
     const state = {
       portfolio: createPortfolio(2_000_000),
-      meta: { reputation: 1500 },
+      licenses: ['retail', 'series7', 'research', 'regd'],
       vaultOwned: [],
       vaultSpentTotal: 0,
     };
@@ -1521,7 +1594,7 @@ async function main() {
 
   test('canPurchaseVaultItem rejects salon-only crown ids from standard vault shop', () => {
     const crown = PRIVATE_SALON_POOL[0];
-    const gate = canPurchaseVaultItem(crown, { cash: 9e9, vaultOwned: [], reputation: 9999 });
+    const gate = canPurchaseVaultItem(crown, { cash: 9e9, vaultOwned: [], licenses: ['retail', 'series7', 'research', 'regd'] });
     assert.equal(gate.ok, false);
     assert.equal(gate.code, 'salon');
   });
@@ -1544,7 +1617,7 @@ async function main() {
     const item = PRIVATE_SALON_ITEMS.vermeerAttribution;
     const state = {
       portfolio: createPortfolio(item.cost + 50000),
-      meta: { reputation: 2000 },
+      licenses: ['retail', 'series7', 'research', 'regd'],
       vaultOwned: [],
       vaultSpentTotal: 0,
       salonSpentTotal: 0,
@@ -1577,27 +1650,28 @@ async function main() {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.goldTerminal, {
       cash: 100000,
       vaultOwned: ['goldTerminal'],
-      reputation: 999,
+      licenses: ['retail', 'series7', 'research', 'regd'],
     });
     assert.equal(gate.ok, false);
     assert.equal(gate.reason, 'Already owned');
   });
 
-  test('canPurchaseVaultItem rejects below REP requirement', () => {
+  test('canPurchaseVaultItem rejects below license requirement', () => {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.yachtBackground, {
       cash: 100000,
       vaultOwned: [],
-      reputation: 10,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
-    assert.match(gate.reason, /REP/);
+    assert.equal(gate.code, 'license');
+    assert.match(gate.reason, /license/i);
   });
 
   test('canPurchaseVaultItem rejects below cash cost', () => {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.goldTerminal, {
       cash: 100,
       vaultOwned: [],
-      reputation: 10,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
     assert.equal(gate.reason, 'Insufficient cash');
@@ -1608,7 +1682,7 @@ async function main() {
       portfolio: createPortfolio(25000),
       vaultOwned: [],
       vaultSpentTotal: 0,
-      meta: { reputation: 500 },
+      licenses: ['retail', 'series7', 'research', 'regd'],
     };
     const cost = VAULT_ITEMS.crashDayTape.cost;
     const before = state.portfolio.cash;
@@ -1625,10 +1699,11 @@ async function main() {
     assert.equal(getVaultBookValue({ vaultOwned: [] }), 0);
   });
 
-  test('getPlayerStanding labels Rank, Collection, Desk, and Flair without inventing a new currency', async () => {
+  test('getPlayerStanding labels License, Collection, Desk, and Flair without inventing a new currency', async () => {
     const { getPlayerStanding } = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const standing = getPlayerStanding({
-      meta: { reputation: 130, collectionFlair: 'Master Collector' },
+      meta: { collectionFlair: 'Master Collector' },
+      licenses: ['retail', 'series7'],
       vaultOwned: ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'],
       perks: [],
       seatOwned: false,
@@ -1643,15 +1718,15 @@ async function main() {
       seatItem: THE_SEAT,
       salonPool: PRIVATE_SALON_POOL,
     });
-    assert.equal(standing.rankName, 'Trusted Trader');
-    assert.equal(standing.rep, 130);
+    assert.equal(standing.licenseId, 'series7');
+    assert.match(standing.rankName, /Series 7/);
     assert.ok(standing.collectionScore >= 8);
     assert.equal(standing.deskTier, 3);
     assert.match(standing.deskLabel, /Desk Prestige III/i);
     assert.equal(standing.flair, 'Master Collector');
   });
 
-  test('Desk Prestige scales with equipped vault slots and caps daily REP', () => {
+  test('Desk Prestige scales with equipped vault slots (cosmetic display only)', () => {
     const owned = ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'];
     const none = getVaultDeskAura({ cosmetics: {}, vaultOwned: owned });
     assert.equal(none.tier, 0);
@@ -1660,7 +1735,6 @@ async function main() {
       vaultOwned: owned,
     });
     assert.equal(one.tier, 1);
-    assert.equal(one.repPerClose, 1);
     const full = getVaultDeskAura({
       cosmetics: {
         dashboard: 'goldTerminal',
@@ -1671,7 +1745,6 @@ async function main() {
       vaultOwned: owned,
     });
     assert.equal(full.tier, 3);
-    assert.equal(full.repPerClose, 3);
     const amp = getVaultDeskAura({
       cosmetics: {
         dashboard: 'goldTerminal',
@@ -1682,15 +1755,11 @@ async function main() {
       vaultOwned: owned,
       perks: ['auraAmp'],
     });
-    assert.equal(amp.repPerClose, 4);
-    assert.ok(amp.dailyCap > full.dailyCap);
-    const meta = { vaultAuraRepToday: 0 };
-    const first = applyVaultDeskAuraOnClose(meta, 25, full);
-    assert.equal(first.applied, 3);
-    meta.vaultAuraRepToday = 9;
-    const capped = applyVaultDeskAuraOnClose(meta, 40, full);
-    assert.equal(capped.applied, 0);
-    assert.equal(capped.capped, true);
+    assert.match(amp.label, /Prestige/i);
+    assert.ok(amp.dailyCap > full.dailyCap, 'auraAmp raises display flair only');
+    // No REP application path exists anymore — aura summaries never promise REP.
+    assert.ok(!/REP/.test(full.summary));
+    assert.ok(!/REP/.test(amp.summary));
   });
 
   test('vault book value does not change buying-power base cash math', () => {
@@ -1781,7 +1850,8 @@ async function main() {
       seatItem: THE_SEAT,
     });
     assert.equal(claim.ok, true);
-    assert.equal(claim.rep, 25);
+    assert.equal(claim.rep, undefined, 'milestones pay cash only now');
+    assert.ok((claim.cash || 0) > 0, 'pct25 pays cash since REP removal');
     assert.equal(state.collectionClaims.includes('pct25'), true);
     assert.equal(state.portfolio.cash, cashBefore + (claim.cash || 0));
     const again = claimCollectionMilestone(state, 'pct25', {
@@ -1981,13 +2051,15 @@ async function main() {
       assert.match(two, /None equipped \(2 slots\)/);
       assert.match(two, /data-goto="blackmarket"/);
     });
-    test('getSoftOfficeStage advances with Net Worth and REP (eligibility gates)', () => {
-      const early = getSoftOfficeStage(500, 0);
+    test('getSoftOfficeStage advances with Net Worth and licenses (eligibility gates)', () => {
+      const early = getSoftOfficeStage(500, ['retail']);
       assert.equal(early.current.id, 'bedroom');
       assert.ok(early.next);
-      const mid = getSoftOfficeStage(120000, 250);
+      const mid = getSoftOfficeStage(120000, ['retail', 'series7', 'research']);
       assert.equal(mid.current.id, 'professional');
-      const peak = getSoftOfficeStage(60_000_000, 2000);
+      const licenseCapped = getSoftOfficeStage(60_000_000, ['retail', 'series7']);
+      assert.notEqual(licenseCapped.current.id, 'empire', 'top stages need Reg D');
+      const peak = getSoftOfficeStage(60_000_000, ['retail', 'series7', 'research', 'regd']);
       assert.equal(peak.current.id, 'empire');
       assert.equal(peak.next, null);
     });
@@ -2055,26 +2127,26 @@ async function main() {
       };
       assert.equal(getEffectiveOfficeTier(state).id, 'bedroom');
       assert.equal(getNextOfficeUpgrade(state).id, 'studio');
-      const blocked = canPurchaseOfficeUpgrade(state, { netWorth: 500, reputation: 0 });
+      const blocked = canPurchaseOfficeUpgrade(state, { netWorth: 500, licenses: ['retail'] });
       assert.equal(blocked.ok, false);
-      assert.ok(blocked.code === 'net' || blocked.code === 'rep');
+      assert.ok(blocked.code === 'net' || blocked.code === 'license');
       const affordFail = canPurchaseOfficeUpgrade(
         { ...state, portfolio: { cash: 100 } },
-        { netWorth: 3000, reputation: 25 },
+        { netWorth: 3000, licenses: ['retail', 'series7'] },
       );
       assert.equal(affordFail.ok, false);
       assert.equal(affordFail.code, 'cash');
-      const ok = purchaseOfficeUpgrade(state, { netWorth: 3000, reputation: 25 });
+      const ok = purchaseOfficeUpgrade(state, { netWorth: 3000, licenses: ['retail', 'series7'] });
       assert.equal(ok.ok, true);
       assert.equal(state.officeTierId, 'studio');
       assert.equal(state.officeSpentTotal, 2000);
       assert.equal(state.portfolio.cash, 3000);
-      const cashBlocked = purchaseOfficeUpgrade(state, { netWorth: 200000, reputation: 300 });
+      const cashBlocked = purchaseOfficeUpgrade(state, { netWorth: 200000, licenses: ['retail', 'series7', 'research'] });
       assert.equal(cashBlocked.ok, false);
       assert.equal(cashBlocked.code, 'cash');
       const ordered = purchaseOfficeUpgrade(
         { ...state, portfolio: { cash: 100000 } },
-        { netWorth: 5000, reputation: 300 },
+        { netWorth: 5000, licenses: ['retail', 'series7', 'research'] },
       );
       assert.equal(ordered.ok, false);
       assert.equal(ordered.code, 'net');
@@ -2205,7 +2277,8 @@ async function main() {
         finance: { businessCredit: 700, personalCredit: 680 },
         estateOwned: [],
         estateSpentTotal: 0,
-        meta: { reputation: 100 },
+        licenses: ['retail', 'series7'],
+        meta: {},
       };
       const locked = canPurchaseEstate(state, 'coastalResidence', { netWorth: 50_000 });
       assert.equal(locked.ok, false);
@@ -2242,7 +2315,8 @@ async function main() {
         estateSpentTotal: 125_000 + 2_500_000 + 12_000_000,
       };
       const prestige = getEstatePrestigeAura(yachtState);
-      assert.ok(prestige.repPerClose >= 1);
+      assert.ok(prestige.items.length >= 1, 'yacht counts as flagship prestige holding');
+      assert.ok(!/REP/.test(prestige.summary), 'estate prestige is cosmetic only');
       const earlyCash = cashOutEstateEquity({
         ...state,
         estateEquityExtracted: 0,
@@ -2256,16 +2330,24 @@ async function main() {
       const carGate = canPurchaseEstate({
         portfolio: { cash: 500_000 },
         estateOwned: ['coastalResidence'],
-        meta: { reputation: 250 },
+        licenses: ['retail', 'series7', 'research'],
       }, 'performanceGt', { netWorth: 500_000 });
       assert.equal(carGate.ok, true);
       const carLocked = canPurchaseEstate({
         portfolio: { cash: 500_000 },
         estateOwned: [],
-        meta: { reputation: 250 },
+        licenses: ['retail', 'series7', 'research'],
       }, 'performanceGt', { netWorth: 500_000 });
       assert.equal(carLocked.ok, false);
       assert.equal(carLocked.code, 'prereq');
+      // License gate: high-tier estates stay locked on a retail-only account
+      const licLocked = canPurchaseEstate({
+        portfolio: { cash: 500_000 },
+        estateOwned: [],
+        licenses: ['retail'],
+      }, 'coastalResidence', { netWorth: 500_000 });
+      assert.equal(licLocked.ok, false);
+      assert.equal(licLocked.code, 'license');
     });
 
     test('property credit draw requires Fair+ business credit; cash buy still allowed', () => {
@@ -2274,7 +2356,8 @@ async function main() {
         finance: { businessCredit: 300, personalCredit: 300 },
         estateOwned: [],
         estateSpentTotal: 0,
-        meta: { reputation: 100 },
+        licenses: ['retail', 'series7'],
+        meta: {},
       };
       const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
       assert.equal(buy.ok, true, 'cash house still OK on trash credit');
@@ -2300,7 +2383,8 @@ async function main() {
         estateSpentTotal: 0,
         estateEquityExtracted: 0,
         estateCreditUsed: 0,
-        meta: { reputation: 100 },
+        licenses: ['retail', 'series7'],
+        meta: {},
       };
       const nwParts = () => {
         syncEstateDerived(state);
@@ -2534,7 +2618,7 @@ async function main() {
     const gmMod = await import(pathToFileURL(path.join(__dirname, '../js/gm-mode.js')).href);
     const metaGm = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
-    const { applyFullGmLoadout, applyGmAction, verifyAccessCode, GM_CASH, GM_REP } = gmMod;
+    const { applyFullGmLoadout, applyGmAction, verifyAccessCode, GM_CASH } = gmMod;
     const { createMetaState: createGmMeta } = metaGm;
     test('desk support loadout survives sanitize; access code is not plaintext', async () => {
       assert.equal(await verifyAccessCode('000000'), false);
@@ -2563,7 +2647,7 @@ async function main() {
       };
       applyFullGmLoadout(state);
       assert.equal(state.portfolio.cash, GM_CASH);
-      assert.equal(state.meta.reputation, GM_REP);
+      assert.deepEqual(state.licenses, ['retail', 'series7', 'research', 'regd'], 'GM grants all licenses');
       assert.ok(state.perks.length >= 5);
       assert.ok(state.vaultOwned.length >= Object.keys(VAULT_ITEMS).length);
       assert.equal(state.seatOwned, true);
@@ -2571,7 +2655,7 @@ async function main() {
       const cleaned = sanitizeRunData(state);
       assert.ok(cleaned);
       assert.equal(cleaned.portfolio.cash, GM_CASH);
-      assert.equal(cleaned.meta.reputation, GM_REP);
+      assert.deepEqual(cleaned.licenses, ['retail', 'series7', 'research', 'regd']);
       assert.equal(cleaned.vaultOwned.length, state.vaultOwned.length);
       assert.equal(cleaned.blackMarketOwned.length, state.blackMarketOwned.length);
       assert.equal(cleaned.seatOwned, true);
@@ -2706,13 +2790,13 @@ async function main() {
     assert.equal(withGrace, 26);
   });
 
-  test('isSeatListingActive never true below repRequired regardless of roll', () => {
+  test('isSeatListingActive never true without the Reg D license regardless of roll', () => {
     for (let day = 1; day <= 1500; day++) {
       const active = isSeatListingActive(day, {
-        reputation: THE_SEAT.repRequired - 1,
+        licenses: ['retail', 'series7', 'research'],
         seatOwned: false,
       });
-      assert.equal(active, false, `seat listing should never be active below rep requirement (day ${day})`);
+      assert.equal(active, false, `seat listing should never be active without Reg D (day ${day})`);
     }
   });
 
@@ -2720,7 +2804,7 @@ async function main() {
     let activeDays = 0;
     const totalDays = 6000;
     for (let day = 1; day <= totalDays; day++) {
-      if (isSeatListingActive(day, { reputation: THE_SEAT.repRequired, seatOwned: false })) activeDays++;
+      if (isSeatListingActive(day, { licenses: ['retail', 'series7', 'research', 'regd'], seatOwned: false })) activeDays++;
     }
     const rate = activeDays / totalDays;
     assert.ok(rate > SEAT_LISTING_RATE * 0.45 && rate < SEAT_LISTING_RATE * 1.9, `seat rate ${rate}`);
@@ -3003,11 +3087,11 @@ async function main() {
     const base = {
       cash: 2000,
       perks: ['scanner'],
-      reputation: 50,
+      licenses: ['retail', 'series7'],
       perkCalloutsShown: {},
     };
     assert.equal(shouldShowPerkCallout('margin', base), true);
-    assert.equal(shouldShowPerkCallout('options', base), false); // needs margin prereq + more REP/cash
+    assert.equal(shouldShowPerkCallout('options', base), false); // needs margin prereq + more cash
 
     const meta = { perkCalloutsShown: {} };
     markPerkCalloutShown(meta, 'margin');
@@ -3019,10 +3103,10 @@ async function main() {
 
   test('perk callout never shows for owned perk or already-shown', () => {
     assert.equal(shouldShowPerkCallout('margin', {
-      cash: 5000, perks: ['scanner', 'margin'], reputation: 100, perkCalloutsShown: {},
+      cash: 5000, perks: ['scanner', 'margin'], licenses: ['retail', 'series7'], perkCalloutsShown: {},
     }), false);
     assert.equal(shouldShowPerkCallout('insider', {
-      cash: 20000, perks: ['scanner'], reputation: 250, perkCalloutsShown: { insider: true },
+      cash: 20000, perks: ['scanner'], licenses: ['retail', 'series7', 'research'], perkCalloutsShown: { insider: true },
     }), false);
   });
 
@@ -3030,7 +3114,8 @@ async function main() {
     const pending = listPendingPerkCallouts({
       portfolio: { cash: 2000 },
       perks: ['scanner'],
-      meta: { reputation: 50, perkCalloutsShown: {} },
+      licenses: ['retail', 'series7'],
+      meta: { perkCalloutsShown: {} },
     });
     assert.ok(pending.includes('margin'));
     assert.ok(pending.every((id) => CALLOUT_PERK_IDS.includes(id)));
@@ -3139,26 +3224,25 @@ async function main() {
     assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('No more hand-holding'));
   });
 
-  test('graduation coach fires once at Trusted Trader rank', () => {
-    const meta = { reputation: 119, graduationCoachShown: false };
-    assert.equal(onboardMod.shouldShowGraduationCoach(meta), false);
-    meta.reputation = 120;
-    assert.equal(onboardMod.shouldShowGraduationCoach(meta), true);
+  test('graduation coach fires once when Series 7 is earned', () => {
+    const meta = { graduationCoachShown: false };
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail']), false);
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail', 'series7']), true);
     onboardMod.markGraduationCoachShown(meta);
-    assert.equal(onboardMod.shouldShowGraduationCoach(meta), false);
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail', 'series7']), false);
   });
 
-  test('graduation coach still eligible if REP jumps past Trusted band', () => {
-    const meta = { reputation: 300, graduationCoachShown: false };
-    assert.equal(onboardMod.shouldShowGraduationCoach(meta), true);
+  test('graduation coach still eligible when licenses jump past Series 7', () => {
+    const meta = { graduationCoachShown: false };
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail', 'series7', 'research', 'regd']), true);
   });
 
   test('graduation coach quiet mode does not mark shown', () => {
-    const meta = { reputation: 120, graduationCoachShown: false };
+    const meta = { graduationCoachShown: false };
     const saves = [];
     setWalkthroughActive(true);
     assert.equal(isCoachQuiet(), true);
-    assert.equal(onboardMod.maybeShowGraduationCoach({ meta }, {
+    assert.equal(onboardMod.maybeShowGraduationCoach({ meta, licenses: ['retail', 'series7'] }, {
       saveGame: (o) => saves.push(o),
     }), false);
     assert.equal(meta.graduationCoachShown, false);
@@ -3622,7 +3706,9 @@ async function main() {
       meta: { reputation: 10 },
     });
     assert.deepEqual(withSeat.collectionClaims, ['seatTaken']);
-    assert.equal(withSeat.collectionRewardCashTotal, 0);
+    // seatTaken pays cash since the REP removal; ledger syncs to the milestone reward.
+    const seatMilestoneCash = COLLECTION_MILESTONES.find((m) => m.id === 'seatTaken')?.cash || 0;
+    assert.equal(withSeat.collectionRewardCashTotal, seatMilestoneCash);
   });
 
   test('sanitizeRunData cannot forge seatOwned=true without matching purchase record', () => {

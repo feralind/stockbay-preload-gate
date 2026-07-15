@@ -92,7 +92,6 @@ function artForEntry(entry) {
 
 function rewardBlurb(milestone) {
   const bits = [];
-  if (milestone.rep) bits.push(`+${milestone.rep} REP`);
   if (milestone.cash) bits.push(fmt(milestone.cash));
   if (milestone.flair) bits.push(`Title “${milestone.flair}”`);
   return bits.length ? bits.join(' · ') : 'Prestige mark';
@@ -332,7 +331,7 @@ export function renderCollectionLog(state) {
           <h2>Collection Log</h2>
           <p class="collection-sub">${isMuseum
             ? 'Owned plates with short lore. Finish Vault, Black Market, Salon, or immersion sets for cosmetic flair only.'
-            : 'Chase missing pieces, clear milestones, claim REP and cash. Owned plates keep their foil art and dossier.'}</p>
+            : 'Chase missing pieces, clear milestones, claim cash rewards. Owned plates keep their foil art and dossier.'}</p>
           ${modeToggleHtml()}
         </div>
         <div class="collection-progress-pill">

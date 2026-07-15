@@ -19,7 +19,9 @@ Compressed real-life trading desk: teach honest money habits; celebrate process;
 ## Hard rules
 
 - No loud Poor-credit HUD / toast spam — use existing denial reason strings.
-- Process wins stay text/flair unless explicitly asked for REP/cash.
+- **REP is gone.** Progression = licenses (`js/licenses.js`: retail → series7 → research → regd). Perk/vault/seat/salon/office/estate gates check licenses (`hasLicense`, `requiredLicenseForRep` for legacy `repRequired` data keys). Never reintroduce REP earn/spend; challenges and milestones pay cash only.
+- License exams are the intended sinks: fee + real qualifications (closed trades, green days, credit floors, NW, clean 30-day payment record). Careful play should out-license aggressive credit-trashing (ruined credit blocks Reg D re-qualification; owned licenses persist).
+- Process wins stay text/flair unless explicitly asked for cash.
 - Do not deepen Scanner/AI “answer key” edge.
 - Do not add AFK money printers or easy APR.
 - StockWay UI: never remount whole panels every tick (`renderAll` rules). Fingerprint keys must not include live cash/NW (Estates Residences stutter). Staff/HR wage tweaks must not brick day-1 Intern after HR (~$500 start); prefer mid/late role nudges.

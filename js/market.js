@@ -14,6 +14,8 @@ let marketRunning = true;
 let pausedByUser = false;
 let pausedByBackground = false;
 let tickInterval = null;
+/** Wall-clock anchor for soft lag catch-up (Date.now()). */
+let lastWallClockMs = Date.now();
 let dayCount = 1;
 let dayStartEquity = CONFIG.STARTING_CASH;
 let dayStartCash = CONFIG.STARTING_CASH;
@@ -336,12 +338,18 @@ export function getDayStats(currentEquity, currentCash, currentDebt = 0) {
   };
 }
 
-function advanceMarket(minutes) {
+function advanceMarket(minutes, { soft = false } = {}) {
   marketDate = new Date(marketDate.getTime() + minutes * 60000);
   const closeM = CONFIG.MARKET_CLOSE.hour * 60 + CONFIG.MARKET_CLOSE.minute;
   const cur = marketDate.getHours() * 60 + marketDate.getMinutes();
 
   if (cur >= closeM + (CONFIG.EVENING_MINUTES ?? 60)) {
+    // Soft catch-up must never roll the day — caller should have stopped earlier.
+    if (soft) {
+      // Revert the overshoot so we remain on the current session day.
+      marketDate = new Date(marketDate.getTime() - minutes * 60000);
+      return false;
+    }
     // Evening wraps into next trading day (land in pre-market)
     const summaryDay = dayCount;
     marketDate.setDate(marketDate.getDate() + 1);
@@ -356,7 +364,8 @@ function advanceMarket(minutes) {
     emit('dayEnd', { day: summaryDay });
     emit('newDay', { day: dayCount });
   }
-  emit('tick', formatMarketClock());
+  if (!soft) emit('tick', formatMarketClock());
+  return true;
 }
 
 let staffTickCounter = 0;
@@ -481,28 +490,118 @@ export function getBaseMsPerTick() {
   return (realMin * 60 * 1000) / Math.max(1, ticks);
 }
 
+function getMsPerTick() {
+  return Math.max(50, getBaseMsPerTick() / Math.max(1, speedMultiplier));
+}
+
+/** Game minutes advanced by one clock tick in the current phase. */
+function getTickGameMinutes() {
+  if (isMarketOpen() || getDayPhase() === 'Pre-Market') return 1;
+  return CONFIG.CLOSED_ADVANCE_MINUTES ?? 5;
+}
+
+/** True if advancing `minutes` would trigger evening → next-day roll. */
+function wouldCrossDayBoundary(minutes) {
+  const next = new Date(marketDate.getTime() + minutes * 60000);
+  const closeM = CONFIG.MARKET_CLOSE.hour * 60 + CONFIG.MARKET_CLOSE.minute;
+  const cur = next.getHours() * 60 + next.getMinutes();
+  return cur >= closeM + (CONFIG.EVENING_MINUTES ?? 60);
+}
+
+function runOneLiveTick() {
+  const closedStep = CONFIG.CLOSED_ADVANCE_MINUTES ?? 5;
+  const phase = getDayPhase();
+  if (isMarketOpen()) {
+    advanceMarket(1);
+    simulateMarketMinute();
+    staffTickCounter++;
+    if (staffTickCounter % 8 === 0) emit('staffTick', {});
+  } else if (phase === 'Pre-Market') {
+    advanceMarket(1);
+    simulateMarketMinute();
+  } else {
+    advanceMarket(closedStep);
+    if (getDayPhase() === 'Evening') simulateMarketMinute();
+  }
+}
+
+/** One soft catch-up step — never crosses day-end. Returns false if blocked. */
+function runOneSoftCatchUpTick() {
+  const minutes = getTickGameMinutes();
+  if (wouldCrossDayBoundary(minutes)) return false;
+  const phase = getDayPhase();
+  if (isMarketOpen() || phase === 'Pre-Market') {
+    if (!advanceMarket(1, { soft: true })) return false;
+    simulateMarketMinute();
+  } else {
+    if (!advanceMarket(minutes, { soft: true })) return false;
+    if (getDayPhase() === 'Evening') simulateMarketMinute();
+  }
+  return true;
+}
+
+/**
+ * Soft wall-clock catch-up after minimize/lag.
+ * Advances local prices + clock within the current day only; never emits dayEnd.
+ * Caps at MAX_CATCHUP_GAME_MINUTES. Returns number of ticks processed.
+ */
+export function softCatchUp() {
+  // User pause: freeze wall clock — no catch-up debt while intentionally paused.
+  if (pausedByUser) {
+    lastWallClockMs = Date.now();
+    return 0;
+  }
+
+  const now = Date.now();
+  const msPerTick = getMsPerTick();
+  const delta = now - lastWallClockMs;
+  if (!(delta >= msPerTick)) return 0;
+
+  const owedTicks = Math.floor(delta / msPerTick);
+  const maxMinutes = CONFIG.MAX_CATCHUP_GAME_MINUTES ?? 240;
+  let minutesUsed = 0;
+  let processed = 0;
+  let hitDayBoundary = false;
+  let hitCap = false;
+
+  for (let i = 0; i < owedTicks; i++) {
+    const step = getTickGameMinutes();
+    if (minutesUsed + step > maxMinutes) {
+      hitCap = true;
+      break;
+    }
+    if (!runOneSoftCatchUpTick()) {
+      hitDayBoundary = true;
+      break;
+    }
+    minutesUsed += step;
+    processed++;
+  }
+
+  if (hitCap || hitDayBoundary) {
+    // Drop excess debt — soft catch-up must not keep draining overnight time,
+    // and day-boundary stops leave day-end to the next live tick.
+    lastWallClockMs = now;
+  } else {
+    lastWallClockMs += processed * msPerTick;
+  }
+
+  // One UI tick after silent catch-up (avoid hundreds of renderAlls).
+  if (processed > 0) emit('tick', formatMarketClock());
+  return processed;
+}
+
 export function startMarket() {
   if (tickInterval) clearInterval(tickInterval);
-  const closedStep = CONFIG.CLOSED_ADVANCE_MINUTES ?? 5;
-  const baseMs = getBaseMsPerTick();
-  const msPerTick = Math.max(50, baseMs / Math.max(1, speedMultiplier));
+  const msPerTick = getMsPerTick();
   tickInterval = setInterval(() => {
     if (!marketRunning) return;
-    const phase = getDayPhase();
-    if (isMarketOpen()) {
-      advanceMarket(1);
-      simulateMarketMinute();
-      staffTickCounter++;
-      if (staffTickCounter % 8 === 0) emit('staffTick', {});
-    } else if (phase === 'Pre-Market') {
-      // 1-minute pre-market tape with thin liquidity
-      advanceMarket(1);
-      simulateMarketMinute();
-    } else {
-      // Evening wrap — coarser clock, still a thin simulated tape
-      advanceMarket(closedStep);
-      if (getDayPhase() === 'Evening') simulateMarketMinute();
-    }
+    softCatchUp();
+    if (!marketRunning) return;
+    // Stop before a live tick that would only roll the day if catch-up already
+    // parked us at the evening edge — still allow the normal dayEnd path.
+    runOneLiveTick();
+    lastWallClockMs = Date.now();
   }, msPerTick);
 }
 
@@ -519,6 +618,8 @@ export function getMarketSpeed() {
 export function pauseMarket() {
   marketRunning = !marketRunning;
   pausedByUser = !marketRunning;
+  // Intentional pause: clear catch-up debt so resume does not dump ticks.
+  lastWallClockMs = Date.now();
   return marketRunning;
 }
 
@@ -526,11 +627,13 @@ export function resumeMarket() {
   marketRunning = true;
   pausedByUser = false;
   pausedByBackground = false;
+  lastWallClockMs = Date.now();
   return marketRunning;
 }
 
 export function stopMarketClock() {
   marketRunning = false;
+  lastWallClockMs = Date.now();
   return marketRunning;
 }
 
@@ -542,10 +645,13 @@ export function bindVisibilityAutoPause(onChange) {
         marketRunning = false;
       }
     } else if (pausedByBackground && !pausedByUser) {
+      // Minimize / tab-hide: soft catch-up before resuming the live clock.
+      softCatchUp();
       pausedByBackground = false;
       marketRunning = true;
     } else if (pausedByBackground) {
       pausedByBackground = false;
+      lastWallClockMs = Date.now();
     }
     onChange?.(marketRunning);
   });
@@ -592,6 +698,7 @@ export function resetMarketForNewRun() {
   resetSessionAnchors();
   resetDailyShockAccum();
   resetMacro();
+  lastWallClockMs = Date.now();
   marketDate = new Date();
   const pre = CONFIG.PREMARKET_MINUTES ?? 30;
   marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
@@ -626,6 +733,7 @@ export function serializeMarket() {
     speedMultiplier,
     marketBeta,
     tapeRegime,
+    lastWallClockMs,
     macro: serializeMacro(),
     halts: haltList,
     sessionOpen: openList,
@@ -650,6 +758,11 @@ export function loadMarket(data) {
   tapeRegime = data?.tapeRegime === 'chop' || data?.tapeRegime === 'trend'
     ? data.tapeRegime
     : getTapeRegime(dayCount);
+  // Migration: older saves omit lastWallClockMs → Date.now() (no huge catch-up dump)
+  {
+    const wall = Number(data?.lastWallClockMs);
+    lastWallClockMs = Number.isFinite(wall) && wall > 0 ? wall : Date.now();
+  }
   // Migration: older saves omit macro → baseline Fed/10Y
   loadMacro(data?.macro);
 

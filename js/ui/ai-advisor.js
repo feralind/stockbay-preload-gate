@@ -32,12 +32,11 @@ export function configureAiAdvisor(actions = {}) {
 export function buildAiLockedCardHtml() {
   const perk = PERKS.aiAdvisor;
   const cost = perk?.cost ?? 18500;
-  const rep = perk?.repRequired ?? 280;
-  const tier = perk?.tierLabel || 'Market Veteran';
+  const tier = perk?.tierLabel || 'Research';
   return `<div class="ai-locked-card" data-ai-locked-card>
     <div class="ai-locked-card-copy">
       <strong>AI Trading Advisor</strong>
-      <p>Signals, daily picks, and desk chat — unlock for <span class="ai-locked-price">${fmt(cost)}</span> · ${tier} · ${rep} REP.</p>
+      <p>Signals, daily picks, and desk chat — unlock for <span class="ai-locked-price">${fmt(cost)}</span> · ${tier} license tier.</p>
     </div>
     <button type="button" class="btn btn-sm btn-accent" data-goto="perks">Unlock in Perks →</button>
   </div>`;
@@ -148,7 +147,7 @@ export async function sendAiChat(question, state) {
   const hasAi = state.perks.includes('aiAdvisor');
   if (!hasAi) {
     sfxError();
-    showAlert(`Unlock <strong>AI Trading Advisor</strong> in Perks first (${fmt(PERKS.aiAdvisor?.cost ?? 18500)} · Market Veteran · ${PERKS.aiAdvisor?.repRequired ?? 280} REP).`, {
+    showAlert(`Unlock <strong>AI Trading Advisor</strong> in Perks first (${fmt(PERKS.aiAdvisor?.cost ?? 18500)} · ${PERKS.aiAdvisor?.tierLabel || 'Research'} license tier).`, {
       title: 'AI locked', label: 'PERKS',
     });
     return;

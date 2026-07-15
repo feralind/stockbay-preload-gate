@@ -1,5 +1,6 @@
 // @ts-check
 import { getSpendableCash } from './portfolio.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
 
 export const BLACKMARKET_ITEM_POOL = [
   {
@@ -225,14 +226,14 @@ export function isBlackMarketListingExpired(listing, currentDay) {
   return day >= expiresDay;
 }
 
-export function canPurchaseBlackMarketItem(item, { cash = 0, blackMarketOwned = [], reputation = 0 } = {}) {
+export function canPurchaseBlackMarketItem(item, { cash = 0, blackMarketOwned = [], licenses = ['retail'] } = {}) {
   if (!item?.id) return { ok: false, reason: 'Unknown listing', code: 'unknown' };
   if (Array.isArray(blackMarketOwned) && blackMarketOwned.includes(item.id)) {
     return { ok: false, reason: 'Already owned', code: 'owned' };
   }
-  const repNeed = Number(item.repRequired) || 0;
-  if (Number(reputation) < repNeed) {
-    return { ok: false, reason: `Requires ${repNeed} REP`, code: 'rep' };
+  const licNeed = requiredLicenseForRep(item.repRequired);
+  if (!hasLicense(licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
   }
   if (Number(cash) < Number(item.cost || 0)) {
     return { ok: false, reason: 'Insufficient cash', code: 'cash' };
@@ -246,7 +247,7 @@ export function purchaseBlackMarketItem(state, item) {
   const gate = canPurchaseBlackMarketItem(item, {
     cash: getSpendableCash(state.portfolio),
     blackMarketOwned: state.blackMarketOwned,
-    reputation: state.meta?.reputation || 0,
+    licenses: state.licenses,
   });
   if (!gate.ok) return { ok: false, msg: gate.reason, code: gate.code };
   state.portfolio.cash -= item.cost;

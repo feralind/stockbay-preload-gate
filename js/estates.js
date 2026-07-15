@@ -6,6 +6,7 @@
  */
 
 import { getSpendableCash } from './portfolio.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
 
 /** Closing costs on cash estate buys — soft friction, does not inflate estate equity book. */
 export const ESTATE_CLOSING_COST_PCT = 0.02;
@@ -814,30 +815,21 @@ export function getEstateLiquidationScale(state = {}) {
 }
 
 /**
- * Passive Desk Prestige from yacht / island ownership.
+ * Passive Desk Prestige from yacht / island ownership — cosmetic display only
+ * since the licensing framework (no REP, no mechanical effect).
  * @param {object} [state]
  */
 export function getEstatePrestigeAura(state = {}) {
-  let repPerClose = 0;
-  let dailyCap = 0;
-  /** @type {Array<{ id: string, name: string, repPerClose: number, dailyCap: number }>} */
+  /** @type {Array<{ id: string, name: string }>} */
   const items = [];
   for (const asset of getOwnedEstates(state)) {
-    const bonus = asset.vaultPrestige;
-    if (!bonus) continue;
-    const rpc = Math.max(0, Math.floor(Number(bonus.repPerClose) || 0));
-    const cap = Math.max(0, Math.floor(Number(bonus.dailyCap) || 0));
-    if (!rpc && !cap) continue;
-    repPerClose += rpc;
-    dailyCap += cap;
-    items.push({ id: asset.id, name: asset.name, repPerClose: rpc, dailyCap: cap });
+    if (!asset.vaultPrestige) continue;
+    items.push({ id: asset.id, name: asset.name });
   }
   return {
-    repPerClose: Math.min(5, repPerClose),
-    dailyCap: Math.min(6, dailyCap),
     items,
     summary: items.length
-      ? `Estate prestige +${Math.min(5, repPerClose)} REP/close (cap ${Math.min(6, dailyCap)}/day)`
+      ? `Estate prestige — ${items.length} flagship holding${items.length === 1 ? '' : 's'}`
       : 'No estate prestige',
   };
 }
@@ -891,12 +883,12 @@ export function canPurchaseEstate(state, assetId, ctx = {}) {
     };
   }
   const nw = Math.max(0, Number(ctx.netWorth) || 0);
-  const rep = Math.max(0, Math.floor(Number(state.meta?.reputation) || 0));
   if (nw < asset.minNet) {
     return { ok: false, reason: `Need ${asset.minNet.toLocaleString()} Net Worth`, code: 'net' };
   }
-  if (rep < asset.minRep) {
-    return { ok: false, reason: `Requires ${asset.minRep} REP`, code: 'rep' };
+  const licNeed = requiredLicenseForRep(asset.minRep);
+  if (!hasLicense(state.licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
   }
   const cash = getSpendableCash(state.portfolio || { cash: 0 });
   const closingFee = Math.max(0, Math.round(asset.price * ESTATE_CLOSING_COST_PCT));
