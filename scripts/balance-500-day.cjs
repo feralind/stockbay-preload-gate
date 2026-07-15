@@ -1,19 +1,23 @@
 /**
  * StockWay long-run balance harness (Node only, no Electron).
  *
- * Defaults to BALANCE_DAYS=500; for ~500 real desk hours use BALANCE_DAYS=1000
+ * Defaults to BALANCE_DAYS=500; calibrated for BALANCE_DAYS=1000
  * (CONFIG.REAL_MINUTES_PER_GAME_DAY = 30 → 1000 game days ≈ 500 real hours).
+ * Checkpoints include 750/1000; runs remain headless-safe when credit collapses.
  *
- * Findings from 2026-07-15 BALANCE_DAYS=1000 re-run (post license framework, REP removed):
+ * Findings from 2026-07-15 BALANCE_DAYS=1000 re-run (post license framework):
  * - careful: earns all licenses (Series 7 D66, Research D523, Reg D D728); NW trough ~D200–500,
  *   ends ~$663k; 0 late pays; business credit 850; facility $12.1k → $40.5k; 1 estate.
  * - aggressive: Series 7 D5, Research D412; credit 300 (1259 late pays) permanently blocks Reg D,
  *   so hedgeFund/primeBroker/legendDesk stay locked — earned licenses persist. Still ~$2.13M NW
- *   via synthetic P&L; facility $0.
+ *   via synthetic P&L; facility $0. Subprime personal credit (<580) shrinks Available Buying Power
+ *   to 1.0× even with Margin — harness dampens synthetic size accordingly (no crash).
  * - AFK: never qualifies for any exam (retail only); ends ~−$1.8k; payroll ~115% of P&L.
  *
- * E2 mechanical (no loud UI): HELOC needs 580+ business credit; Poor credit −5m margin grace;
- * estate closing 2%.
+ * Architectural laws (quiet, no tick thrash):
+ * - Available Buying Power: Margin + personal credit ≥670 → 2×; Fair 580–669 → 1.5×; Poor <580 → 1×.
+ * - Revenge cool-down: wall-clock 30s open lock after |pnl|/NW ≥15% and |pnl|≥$40 (engine gate).
+ * - E2 mechanical: HELOC needs 580+ business credit; Poor credit −5m margin grace; estate closing 2%.
  */
 const fs = require('node:fs');
 const path = require('node:path');
@@ -272,18 +276,30 @@ function syntheticTradingPnl(style, day, state, rand) {
   const staffCount = (state.staff || []).length;
   const autoCount = (state.staff || []).filter((member) => member.autopilot).length;
   const scale = 0.55 + Math.min(1.35, day / 430);
-  const marginBoost = hasMargin ? 1.18 : 1;
+  // Credit-scaled Available Buying Power: dampen size when personal file weakens.
+  // Mirrors desk-rules marginBuyingPowerMultiplier (Good 2× / Fair 1.5× / Poor 1×).
+  const personalCredit = Number(state.finance?.personalCredit);
+  let bpMult = 1;
+  if (hasMargin) {
+    if (Number.isFinite(personalCredit) && personalCredit >= 670) bpMult = 2;
+    else if (Number.isFinite(personalCredit) && personalCredit >= 580) bpMult = 1.5;
+    else bpMult = 1;
+  }
+  // Relative to classic Good 2× baseline so Good play keeps prior feel.
+  const bpScale = hasMargin ? (bpMult / 2) : 1;
+  const marginBoost = hasMargin ? (1 + 0.18 * bpScale) : 1;
   const staffBoost = 1 + Math.min(0.28, staffCount * 0.025 + autoCount * 0.02);
   const cashDampen = Math.max(0.65, Math.min(1.4, Math.sqrt(Math.max(250, cash) / 1800)));
 
   let mean = 0;
   let volatility = 0;
   if (style === 'careful') {
-    mean = (92 + day * 0.88) * scale * marginBoost * staffBoost * cashDampen;
+    mean = (92 + day * 0.88) * scale * marginBoost * staffBoost * cashDampen * bpScale;
     volatility = 34 + day * 0.18;
   } else if (style === 'aggressive') {
-    mean = (128 + day * 1.42) * scale * (hasMargin ? 1.36 : 1.05) * staffBoost * cashDampen;
-    volatility = 145 + day * 0.88;
+    const aggMargin = hasMargin ? (1 + 0.36 * bpScale) : 1.05;
+    mean = (128 + day * 1.42) * scale * aggMargin * staffBoost * cashDampen * bpScale;
+    volatility = (145 + day * 0.88) * Math.max(0.55, bpScale);
   } else {
     mean = (10 + day * 0.12) * scale * (1 + autoCount * 0.04);
     volatility = 44 + day * 0.23;
@@ -433,6 +449,9 @@ async function runScenario(mods, style) {
     let borrows = 0;
     let estatePurchases = 0;
     let startFacility = null;
+    let poorPersonalDays = 0;
+    let licensesWhilePoor = null;
+    const licensesAtStart = [...(state.licenses || [])];
 
     for (let day = 1; day <= DAYS; day += 1) {
       const debtBefore = firmDebt(mods, state);
@@ -452,6 +471,19 @@ async function runScenario(mods, style) {
       if (maybeBuyEstate(mods, state, style, day)) estatePurchases += 1;
       maybeUseEstateCredit(mods, state, style);
       setSyntheticDayCounters(mods, state, style, pnl, rand);
+
+      // Subprime personal credit: track restriction; held licenses must persist (no crash).
+      const pc = Number(state.finance.personalCredit) || 0;
+      if (pc < 580) {
+        poorPersonalDays += 1;
+        if (!licensesWhilePoor) licensesWhilePoor = [...(state.licenses || [])];
+        // Re-qualification for higher exams stays blocked; already-held ids remain.
+        for (const id of licensesWhilePoor) {
+          if (!state.licenses.includes(id)) {
+            throw new Error(`License ${id} stripped while personal credit ${pc} < 580`);
+          }
+        }
+      }
 
       const settlement = mods.dayEnd.runDayEndSettlement(state, day);
       payrollLifetime += settlement.payroll || 0;
@@ -483,6 +515,9 @@ async function runScenario(mods, style) {
       loanEvents,
       borrows,
       estatePurchases,
+      poorPersonalDays,
+      licensesWhilePoor,
+      licensesAtStart,
       perkUnlockDay: track.perkUnlockDay,
       perkSpendTotal: Math.round(track.perkSpendTotal),
       licenseDay: track.licenseDay,
@@ -553,6 +588,7 @@ function printDetails(result) {
   console.log(`\n${result.style.toUpperCase()}`);
   console.log(`Trading P&L ${money(result.totalPnl)}; payroll ${money(result.payrollLifetime)} (${pct(result.payrollLifetime, result.totalPnl)} of P&L)`);
   console.log(`Green/red days ${result.greenDays}/${result.redDays}; borrows ${result.borrows}; loan events ${result.loanEvents}; estate purchases ${result.estatePurchases}`);
+  console.log(`Poor personal-credit days (<580): ${result.poorPersonalDays}; licenses while poor: ${JSON.stringify(result.licensesWhilePoor || [])}`);
   console.log(`Perk spend ${money(result.perkSpendTotal)}; unlocks ${JSON.stringify(result.perkUnlockDay)}`);
   console.log(`License days ${JSON.stringify(result.licenseDay)}; license spend ${money(result.licenseSpendTotal)}`);
   console.log(`Credit personal ${result.final.personalCredit} / business ${result.final.businessCredit}; license ${result.final.license} [${result.final.licenses.join(', ')}]`);

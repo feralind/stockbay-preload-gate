@@ -24,7 +24,7 @@ import {
   getNetEquity, getFirmNetWorth,
   ensurePendingOrders, ensureOrderTickets,
   markPriceCorrectedNotices,
-  armBuySuspend, BUY_SUSPEND_LOSS_PCT, BUY_SUSPEND_MIN_LOSS,
+  armBuySuspend, shouldArmRevengeCooloff,
 } from './portfolio.js';
 import {
   confirmOrderFlow,
@@ -909,9 +909,6 @@ function maybeShowFirstLossTeach(pnl) {
  * First time: teach moment. Later: muted toast only.
  */
 function maybeArmRevengeCooloff(pnl) {
-  if (!(pnl < 0)) return;
-  const loss = Math.abs(Number(pnl) || 0);
-  if (loss < BUY_SUSPEND_MIN_LOSS) return;
   const debt = state.finance
     ? getFirmDebt(state.finance, state.estateCreditUsed)
     : Math.max(0, Number(state.estateCreditUsed) || 0);
@@ -920,7 +917,7 @@ function maybeArmRevengeCooloff(pnl) {
     vaultBook: getVaultBookValue(state),
     estateEquity: Math.max(0, Number(state.estateEquity) || 0),
   });
-  if (!(nw > 0) || loss / nw < BUY_SUSPEND_LOSS_PCT) return;
+  if (!shouldArmRevengeCooloff(pnl, nw)) return;
 
   armBuySuspend(state.portfolio);
   const first = !teachMomentShown(state.meta, 'firstRevengeCooloff');

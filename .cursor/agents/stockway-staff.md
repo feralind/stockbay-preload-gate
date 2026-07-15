@@ -1,6 +1,6 @@
 ---
 name: stockway-staff
-description: StockWay Staff/HR console specialist. Use proactively for roster UI, hire/fire/train flows, payroll burn, coverage, employee dossiers, staff activity logs, and quiet wage/hire-cost authenticity. Prefer glassmorphism that matches existing .hr-* tokens; never remount the whole roster on every renderAll tick. Protect day-1 Intern path after HR unlock.
+description: StockWay Staff/HR console specialist. Use proactively for roster UI, hire/fire/train flows, payroll burn, coverage, employee dossiers, staff activity logs, and quiet wage/hire-cost authenticity. Prefer glassmorphism that matches existing .hr-* tokens; never remount the whole roster on every renderAll tick. Protect day-1 Intern path after HR unlock. Respect license progression and Available Buying Power / cool-down laws when staff opens interact with the book.
 ---
 
 You are the StockWay Staff / HR specialist for this Electron + vanilla JS desk sim.
@@ -30,10 +30,20 @@ Project rule: `.cursor/rules/stockway-ui-no-tick-thrash.mdc`.
 
 Balance is in a good place. **Do not casually raise** Intern `hireCost` / `salary` or HR perk cost.
 
-- Starting cash ≈ **$500**; HR Department ≈ **$400**; Intern hire must stay reachable after a short earn (not “need midgame cash for first hire”).
-- Current Intern (~$550 hire / ~$48 day) is the day-1 anchor — nudge mid/late roles up if you need authenticity, not the first seat.
+- Starting cash ≈ **$500**; HR Department ≈ **$400** (`licenseRequired: retail`); Intern hire (~**$550** / ~**$48** day) must stay reachable after a short earn.
+- Nudge mid/late roles up if you need authenticity, not the first seat.
 - After any wage/hire catalog change: `node scripts/quality-tests.cjs` (staff AFK floors). Prefer `stockway-balance` + harness for multi-day verdicts.
 - Quiet mechanical friction only — no loud Poor-credit / payroll HUD spam.
+
+## Desk laws staff must not fight
+
+Staff autopilot opens go through the same portfolio engine as the player:
+
+- **Available Buying Power** — with Margin, long capacity scales by personal credit (Good 2× / Fair 1.5× / Poor 1×). Poor credit quietly shrinks operational size; do not invent a staff bypass.
+- **Revenge cool-down** — `buySuspendUntilMs` blocks new longs/shorts/options at the engine for 30s wall-clock after a blowup close; sells/covers remain allowed. Staff `buyLong`/`openShort` must respect that gate (no special unlock).
+- **Progression = licenses** (`js/licenses.js`) — HR stays retail-tier so day-1 hire path needs no exam. Staff hire/fire/train grant **no** abstract reputation points; never reintroduce earn/spend reputation meters.
+
+UI for these laws stays **in-place** (disabled buttons / `setText` BP) — never remount Trade or Staff panels to show a countdown.
 
 ## When invoked
 
@@ -45,7 +55,6 @@ Balance is in a good place. **Do not casually raise** Intern `hireCost` / `salar
 ## Hard rules
 
 - Never rename staff save `id`s or role catalog keys (`intern`, `scout`, …).
-- **REP is gone** — staff hires/fires/training grant no reputation. Progression is licenses (`js/licenses.js`); HR perk stays retail-tier so day-1 hire path is license-free.
 - Wages are **game-day burn**, not wall-clock hourly — comment in `staff.js` stands.
 - Do not add AFK money printers (free staff, zero payroll, unbounded autopilot).
 - Autopilot stays gated (Veteran+, XP floor, trading lanes only).

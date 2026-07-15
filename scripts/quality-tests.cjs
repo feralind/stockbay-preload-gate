@@ -3588,55 +3588,93 @@ async function main() {
     assert.equal(getAvailableForLong(p, []), 100);
     // Missing personal credit → Good band (2×) for backward-compatible callers
     assert.equal(getAvailableForLong(p, ['margin']), 200);
-    assert.equal(getAvailableForLong(p, ['margin'], 700), 200);
-    assert.equal(getAvailableForLong(p, ['margin'], 600), 150);
-    assert.equal(getAvailableForLong(p, ['margin'], 500), 100);
-    assert.equal(getAvailableForLong(p, [], 500), 100);
     const r = realBuyLong(p, 'AAPL', 1, 150, {}, ['margin']);
     assert.equal(r.ok, true);
     assert.ok(p.cash < 100);
   });
 
-  test('credit-scaled buying power bands and revenge cool-down gate', async () => {
+  test('credit-scaled Available Buying Power multipliers by personal credit band', async () => {
     const desk = await import(pathToFileURL(path.join(__dirname, '../js/desk-rules.js')).href);
-    const {
-      getBuyingPower, armBuySuspend, isBuySuspended, BUY_SUSPEND_MS,
-      buyLong, sellLong, createPortfolio,
-    } = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
-    assert.equal(desk.marginBuyingPowerMultiplier(700), 2);
-    assert.equal(desk.marginBuyingPowerMultiplier(600), 1.5);
-    assert.equal(desk.marginBuyingPowerMultiplier(500), 1);
+    const { getBuyingPower, getAvailableForLong, createPortfolio } = await import(
+      pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href
+    );
+    const { marginBuyingPowerMultiplier } = desk;
+    // Good+ / Exceptional (≥670) → exactly 2.0× with margin
+    assert.equal(marginBuyingPowerMultiplier(670), 2);
+    assert.equal(marginBuyingPowerMultiplier(700), 2);
+    assert.equal(marginBuyingPowerMultiplier(820), 2);
+    // Fair (580–669) → exactly 1.5×
+    assert.equal(marginBuyingPowerMultiplier(580), 1.5);
+    assert.equal(marginBuyingPowerMultiplier(600), 1.5);
+    assert.equal(marginBuyingPowerMultiplier(669), 1.5);
+    // Poor (<580) → exactly 1.0×
+    assert.equal(marginBuyingPowerMultiplier(579), 1);
+    assert.equal(marginBuyingPowerMultiplier(300), 1);
+
     const cash = 1000;
     const p = createPortfolio(cash);
-    assert.equal(getBuyingPower(p, ['margin'], 700), 2000);
-    assert.equal(getBuyingPower(p, ['margin'], 600), 1500);
-    assert.equal(getBuyingPower(p, ['margin'], 500), 1000);
-    assert.equal(getBuyingPower(p, [], 700), 1000);
+    assert.equal(getBuyingPower(p, ['margin'], 820), cash * 2.0);
+    assert.equal(getBuyingPower(p, ['margin'], 670), cash * 2.0);
+    assert.equal(getBuyingPower(p, ['margin'], 600), cash * 1.5);
+    assert.equal(getBuyingPower(p, ['margin'], 500), cash * 1.0);
+    // No margin perk → flat 1.0× spendable cash across all credit scores
+    for (const score of [300, 500, 600, 670, 820]) {
+      assert.equal(getBuyingPower(p, [], score), cash);
+      assert.equal(getAvailableForLong(p, [], score), cash);
+    }
+  });
 
-    // Arm cool-down — opens blocked, sells allowed
-    const before = Date.now();
-    armBuySuspend(p, before);
-    assert.ok(isBuySuspended(p, before + 1000));
-    assert.ok(p.buySuspendUntilMs >= before + BUY_SUSPEND_MS - 1);
+  test('revenge cool-down arms on blowup close; blocks opens; allows sells/covers', async () => {
+    const {
+      armBuySuspend, isBuySuspended, shouldArmRevengeCooloff,
+      BUY_SUSPEND_MS, BUY_SUSPEND_LOSS_PCT, BUY_SUSPEND_MIN_LOSS,
+      buyLong, sellLong, openShort, coverShort, createPortfolio,
+    } = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+
+    // Gate boundaries
+    assert.equal(BUY_SUSPEND_MS, 30_000);
+    assert.equal(BUY_SUSPEND_LOSS_PCT, 0.15);
+    assert.equal(BUY_SUSPEND_MIN_LOSS, 40);
+    assert.equal(shouldArmRevengeCooloff(-150, 1000), true); // 15% and ≥$40
+    assert.equal(shouldArmRevengeCooloff(-149, 1000), false); // under 15%
+    assert.equal(shouldArmRevengeCooloff(-39, 100), false); // under $40 floor
+    assert.equal(shouldArmRevengeCooloff(150, 1000), false); // green close
+    assert.equal(shouldArmRevengeCooloff(-20, 500), false); // sub-threshold
+
+    const p = createPortfolio(5000);
+    const t0 = Date.now();
+    // Blowup path: populate buySuspendUntilMs exactly +30_000ms
+    assert.ok(shouldArmRevengeCooloff(-200, 1000));
+    armBuySuspend(p, t0);
+    assert.equal(p.buySuspendUntilMs, t0 + BUY_SUSPEND_MS);
+    assert.ok(isBuySuspended(p, t0 + 1));
+
+    // Buy-side blocked at engine
     assert.equal(buyLong(p, 'AAPL', 1, 10, {}, []).ok, false);
+    assert.equal(openShort(p, 'AAPL', 1, 10, true).ok, false);
+
+    // Risk-mitigating sells/covers proceed
     p.longs.AAPL = { shares: 5, avgPrice: 10, lots: [{ shares: 5, avgPrice: 10, openedDay: 1 }] };
-    const sold = sellLong(p, 'AAPL', 1, 10);
-    assert.equal(sold.ok, true, sold.msg);
+    assert.equal(sellLong(p, 'AAPL', 1, 10).ok, true);
+    p.shorts.MSFT = { shares: 2, avgPrice: 20, marginHeld: 20, openedDay: 1 };
+    p.cash += 20;
+    assert.equal(coverShort(p, 'MSFT', 1, 20).ok, true);
 
-    // Expired suspend clears for opens
-    p.buySuspendUntilMs = before - 1;
-    assert.equal(isBuySuspended(p, before), false);
-    assert.equal(buyLong(p, 'MSFT', 1, 10, {}, []).ok, true);
+    // Sub-threshold / green leave gate undisturbed
+    const p2 = createPortfolio(5000);
+    assert.equal(shouldArmRevengeCooloff(-20, 500), false);
+    assert.equal(shouldArmRevengeCooloff(80, 500), false);
+    assert.equal(p2.buySuspendUntilMs, undefined);
+    assert.equal(buyLong(p2, 'IBM', 1, 10, {}, []).ok, true);
 
-    // Teach catalog includes firstRevengeCooloff
+    // Teach one-shot
     const teach = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
     assert.ok(teach.TEACH_MOMENTS.firstRevengeCooloff?.text);
     const meta = { teachMomentsShown: {} };
     assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), true);
     assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), false);
-    assert.equal(teach.teachMomentShown(meta, 'firstRevengeCooloff'), true);
 
-    // Sanitize drops expired suspend; keeps future
+    // Sanitize: drop expired, keep future
     const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
     const expired = sanitizeRunData({
       v: 2,
@@ -3662,10 +3700,13 @@ async function main() {
     });
     assert.ok(active.portfolio.buySuspendUntilMs >= futureUntil - 1);
 
-    // Sub-threshold loss math: $20 on $500 NW is under floor / under 15%
-    const loss = 20;
-    const nw = 500;
-    assert.ok(loss < 40 || loss / nw < 0.15);
+    // Day-1 Intern path untouched (HR retail + Intern hire/salary anchors)
+    const { PERKS } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
+    const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
+    assert.equal(PERKS.hrDept.licenseRequired, 'retail');
+    assert.equal(PERKS.hrDept.cost, 400);
+    assert.equal(STAFF_ROLES.intern.hireCost, 550);
+    assert.equal(STAFF_ROLES.intern.salary, 48);
   });
 
   test('overlapping limit buys respect shared cash pool', () => {

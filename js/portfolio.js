@@ -18,6 +18,20 @@ export const BUY_SUSPEND_LOSS_PCT = 0.15;
 /** Absolute floor so micro scalps do not trip the desk lock. */
 export const BUY_SUSPEND_MIN_LOSS = 40;
 
+/**
+ * Pure gate: voluntary blowup close should arm the open-side cool-down?
+ * @param {number} pnl
+ * @param {number} netWorth firm NW at close
+ */
+export function shouldArmRevengeCooloff(pnl, netWorth) {
+  if (!(pnl < 0)) return false;
+  const loss = Math.abs(Number(pnl) || 0);
+  if (loss < BUY_SUSPEND_MIN_LOSS) return false;
+  const nw = Number(netWorth);
+  if (!(nw > 0)) return false;
+  return loss / nw >= BUY_SUSPEND_LOSS_PCT;
+}
+
 const MAX_SHARES = 1_000_000;
 const MAX_PRICE = 1_000_000;
 
