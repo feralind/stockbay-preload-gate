@@ -142,8 +142,8 @@ export const GLOSS_TIPS = {
     title: 'Quote Feed',
     blurb: 'How the desk is getting prices — not a brokerage connection.',
     rows: [
-      { label: 'Live / Connected', value: 'Can fetch base quotes' },
-      { label: 'Simulation', value: 'Clock, events & halts drive the tape' },
+      { label: 'Online', value: 'Can fetch base quotes' },
+      { label: 'Simulated tape', value: 'Clock, events & halts drive prices' },
       { label: 'Offline', value: 'Cached baselines or seeds' },
     ],
     note: 'Paper money only. Nothing leaves the browser except quote lookups.',

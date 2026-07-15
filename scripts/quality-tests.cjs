@@ -821,6 +821,7 @@ async function main() {
       assert.equal(result.daySummary.challengeDone, false);
       assert.ok('payroll' in result.daySummary);
       assert.ok(Array.isArray(result.daySummary.loanEvents));
+      assert.ok(Array.isArray(result.daySummary.processWins));
     });
 
     test('runDayEndSettlement awards day_complete REP on flat days and red_day on losses', () => {
@@ -985,16 +986,37 @@ async function main() {
       state.staff = [{ roleId: 'partner', tier: 'newbie', active: true }];
       const before = state.portfolio.cash;
       const paid = payDailySalaries(state);
-      // partner $420 · HF 50% + Legend 10% → pay 40% = $168
-      assert.equal(paid, 168);
-      assert.equal(state.portfolio.cash, before - 168);
+      // partner $450 · HF 50% + Legend 10% → pay 40% = $180
+      assert.equal(paid, 180);
+      assert.equal(state.portfolio.cash, before - 180);
     });
     test('staff wages and train costs resist AFK spam', () => {
       assert.ok(STAFF_ROLES.intern.salary >= 40);
       assert.ok(STAFF_ROLES.partner.salary >= 400);
-      assert.ok(STAFF_ROLES.scout.hireCost >= 1000);
+      assert.ok(STAFF_ROLES.scout.hireCost >= 1400);
+      assert.ok(STAFF_ROLES.trader.hireCost >= 2000);
+      assert.ok(STAFF_ROLES.partner.hireCost >= 10000);
       assert.ok(staffMod.STAFF_TIERS.newbie.trainCost >= 400);
       assert.ok(staffMod.STAFF_TIERS.veteran.trainCost >= 1000);
+    });
+    test('firing pays one day severance when cash allows', () => {
+      const { hireStaff, fireStaff, getMemberDailySalary } = staffMod;
+      const state = {
+        perks: ['hrDept', 'scanner'],
+        staff: [],
+        staffLog: [],
+        portfolio: { cash: 50_000 },
+        stats: {},
+      };
+      const hired = hireStaff('scout', state);
+      assert.ok(hired.ok);
+      const before = state.portfolio.cash;
+      const dayPay = getMemberDailySalary(hired.member);
+      const fired = fireStaff(hired.member.id, state);
+      assert.ok(fired.ok);
+      assert.equal(state.staff.length, 0);
+      assert.equal(state.portfolio.cash, before - dayPay);
+      assert.ok(/severance/i.test(state.staffLog[0]?.action || ''));
     });
     test('staff coverage and next-hire prefer sell gap', () => {
       const { getStaffCoverage, getNextHireRecommendation } = staffMod;
@@ -1115,16 +1137,18 @@ async function main() {
           open: px, high: px + 0.25, low: px - 0.2, close: px + 0.05, volume: 1000,
         });
       }
+      // Forming bar: sane close, absurd spear high (bad Yahoo wick)
       bars[bars.length - 1] = {
-        time: now, open: 311, high: 316.58, low: 311, close: 316.4, volume: 9000,
+        time: now, open: 311.2, high: 380, low: 311, close: 316.4, volume: 9000,
       };
       const completedMax = Math.max(...bars.slice(0, -1).map((b) => b.high));
       const axis = computePriceAxisRange(bars, '1D');
       assert.ok(axis);
-      // Must not adopt the spear high/close as the top of the pane
-      assert.ok(axis.max < 316.4, `axis.max adopted spear close: ${axis.max}`);
-      assert.ok(axis.max < bars[bars.length - 1].high, `axis.max adopted spear high: ${axis.max}`);
-      assert.ok(axis.max - completedMax < 4, `axis stretched too far past session: ${axis.max - completedMax}`);
+      // Live close must stay on-screen
+      assert.ok(axis.max >= 316.4, `axis.max clipped live close: ${axis.max}`);
+      // Spear high must not own the pane
+      assert.ok(axis.max < 360, `axis.max adopted spear high: ${axis.max}`);
+      assert.ok(axis.max - completedMax < 12, `axis stretched too far past session: ${axis.max - completedMax}`);
       assert.ok(axis.max - axis.min >= 311 * 0.018, 'min span too tight');
 
       const peer = peerMedianRange(bars);
@@ -1132,6 +1156,75 @@ async function main() {
       const maxR = Math.max(peer * 2.2, 311 * 0.0025);
       assert.ok(clamped.high - clamped.low <= maxR + 0.02, `peer clamp still tall: ${clamped.high - clamped.low}`);
       assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
+    });
+
+    test('applyLiveCandleTick keeps close glued to live quote price', () => {
+      const { applyLiveCandleTick } = chartMod;
+      const bar = { time: 1, open: 310, high: 311, low: 309.5, close: 310.2, volume: 100 };
+      const next = applyLiveCandleTick(bar, 318.52, 0.02);
+      assert.ok(next);
+      assert.equal(next.close, 318.52, 'forming close must equal HUD quote');
+      assert.ok(next.high >= 318.52, 'high must include quote');
+      assert.ok(next.low <= 310, 'low keeps session floor');
+      assert.equal(next.open, 310, 'session open is preserved');
+    });
+
+    test('1D axis keeps a drifted live close on-screen (no soft-pin clip)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 300 + (i % 4) * 0.2;
+        bars.push({
+          time: now - (39 - i) * 300,
+          open: px, high: px + 0.3, low: px - 0.25, close: px, volume: 1000,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 300.4, high: 300.5, low: 300.2, close: 312.8, volume: 2000,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      assert.ok(axis.max >= 312.8, `live close clipped after drift: ${axis.max}`);
+      assert.ok(axis.min <= 300, `session lows clipped: ${axis.min}`);
+    });
+
+    test('computePriceAxisRange keeps MAX / 5D highs on-screen (no hard maxSpan recenter)', () => {
+      const { computePriceAxisRange, sliceBarsForAxis } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const maxBars = [];
+      for (let i = 0; i < 80; i++) {
+        const px = 80 + i * 4; // ~80 → ~396
+        maxBars.push({
+          time: now - (79 - i) * 86400 * 30,
+          open: px - 1, high: px + 2, low: px - 3, close: px, volume: 1e6,
+        });
+      }
+      const maxAxis = computePriceAxisRange(maxBars, 'MAX');
+      assert.ok(maxAxis);
+      assert.ok(maxAxis.max >= 396, `MAX clipped ATH: max=${maxAxis.max}`);
+      assert.ok(maxAxis.min <= 80, `MAX clipped early lows: min=${maxAxis.min}`);
+
+      const fiveDay = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 100 + (i < 20 ? -i * 0.6 : (i - 20) * 0.9); // ~8%+ swing
+        fiveDay.push({
+          time: now - (39 - i) * 900,
+          open: px, high: px + 0.4, low: px - 0.4, close: px + 0.1, volume: 1000,
+        });
+      }
+      const d5 = computePriceAxisRange(fiveDay, '5D');
+      const hi = Math.max(...fiveDay.map((b) => b.high));
+      const lo = Math.min(...fiveDay.map((b) => b.low));
+      assert.ok(d5.max >= hi, `5D clipped high ${hi} vs axis ${d5.max}`);
+      assert.ok(d5.min <= lo, `5D clipped low ${lo} vs axis ${d5.min}`);
+
+      const visible = sliceBarsForAxis(maxBars, 75, 100);
+      assert.ok(visible.length >= 10);
+      assert.ok(visible[0].close > 200, 'visible slice should be the recent high band');
+      const visAxis = computePriceAxisRange(visible, 'MAX');
+      assert.ok(visAxis.max >= visible[visible.length - 1].close);
+      assert.ok(visAxis.min > 150, 'visible-window axis should not span the whole multi-year history');
     });
   }
 
@@ -2098,14 +2191,18 @@ async function main() {
       ESTATE_ASSETS, purchaseEstate, canPurchaseEstate, sanitizeEstateProgress,
       drawEstateCredit, cashOutEstateEquity, syncEstateDerived, getEstateGraceBonus,
       getEstateLiquidationScale, getEstatePrestigeAura,
+      ESTATE_CLOSING_COST_PCT, ESTATE_CREDIT_MIN_BUSINESS,
     } = estateMod;
 
     test('estate purchase gates, credit draw, sanitize forge strip, and resilience helpers', () => {
       assert.ok(ESTATE_ASSETS.length >= 26);
       assert.ok(ESTATE_ASSETS.filter((a) => a.category === 'cars').length >= 10);
       assert.ok(ESTATE_ASSETS.filter((a) => a.category === 'penthouses').length >= 4);
+      assert.equal(ESTATE_CLOSING_COST_PCT, 0.02);
+      assert.equal(ESTATE_CREDIT_MIN_BUSINESS, 580);
       const state = {
         portfolio: { cash: 200_000 },
+        finance: { businessCredit: 700, personalCredit: 680 },
         estateOwned: [],
         estateSpentTotal: 0,
         meta: { reputation: 100 },
@@ -2115,15 +2212,18 @@ async function main() {
       assert.equal(locked.code, 'net');
       const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
       assert.equal(buy.ok, true);
+      assert.equal(buy.closingFee, 2500);
       assert.deepEqual(state.estateOwned, ['coastalResidence']);
       assert.equal(state.estateSpentTotal, 125_000);
+      const afterBuyCash = 200_000 - 125_000 - 2500;
+      assert.equal(state.portfolio.cash, afterBuyCash);
       syncEstateDerived(state);
       assert.ok(state.estateCreditMax > 0);
       assert.ok(state.resilienceRating >= 8);
       const draw = drawEstateCredit(state, 10_000);
       assert.equal(draw.ok, true);
       assert.equal(state.estateCreditUsed, 10_000);
-      assert.equal(state.portfolio.cash, 200_000 - 125_000 + 10_000);
+      assert.equal(state.portfolio.cash, afterBuyCash + 10_000);
       assert.ok(getEstateGraceBonus(state) >= 1);
       assert.ok(getEstateLiquidationScale(state) < 1);
       const forged = sanitizeEstateProgress({
@@ -2168,6 +2268,25 @@ async function main() {
       assert.equal(carLocked.code, 'prereq');
     });
 
+    test('property credit draw requires Fair+ business credit; cash buy still allowed', () => {
+      const state = {
+        portfolio: { cash: 200_000 },
+        finance: { businessCredit: 300, personalCredit: 300 },
+        estateOwned: [],
+        estateSpentTotal: 0,
+        meta: { reputation: 100 },
+      };
+      const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
+      assert.equal(buy.ok, true, 'cash house still OK on trash credit');
+      const denied = drawEstateCredit(state, 5_000);
+      assert.equal(denied.ok, false);
+      assert.equal(denied.code, 'credit');
+      assert.match(denied.msg, /580\+ business credit/);
+      state.finance.businessCredit = 580;
+      const ok = drawEstateCredit(state, 5_000);
+      assert.equal(ok.ok, true);
+    });
+
     test('firm net worth includes estate equity; cash-out and credit keep NW consistent', async () => {
       const portMod = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
       const finMod = await import(pathToFileURL(path.join(__dirname, '../js/finance.js')).href);
@@ -2197,9 +2316,11 @@ async function main() {
       const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
       assert.equal(buy.ok, true);
       const afterBuy = nwParts();
-      assert.ok(Math.abs(afterBuy - before) < 0.01, 'buy estate: cash→equity keeps firm NW flat');
+      // Closing fee is a pure cash sink (not estate equity) — firm NW drops by the fee.
+      assert.ok(Math.abs(afterBuy - (before - (buy.closingFee || 0))) < 0.01,
+        'buy estate: equity books flat; closing fee reduces firm NW');
       assert.equal(state.estateEquity, 125_000);
-      assert.equal(state.portfolio.cash, 75_000);
+      assert.equal(state.portfolio.cash, 200_000 - 125_000 - (buy.closingFee || 0));
       assert.ok(afterBuy > getEquity(state.portfolio), 'Portfolio Total Equity must exceed cash+positions when estates owned');
 
       const draw = drawEstateCredit(state, 10_000);
@@ -2241,6 +2362,17 @@ async function main() {
       assert.deepEqual(cats.map((c) => c.name), [
         'Residences', 'Penthouses', 'Yachts', 'Garage', 'Islands',
       ]);
+    });
+
+    test('estates UI structure key ignores live cash/NW (no tick thrash)', () => {
+      const src = require('fs').readFileSync(path.join(__dirname, '../js/ui/estates.js'), 'utf8');
+      const m = src.match(/function estatesStructureKey\([\s\S]*?\n\}/);
+      assert.ok(m, 'estatesStructureKey must exist');
+      const body = m[0];
+      assert.ok(!/cashBucket/.test(body), 'cashBucket in structure key remounts bento every tick');
+      assert.ok(!/nwBucket/.test(body), 'nwBucket in structure key remounts bento on quote churn');
+      assert.ok(!/portfolio\?\.cash/.test(body), 'live cash must not be in estatesStructureKey');
+      assert.ok(/patchEstatesLive/.test(src), 'patchEstatesLive required for Ready/Locked without remount');
     });
   }
 
@@ -2622,6 +2754,7 @@ async function main() {
     shouldShowMarginCallCoach, markMarginCallCoachShown, maybeShowMarginCallCoach,
     shouldShowCircuitHaltCoach, markCircuitHaltCoachShown, maybeShowCircuitHaltCoach,
     shouldShowSimStatusCoach, markSimStatusCoachShown,
+    MARGIN_CALL_COACH_TEXT, CIRCUIT_HALT_COACH_TEXT, SIM_STATUS_COACH_TEXT,
   } = onboardMod;
   const notifyMod = await import(pathToFileURL(path.join(__dirname, '../js/notify.js')).href);
   const {
@@ -2643,14 +2776,28 @@ async function main() {
   const beforeGlossary = JSON.stringify(GLOSSARY);
 
   test('HELP_SECTIONS and GLOSSARY stay intact (reference layer unchanged)', () => {
-    assert.equal(HELP_SECTIONS.length, 13);
+    assert.equal(HELP_SECTIONS.length, 14);
     assert.ok(HELP_SECTIONS.some((s) => s.id === 'start'));
     assert.ok(HELP_SECTIONS.some((s) => s.id === 'risk-options'));
+    assert.ok(HELP_SECTIONS.some((s) => s.id === 'compressed-realism'));
     assert.ok(GLOSSARY.length > 20);
     assert.equal(JSON.stringify(HELP_SECTIONS), beforeHelpSections);
     assert.equal(JSON.stringify(GLOSSARY), beforeGlossary);
     assert.ok(GLOSSARY.some((g) => /halt/i.test(g.term)));
     assert.ok(GLOSSARY.some((g) => /margin call/i.test(g.term)));
+    assert.ok(GLOSSARY.some((g) => /compressed realism/i.test(g.term)));
+  });
+
+  test('coachmark texts keep all concatenated sentences (no dropped ASI +)', () => {
+    assert.ok(MARGIN_CALL_COACH_TEXT.includes('equity cushion fell below'));
+    assert.ok(MARGIN_CALL_COACH_TEXT.includes('liquidat'));
+    assert.ok(MARGIN_CALL_COACH_TEXT.includes('Real brokers do the same'));
+    assert.ok(CIRCUIT_HALT_COACH_TEXT.includes('Trading halt'));
+    assert.ok(CIRCUIT_HALT_COACH_TEXT.includes('Exchanges halt'));
+    assert.ok(CIRCUIT_HALT_COACH_TEXT.includes('halt lifts'));
+    assert.ok(SIM_STATUS_COACH_TEXT.includes('Online means'));
+    assert.ok(SIM_STATUS_COACH_TEXT.includes('Simulated tape'));
+    assert.ok(SIM_STATUS_COACH_TEXT.includes('Offline uses cached'));
   });
 
   {
@@ -2986,6 +3133,39 @@ async function main() {
     assert.equal(shouldShowSimStatusCoach(meta), false);
   });
 
+  test('graduation coach copy explains trusted-desk graduation', () => {
+    assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('past the tutorial desk'));
+    assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('judgment and firm identity'));
+    assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('No more hand-holding'));
+  });
+
+  test('graduation coach fires once at Trusted Trader rank', () => {
+    const meta = { reputation: 119, graduationCoachShown: false };
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta), false);
+    meta.reputation = 120;
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta), true);
+    onboardMod.markGraduationCoachShown(meta);
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta), false);
+  });
+
+  test('graduation coach still eligible if REP jumps past Trusted band', () => {
+    const meta = { reputation: 300, graduationCoachShown: false };
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta), true);
+  });
+
+  test('graduation coach quiet mode does not mark shown', () => {
+    const meta = { reputation: 120, graduationCoachShown: false };
+    const saves = [];
+    setWalkthroughActive(true);
+    assert.equal(isCoachQuiet(), true);
+    assert.equal(onboardMod.maybeShowGraduationCoach({ meta }, {
+      saveGame: (o) => saves.push(o),
+    }), false);
+    assert.equal(meta.graduationCoachShown, false);
+    assert.equal(saves.length, 0);
+    endCoachQuietAndFlush();
+  });
+
   test('completeWalkthroughReset uses archive:false and remounts onboarded flag', () => {
     const baselineKey = 'stockway_quote_baselines_v3';
     const store = { stockway_onboarded_v1: '1', stockway_leaderboard_v1: '[]' };
@@ -3011,6 +3191,70 @@ async function main() {
     assert.equal(store.stockway_leaderboard_v1, '[]', 'Best Runs untouched');
     assert.equal(store[baselineKey], '{"AAPL":{"price":123.45}}', 'quote baselines preserved');
   });
+
+  {
+    const wipeMod = await import(pathToFileURL(path.join(__dirname, '../js/save-wipe.js')).href);
+    const {
+      DESK_WIPE_FLAG_KEY,
+      DESK_WIPE_SESSION_KEY,
+      markDeskWipe,
+      isDeskWipePending,
+      shouldBlockSaveAfterForeignWipe,
+      consumeDeskWipeOnBoot,
+      clearDeskWipeFlags,
+      wipeRunSaveKeys,
+    } = wipeMod;
+
+    function memStorage(seed = {}) {
+      const d = { ...seed };
+      return {
+        _d: d,
+        getItem(k) { return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : null; },
+        setItem(k, v) { d[k] = String(v); },
+        removeItem(k) { delete d[k]; },
+      };
+    }
+
+    test('desk wipe flag blocks foreign-tab saves and consumes slot revival on boot', () => {
+      const storage = memStorage({
+        stockway_save_v1: '{"v":2,"portfolio":{"cash":999999}}',
+        stockway_save_v1_slot: JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]),
+        stockway_save_v1__tmp: '{"v":2}',
+        stockway_alert_history_v1: '[]',
+      });
+      const session = memStorage();
+      const otherSession = memStorage();
+
+      markDeskWipe(storage, session);
+      assert.equal(isDeskWipePending(storage, session), true);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), true, 'other tab must not rewrite wiped desk');
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, session), false, 'wiping tab may write fresh Day 1');
+
+      wipeRunSaveKeys({
+        storage,
+        also: ['stockway_alert_history_v1'],
+      });
+      // Simulate late slot rewrite (race / other tab before it notices wipe)
+      storage.setItem('stockway_save_v1_slot', JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]));
+      storage.setItem('stockway_save_v1', '{"v":2,"portfolio":{"cash":999999}}');
+
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), true, 'boot must honor wipe');
+      assert.equal(storage.getItem('stockway_save_v1'), null, 'primary cleared on boot');
+      assert.equal(storage.getItem('stockway_save_v1_slot'), null, 'slot cleared — no revival');
+      assert.equal(storage.getItem('stockway_save_v1__tmp'), null);
+      assert.equal(isDeskWipePending(storage, session), true, 'flag stays until fresh save');
+
+      // Fresh Day-1 write then clear sentinel
+      storage.setItem('stockway_save_v1', JSON.stringify({ v: 2, portfolio: { cash: 500 } }));
+      clearDeskWipeFlags(storage, session);
+      assert.equal(isDeskWipePending(storage, session), false);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), false);
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), false);
+      assert.ok(storage.getItem('stockway_save_v1'), 'fresh save kept after sentinel clear');
+      assert.equal(storage.getItem(DESK_WIPE_FLAG_KEY), null);
+      assert.equal(session.getItem(DESK_WIPE_SESSION_KEY), null);
+    });
+  }
 
   test('needsOnboarding / markOnboarded still gate first boot only', () => {
     const key = 'stockway_onboarded_v1';
@@ -3104,6 +3348,122 @@ async function main() {
     assert.equal(realBuyLong(p, 'AAPL', 1, -50).ok, false);
     assert.equal(realBuyLong(p, 'bad sym!', 1, 50).ok, false);
     assert.equal(p.cash, 500);
+  });
+
+  test('buyLong stores notionalPctAtEntry once; adds leave it unchanged', () => {
+    const p = realCreatePortfolio(1000);
+    const r = realBuyLong(p, 'AAPL', 2, 100); // $200 / $1000 = 0.2
+    assert.equal(r.ok, true);
+    assert.ok(Number.isFinite(p.longs.AAPL.notionalPctAtEntry));
+    assert.ok(Math.abs(p.longs.AAPL.notionalPctAtEntry - 0.2) < 0.001);
+    const first = p.longs.AAPL.notionalPctAtEntry;
+    assert.equal(realBuyLong(p, 'AAPL', 1, 100).ok, true);
+    assert.equal(p.longs.AAPL.notionalPctAtEntry, first, 'add must not recompute entry pct');
+  });
+
+  test('legacy positions without notionalPctAtEntry are skipped by sized-right', async () => {
+    const { collectProcessWins, PROCESS_WIN_MAX_SIZE_PCT } = await import(
+      pathToFileURL(path.join(__dirname, '../js/process-wins.js')).href
+    );
+    assert.equal(PROCESS_WIN_MAX_SIZE_PCT, 0.25);
+    const legacy = collectProcessWins({
+      day: 5,
+      loanEvents: [],
+      portfolio: {
+        longs: {
+          OLD: { shares: 10, avgPrice: 10, lots: [{ shares: 10, avgPrice: 10, openedDay: 5 }] },
+        },
+        shorts: {},
+      },
+    });
+    assert.ok(!legacy.some((w) => w.id === 'sized_right'));
+
+    const sized = collectProcessWins({
+      day: 5,
+      loanEvents: [],
+      portfolio: {
+        longs: {
+          AAPL: {
+            shares: 1, avgPrice: 50, notionalPctAtEntry: 0.1,
+            lots: [{ shares: 1, avgPrice: 50, openedDay: 5 }],
+          },
+        },
+        shorts: {},
+      },
+    });
+    assert.ok(sized.some((w) => w.id === 'sized_right'));
+
+    const oversized = collectProcessWins({
+      day: 5,
+      loanEvents: [],
+      portfolio: {
+        longs: {
+          AAPL: {
+            shares: 10, avgPrice: 50, notionalPctAtEntry: 0.4,
+            lots: [{ shares: 10, avgPrice: 50, openedDay: 5 }],
+          },
+        },
+        shorts: {},
+      },
+    });
+    assert.ok(!oversized.some((w) => w.id === 'sized_right'));
+
+    const paid = collectProcessWins({
+      day: 5,
+      loanEvents: [{ type: 'payment', rep: 4 }],
+      portfolio: { longs: {}, shorts: {} },
+    });
+    assert.ok(paid.some((w) => w.id === 'paid_on_time'));
+
+    const late = collectProcessWins({
+      day: 5,
+      loanEvents: [{ type: 'payment' }, { type: 'late' }],
+      portfolio: { longs: {}, shorts: {} },
+    });
+    assert.ok(!late.some((w) => w.id === 'paid_on_time'));
+  });
+
+  test('exitReason tags sell/cover; patience needs MAE + voluntary green', async () => {
+    const {
+      collectProcessWins,
+      updateOpenPositionMae,
+      maybeRecordPatienceWin,
+      PROCESS_WIN_DRAWDOWN_PCT,
+      normalizeExitReason,
+    } = await import(pathToFileURL(path.join(__dirname, '../js/process-wins.js')).href);
+    assert.equal(PROCESS_WIN_DRAWDOWN_PCT, 0.05);
+    assert.equal(normalizeExitReason('margin'), 'margin');
+    assert.equal(normalizeExitReason('nope'), 'voluntary');
+
+    const p = realCreatePortfolio(10_000);
+    assert.equal(realBuyLong(p, 'AAA', 10, 100).ok, true);
+    updateOpenPositionMae(p, () => 90);
+    assert.ok(p.longs.AAA.worstUnrealizedPct <= -0.1);
+
+    const marginSell = realSellLong(p, 'AAA', 1, 110, { exitReason: 'margin' });
+    assert.equal(marginSell.ok, true);
+    assert.equal(marginSell.exitReason, 'margin');
+    assert.equal(p.history[0].exitReason, 'margin');
+    assert.ok(!p.dayPatienceWins?.length, 'margin green exit must not earn patience');
+
+    updateOpenPositionMae(p, () => 90);
+    const stopSell = realSellLong(p, 'AAA', 1, 110, { exitReason: 'stop_loss' });
+    assert.equal(stopSell.exitReason, 'stop_loss');
+    assert.ok(!p.dayPatienceWins?.length, 'stop_loss must not earn patience');
+
+    updateOpenPositionMae(p, () => 90);
+    const vol = realSellLong(p, 'AAA', 1, 110);
+    assert.equal(vol.exitReason, 'voluntary');
+    assert.ok(p.dayPatienceWins?.some((w) => w.id === 'patience_paid'));
+
+    const wins = collectProcessWins({ day: 1, loanEvents: [], portfolio: p });
+    assert.ok(wins.some((w) => w.id === 'patience_paid'));
+
+    // Direct gate: shallow MAE does not qualify
+    const p2 = { dayPatienceWins: [] };
+    assert.equal(maybeRecordPatienceWin(p2, {
+      exitReason: 'voluntary', pnl: 10, worstUnrealizedPct: -0.02, sym: 'X',
+    }), false);
   });
 
   test('negative sell/cover cannot mint shares or cash', () => {
@@ -3645,6 +4005,23 @@ async function main() {
       assert.equal(getDeskMarginGraceMinutes(relicAndPrime), 34);
     });
 
+    test('Poor credit quietly shortens margin grace by 5 minutes', () => {
+      const fair = {
+        perks: [],
+        blackMarketOwned: [],
+        blackMarketEquippedRelics: [],
+        finance: { personalCredit: 680, businessCredit: 700 },
+      };
+      const poor = {
+        perks: [],
+        blackMarketOwned: [],
+        blackMarketEquippedRelics: [],
+        finance: { personalCredit: 300, businessCredit: 300 },
+      };
+      assert.equal(getDeskMarginGraceMinutes(fair), 20);
+      assert.equal(getDeskMarginGraceMinutes(poor), 15);
+    });
+
     test('smartRouting perk still stacks after relic slippage shrink, not before', () => {
       const mid = 100;
       const relicState = {
@@ -4155,6 +4532,106 @@ async function main() {
     const marked = estimateOptionValue(opt);
     const intrinsic = optionIntrinsicPerShare(opt, 100) * 100;
     assert.ok(marked > intrinsic, `ATM with time left should exceed intrinsic (${marked} > ${intrinsic})`);
+  });
+
+  // --- no_chase process win ---
+  const { collectProcessWins } = await import(pathToFileURL(path.join(__dirname, '../js/process-wins.js')).href);
+
+  test('no_chase stays silent after red exit plus same-day rebuy', () => {
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 21,
+      dayStartEquity: 10000,
+      dayStartCash: 10000,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const p = realCreatePortfolio(10000);
+    assert.equal(realBuyLong(p, 'NCH1', 10, 100).ok, true);
+    assert.equal(realSellLong(p, 'NCH1', 10, 90, { exitReason: 'voluntary' }).ok, true);
+    assert.equal(realBuyLong(p, 'NCH1', 1, 91).ok, true);
+    const wins = collectProcessWins({ portfolio: p, day: 21 });
+    assert.equal(wins.some((w) => w.id === 'no_chase'), false);
+  });
+
+  test('no_chase appears after red exit without same-day rebuy', () => {
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 22,
+      dayStartEquity: 10000,
+      dayStartCash: 10000,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const p = realCreatePortfolio(10000);
+    assert.equal(realBuyLong(p, 'NCH2', 10, 100).ok, true);
+    assert.equal(realSellLong(p, 'NCH2', 10, 90, { exitReason: 'voluntary' }).ok, true);
+    const wins = collectProcessWins({ portfolio: p, day: 22 });
+    assert.ok(wins.some((w) => w.id === 'no_chase'));
+  });
+
+  test('no_chase ignores margin red exits', () => {
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 23,
+      dayStartEquity: 10000,
+      dayStartCash: 10000,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const p = realCreatePortfolio(10000);
+    assert.equal(realBuyLong(p, 'NCH3', 10, 100).ok, true);
+    assert.equal(realSellLong(p, 'NCH3', 10, 90, { exitReason: 'margin' }).ok, true);
+    const wins = collectProcessWins({ portfolio: p, day: 23 });
+    assert.equal(wins.some((w) => w.id === 'no_chase'), false);
+    assert.equal(p.dayLastRedExit, undefined);
+  });
+
+  // --- Phase B tape regime / listings constants / AI cap ---
+  const listingsMod = await import(pathToFileURL(path.join(__dirname, '../js/ui/listings.js')).href);
+  const aiMod = await import(pathToFileURL(path.join(__dirname, '../js/ai.js')).href);
+
+  test('Phase B getTapeRegime is deterministic with roughly 40% chop days', () => {
+    for (let day = 1; day <= 120; day++) {
+      assert.equal(mkt.getTapeRegime(day), mkt.getTapeRegime(day));
+      assert.ok(['chop', 'trend'].includes(mkt.getTapeRegime(day)));
+    }
+    const chopDays = Array.from({ length: 120 }, (_, i) => i + 1)
+      .filter(day => mkt.getTapeRegime(day) === 'chop').length;
+    assert.ok(chopDays >= 36 && chopDays <= 60, `expected ~40% chop days, got ${chopDays}/120`);
+  });
+
+  test('Phase B listing deal thresholds are centralized exports', () => {
+    assert.equal(listingsMod.LISTING_DEAL_THRESHOLD_SCANNER, 0.08);
+    assert.equal(listingsMod.LISTING_DEAL_THRESHOLD_NO_SCANNER, 0.12);
+  });
+
+  Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true });
+  getQuoteCache().set('AAPL', {
+    price: 100,
+    prevClose: 95,
+    open: 95,
+    high: 105,
+    low: 94,
+    change: 5,
+    changePct: 5,
+    volume: 10_000_000,
+    updated: Date.now(),
+    simulated: true,
+  });
+  const phaseBAiAnalysis = await aiMod.generateSymbolSummary('AAPL');
+  test('Phase B AI confidence is capped at 78', () => {
+    assert.ok(phaseBAiAnalysis, 'expected AAPL analysis');
+    assert.ok(phaseBAiAnalysis.confidence <= 78, `confidence ${phaseBAiAnalysis.confidence} should be capped at 78`);
   });
 
   console.log(`\n${passed} tests passed${failed ? `, ${failed} failed` : ''}`);

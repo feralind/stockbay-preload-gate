@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StockWay · 500-hour balance &amp; education report</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --bg-elev: #171a21;
+      --bg-card: #1b1f28;
+      --border: #2a3140;
+      --text: #e8eaed;
+      --muted: #9aa3b2;
+      --success: #3ecf8e;
+      --warning: #e6b84d;
+      --danger: #f07178;
+      --info: #6cb6ff;
+      --neutral: #8b93a7;
+      --radius: 10px;
+      --font: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+    h1 { font-size: 1.75rem; font-weight: 650; margin: 0 0 8px; letter-spacing: -0.02em; }
+    h2 { font-size: 1.2rem; font-weight: 600; margin: 0 0 10px; }
+    h3 { font-size: 1.05rem; font-weight: 600; margin: 0 0 8px; }
+    .muted { color: var(--muted); font-size: 0.95rem; }
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 550;
+      border: 1px solid var(--border);
+      background: var(--bg-elev);
+    }
+    .pill.info { color: var(--info); border-color: #2a4a6a; }
+    .pill.warning { color: var(--warning); border-color: #5a4a20; }
+    .pill.success { color: var(--success); border-color: #1f4a38; }
+    .pill.neutral { color: var(--neutral); }
+    .callout {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--warning);
+      background: var(--bg-elev);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    .callout.info { border-left-color: var(--info); }
+    .callout.success { border-left-color: var(--success); }
+    .callout .title { font-weight: 600; margin-bottom: 4px; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+    @media (max-width: 800px) {
+      .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+    .stat {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+    .stat .value { font-size: 1.35rem; font-weight: 650; }
+    .stat .label { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+    .stat.warning .value { color: var(--warning); }
+    .stat.info .value { color: var(--info); }
+    .stat.success .value { color: var(--success); }
+    .chart-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+    .chart-box canvas { width: 100% !important; max-height: 300px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 550;
+      font-size: 0.8rem;
+      background: var(--bg-elev);
+    }
+    tr:last-child td { border-bottom: none; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 12px;
+    }
+    @media (max-width: 800px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .card-h {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 0.95rem;
+      background: var(--bg-elev);
+    }
+    .card-b { padding: 14px; }
+    .card-b p { margin: 0 0 8px; }
+    .card-b p:last-child { margin-bottom: 0; }
+    .card-b ul { margin: 0; padding-left: 1.1rem; }
+    .card-b li { margin: 4px 0; }
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 4px 0;
+    }
+    .strong { font-weight: 650; }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    button {
+      font: inherit;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--bg-elev);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 12px;
+    }
+    button:hover { border-color: var(--info); color: var(--info); }
+    @media print {
+      body { background: #fff; color: #111; }
+      .wrap { max-width: none; }
+      .chart-box, .card, .stat, table, .callout { break-inside: avoid; }
+      button { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>StockWay · 500-hour balance &amp; education report</h1>
+      <p class="muted">
+        1000 game days ≈ 500 real desk hours (30 min = 1 day).
+        Source: <code>scripts/balance-500-day.cjs</code> · 2026-07-15 (post Staff hire UI + E2 credit).
+        Trading P&amp;L is synthetic by style; loans/payroll/perks/staff/day-end use live modules.
+      </p>
+      <div class="pills">
+        <span class="pill info">Measurement only — no economy retune</span>
+        <span class="pill neutral">Starting cash $500</span>
+        <span class="pill warning">Synthetic trading P&amp;L</span>
+      </div>
+      <div class="toolbar">
+        <button type="button" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+    </header>
+
+    <div class="callout">
+      <div class="title">Read this first</div>
+      <div class="muted">
+        Trading outcomes are style-scripted so we can stress payroll, credit, staff, and perk spend.
+        Conclusions about “can you make profit from skill” are directional — desk costs and credit
+        math are live modules; tape edge is not a full tick-by-tick player sim.
+      </div>
+    </div>
+
+    <section>
+      <h2>Executive scorecard</h2>
+      <div class="stats">
+        <div class="stat warning"><div class="value">3 / 5</div><div class="label">Balance</div></div>
+        <div class="stat info"><div class="value">4 / 5</div><div class="label">Challenge</div></div>
+        <div class="stat success"><div class="value">4 / 5</div><div class="label">Education</div></div>
+        <div class="stat warning"><div class="value">3 / 5</div><div class="label">Exploit risk</div></div>
+        <div class="stat success"><div class="value">2 / 5</div><div class="label">Bug risk</div></div>
+      </div>
+      <p class="muted" style="margin-top:12px">
+        Careful play eventually wins with clean credit (~$766k), but D300–500 is a debt/payroll slog
+        (trough ~−$10k at D400). Aggressive “wins” wealth while destroying credit — educationally mixed.
+        AFK correctly fails. Scores: Balance 3 · Challenge 4 · Education 4 · Exploit 3 · Bugs 2 (lower = safer).
+      </p>
+    </section>
+
+    <section>
+      <h2>Net worth over the run</h2>
+      <p class="muted">Firm net worth ($) by checkpoint day · Source: 1000-day harness · careful / aggressive / AFK</p>
+      <div class="chart-box"><canvas id="nwChart" height="120"></canvas></div>
+    </section>
+
+    <section>
+      <h2>Debt load</h2>
+      <p class="muted">Active firm debt ($) by day · same checkpoints</p>
+      <div class="chart-box"><canvas id="debtChart" height="110"></canvas></div>
+    </section>
+
+    <section>
+      <h2>Day-500 vs Day-1000 snapshot</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Style</th><th>NW D500</th><th>NW D1000</th><th>Cash end</th>
+            <th>Debt end</th><th>Late pays</th><th>Payroll % of P&amp;L</th><th>Estates</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Careful</td><td>−$983</td><td>$765,656</td><td>$641,718</td><td>$1,061</td><td>0</td><td>52.4%</td><td>1</td></tr>
+          <tr><td>Aggressive</td><td>$38,396</td><td>$2,239,430</td><td>$1,912,812</td><td>$8,382</td><td>989</td><td>24.2%</td><td>2</td></tr>
+          <tr><td>AFK</td><td>−$4,675</td><td>−$1,817</td><td>$1,310</td><td>$3,128</td><td>0</td><td>114.1%</td><td>0</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Payroll vs trading P&amp;L (lifetime)</h2>
+      <p class="muted">Total synthetic trading P&amp;L vs real payroll paid over 1000 days ($)</p>
+      <div class="chart-box"><canvas id="payrollChart" height="110"></canvas></div>
+    </section>
+
+    <section class="grid-2">
+      <div class="card">
+        <div class="card-h">Can you make a profit?</div>
+        <div class="card-b">
+          <p><span class="strong">Yes — with judgment and time.</span> Careful ends ~$765,656 NW at D1000 with 0 late pays and Fair+/Excellent credit (personal 680 / business 850). Aggressive ends richer (~$2,239,430) but with nuked credit (989 late pays, both scores at 300) and collapsed bank facility — profit without credit health.</p>
+          <p>AFK ends underwater (−$1,817); payroll exceeds trading P&amp;L (114%). Skill gap holds.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-h">Are goals achievable?</div>
+        <div class="card-b">
+          <p>Trusted Trader (REP 120) arrives early in this harness (D4–10) because green-day REP is inflated by synthetic P&amp;L — treat REP timing as upper-bound, not player-realistic.</p>
+          <p>Careful unlocks Trading Floor ~D448 and AI ~D557; buys an estate after the mid-game trough. Aggressive still buys two estates on cash while credit is ruined (HELOC blocked at 300). Legend Desk only on aggressive (~D475). AFK never reaches estate NW gates.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>How challenging is it?</h2>
+      <div class="callout info">
+        <div class="title">The real challenge is the mid-game desk, not the first buy</div>
+        <div class="muted">
+          Careful NW troughs around D300–400 (deeply negative, ~−$6k to −$10k) while staff payroll climbs.
+          Trading Floor waits until ~D448 for cash. That slog teaches cost control — but still risks a long
+          mid-game tunnel before recovery is visible on the HUD.
+        </div>
+      </div>
+      <table style="margin-top:12px">
+        <thead><tr><th>Phase</th><th>What hurts</th><th>What recovers</th></tr></thead>
+        <tbody>
+          <tr><td>D1–60</td><td>Borrowing for float; tiny NW</td><td>Scanner/HR/margin; early green days</td></tr>
+          <tr><td>D100–400</td><td>Payroll + debt; NW negative</td><td>Tenure/autopilot; debt paydown discipline</td></tr>
+          <tr><td>D500</td><td>Careful nearly flat NW</td><td>Facility still alive if credit clean</td></tr>
+          <tr><td>D750–1000</td><td>Complacency / overhire risk</td><td>Estate + scale; careful facility +$28k</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>What do you learn when you play?</h2>
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-h">Days 1–5 (Teach)</div>
+          <div class="card-b">
+            <p>Equity vs cash, size ≤25% (Sized right), simulated tape honesty, loan auto-pay ≠ free money. Graduation at Trusted Trader reframes the desk as judgment, not tutorial.</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h">Days ~120–500 (Habits)</div>
+          <div class="card-b">
+            <p>Patience paid / No chase chips reward process. Staff are a real cost center. Credit rebuild is slow; late pays permanently scar aggressive desks.</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h">Late game (Identity)</div>
+          <div class="card-b">
+            <p>Estates, vault, office, mega goals are flair/identity sinks. Perks should amplify judgment — not replace it. Clean-credit careful path is the authentic “I ran a firm” ending.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Exploit / dependency matrix</h2>
+      <table>
+        <thead><tr><th>System</th><th>Status after Phase B</th><th>Verdict</th></tr></thead>
+        <tbody>
+          <tr><td>Pro Scanner</td><td>Still tree root; deals 8% edge (was 6%)</td><td>Keep as skill tool — do not deepen edge</td></tr>
+          <tr><td>AI Advisor</td><td>Confidence capped at 78%</td><td>Keep advisory; no higher certainty</td></tr>
+          <tr><td>Insider Network</td><td>Early event hints</td><td>Highest remaining answer-key risk — leave gated</td></tr>
+          <tr><td>Margin 2× BP</td><td>Structural leverage</td><td>Keep; educate via margin coach</td></tr>
+          <tr><td>Staff autopilot</td><td>Veteran + XP gated</td><td>Keep costly; do not add free AFK printers</td></tr>
+          <tr><td>Borrow→repay credit farm</td><td>Blocked until interest ticks</td><td>Leave alone — already fixed</td></tr>
+          <tr><td>Aggressive late pays</td><td>989 lates, still richest NW; credit 300 blocks HELOC</td><td>Lesson holds on leverage; cash wealth still overrides scars</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>Perk menu — lackluster without becoming crutches</h2>
+      <p class="muted">Your instinct is right: the menu feels thin as a fantasy surface, but buffing edge would recreate answer keys. Elevate presentation and meaning, not guaranteed P&amp;L.</p>
+      <div class="grid-2" style="margin-top:12px">
+        <div class="card">
+          <div class="card-h">Perk UX / identity <span class="pill success">Add</span></div>
+          <div class="card-b">
+            <ul>
+              <li>Owned vs locked storytelling (“what this teaches” one-liner per perk)</li>
+              <li>Tier chapters on the Perks view (Newcomer → Legend) without new math</li>
+              <li>Soft identity cosmetics tied to owned perks (desk plaque / dossier art)</li>
+              <li>Mid-game “recovery levers” help card: cut payroll, pay debt, size down</li>
+              <li>Day-mood line on EOD when chop regime is active (process &gt; prediction)</li>
+            </ul>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-h">Dependency traps <span class="pill warning">Do not add</span></div>
+          <div class="card-b">
+            <ul>
+              <li>Guaranteed GREAT DEAL spam or lower deal thresholds again</li>
+              <li>AI confidence back above ~80% or “always BUY” staff</li>
+              <li>Easy-mode APR / free payroll subsidy without Hedge Fund gate</li>
+              <li>AFK money printers (passive income that beats careful trading)</li>
+              <li>Cash rewards for process wins (keep text/flair only)</li>
+              <li>More must-buy edge perks on the Scanner spine</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Feature backlog priority</h2>
+      <p class="muted">Priority score is product judgment from this run + audit — not a player survey. Higher = do sooner.</p>
+      <div class="chart-box"><canvas id="priorityChart" height="140"></canvas></div>
+    </section>
+
+    <section>
+      <h2>Bugs &amp; stability</h2>
+      <div class="callout success">
+        <div class="title">Harness completed cleanly</div>
+        <div class="muted">
+          1000-day run finished for all three styles; JSON written to <code>.tmp-balance/500h-report.json</code>.
+          No NaN NW, no crash. Quality suite green at <strong>252 tests</strong> (includes E2 credit + Phase B/C/D).
+          Residual risk: autopilot + AI trader compounding in live play (not fully modeled here).
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Bottom-line answers</h2>
+      <table>
+        <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+        <tbody>
+          <tr><td>Balanced?</td><td>Partially — late careful is healthy; mid-game slog is harsh; aggressive wealth+ruined credit is a mixed lesson</td></tr>
+          <tr><td>Challenging?</td><td>Yes — payroll and debt create a real mid-game; AFK fails</td></tr>
+          <tr><td>Educational?</td><td>Strong on honesty, size, patience, credit pain; weak where wealth overrides credit scars</td></tr>
+          <tr><td>Buggy?</td><td>No blocking long-run bugs in this harness</td></tr>
+          <tr><td>Exploitable?</td><td>Moderate — Scanner/AI/Insider still pull attention; Phase B reduced free answers</td></tr>
+          <tr><td>Profitable?</td><td>Yes for engaged careful/aggressive styles over ~500 real hours; not for AFK</td></tr>
+          <tr><td>Goals achievable?</td><td>Yes for engaged play (estates, late perks); AFK cannot reach estate NW gates</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <hr />
+
+    <section>
+      <h3>Recommended next build (E2) — still measurement-led</h3>
+      <p class="muted">
+        1) Surface recovery levers during negative-NW stretches. 2) Soft-cap “rich but bankrupt credit”
+        fantasy (facility/APR consequences already exist — make them louder in UI). 3) Perk menu dossier
+        pass with zero edge buffs. Do not retune APR until those readability fixes ship and a re-run
+        still shows careful stuck without agency.
+      </p>
+    </section>
+  </div>
+
+  <script>
+    const DAYS = ['1', '10', '30', '60', '100', '200', '300', '400', '500', '750', '1000'];
+    const NW = {
+      careful: [524, 743, 1086, 2467, -1055, 878, -6435, -10188, -983, 235938, 765656],
+      aggressive: [74, -6155, -16438, -23618, -20099, -8347, -7353, -801, 38396, 922745, 2239430],
+      afk: [243, -43, -163, -332, 151, -2999, -5939, -4093, -4675, -5993, -1817],
+    };
+    const DEBT = {
+      careful: [895, 850, 739, 523, 2546, 879, 7162, 10906, 1784, 1061, 1061],
+      aggressive: [3183, 9139, 19958, 24008, 20101, 8382, 8382, 8382, 8382, 8382, 8382],
+      afk: [597, 567, 492, 901, 399, 3283, 6538, 4827, 5275, 7012, 3128],
+    };
+
+    const colors = {
+      success: '#3ecf8e',
+      warning: '#e6b84d',
+      danger: '#f07178',
+      info: '#6cb6ff',
+      grid: '#2a3140',
+      text: '#9aa3b2',
+    };
+
+    Chart.defaults.color = colors.text;
+    Chart.defaults.borderColor = colors.grid;
+    Chart.defaults.font.family = '"Segoe UI", system-ui, sans-serif';
+
+    const moneyTick = (v) => {
+      const n = Number(v);
+      const a = Math.abs(n);
+      if (a >= 1e6) return (n < 0 ? '-' : '') + '$' + (a / 1e6).toFixed(1) + 'M';
+      if (a >= 1e3) return (n < 0 ? '-' : '') + '$' + (a / 1e3).toFixed(0) + 'k';
+      return (n < 0 ? '-' : '') + '$' + a;
+    };
+
+    new Chart(document.getElementById('nwChart'), {
+      type: 'line',
+      data: {
+        labels: DAYS,
+        datasets: [
+          { label: 'Careful NW', data: NW.careful, borderColor: colors.success, backgroundColor: colors.success, tension: 0.25, pointRadius: 3 },
+          { label: 'Aggressive NW', data: NW.aggressive, borderColor: colors.warning, backgroundColor: colors.warning, tension: 0.25, pointRadius: 3 },
+          { label: 'AFK NW', data: NW.afk, borderColor: colors.danger, backgroundColor: colors.danger, tension: 0.25, pointRadius: 3 },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { title: { display: true, text: 'Game day' } },
+          y: { title: { display: true, text: 'Net worth ($)' }, ticks: { callback: moneyTick } },
+        },
+      },
+    });
+
+    new Chart(document.getElementById('debtChart'), {
+      type: 'line',
+      data: {
+        labels: DAYS,
+        datasets: [
+          { label: 'Careful debt', data: DEBT.careful, borderColor: colors.info, tension: 0.25, pointRadius: 3 },
+          { label: 'Aggressive debt', data: DEBT.aggressive, borderColor: colors.warning, tension: 0.25, pointRadius: 3 },
+          { label: 'AFK debt', data: DEBT.afk, borderColor: colors.danger, tension: 0.25, pointRadius: 3 },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          x: { title: { display: true, text: 'Game day' } },
+          y: { beginAtZero: true, title: { display: true, text: 'Debt ($)' }, ticks: { callback: moneyTick } },
+        },
+      },
+    });
+
+    new Chart(document.getElementById('payrollChart'), {
+      type: 'bar',
+      data: {
+        labels: ['Careful', 'Aggressive', 'AFK'],
+        datasets: [
+          { label: 'Trading P&L', data: [1609700, 3086705, 95702], backgroundColor: colors.success },
+          { label: 'Payroll lifetime', data: [843059, 746649, 109196], backgroundColor: colors.danger },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: {
+          y: { beginAtZero: true, title: { display: true, text: 'Amount ($)' }, ticks: { callback: moneyTick } },
+        },
+      },
+    });
+
+    new Chart(document.getElementById('priorityChart'), {
+      type: 'bar',
+      data: {
+        labels: [
+          'E2: mid-game recovery clarity',
+          'Credit lesson vs aggressive wealth',
+          'Perk dossier / tier chapters',
+          'Chop day-mood on EOD',
+          'More auto edge perks',
+          'Easy APR / AFK income',
+        ],
+        datasets: [{
+          label: 'Priority (higher = do sooner)',
+          data: [9, 8, 7, 5, 1, 0],
+          backgroundColor: colors.info,
+        }],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: {
+            min: 0,
+            max: 10,
+            title: { display: true, text: 'Priority /10' },
+          },
+        },
+      },
+    });
+  </script>
+</body>
+</html>

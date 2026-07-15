@@ -58,29 +58,40 @@ async function analyzeSymbol(sym) {
   let signal = 'HOLD';
   let confidence = 55;
   const reasons = [];
+  let trendSignal = null;
+  let rsiSignal = null;
+  let conflictedIndicators = false;
 
   if (ma20 && ma50) {
-    if (price > ma20 && ma20 > ma50) { reasons.push('Price above MA20 & MA50 — bullish trend'); confidence += 8; }
-    else if (price < ma20 && ma20 < ma50) { reasons.push('Price below MA20 & MA50 — bearish trend'); confidence += 8; }
+    if (price > ma20 && ma20 > ma50) { reasons.push('Price above MA20 & MA50 — bullish trend'); trendSignal = 'BUY'; confidence += 8; }
+    else if (price < ma20 && ma20 < ma50) { reasons.push('Price below MA20 & MA50 — bearish trend'); trendSignal = 'SHORT'; confidence += 8; }
     if (price > ma20 * 1.05) reasons.push('Extended above MA20 — watch for pullback');
     if (price < ma20 * 0.95) reasons.push('Oversold vs MA20 — potential bounce zone');
   }
 
-  if (rsi > 70) { reasons.push(`RSI ${rsi.toFixed(0)} overbought — avoid chasing longs`); signal = chg > 0 ? 'HOLD' : 'SHORT'; confidence += 10; }
-  else if (rsi < 30) { reasons.push(`RSI ${rsi.toFixed(0)} oversold — dip-buy setup possible`); signal = 'BUY'; confidence += 12; }
+  if (rsi > 70) { reasons.push(`RSI ${rsi.toFixed(0)} overbought — avoid chasing longs`); signal = chg > 0 ? 'HOLD' : 'SHORT'; rsiSignal = signal === 'SHORT' ? 'SHORT' : null; confidence += 7; }
+  else if (rsi < 30) { reasons.push(`RSI ${rsi.toFixed(0)} oversold — dip-buy setup possible`); signal = 'BUY'; rsiSignal = 'BUY'; confidence += 7; }
   else if (rsi >= 45 && rsi <= 55) reasons.push(`RSI ${rsi.toFixed(0)} neutral — wait for confirmation`);
 
-  if (chg > 2) { reasons.push(`Up ${chg.toFixed(2)}% today on momentum`); if (signal === 'HOLD') signal = 'BUY'; confidence += 5; }
-  else if (chg < -2) { reasons.push(`Down ${Math.abs(chg).toFixed(2)}% — selling pressure`); if (signal === 'HOLD') signal = 'SHORT'; confidence += 5; }
+  if (trendSignal && rsiSignal && trendSignal !== rsiSignal) {
+    signal = 'HOLD';
+    conflictedIndicators = true;
+    confidence -= 10;
+    reasons.push('MA trend and RSI disagree — prefer HOLD until the setup confirms');
+  }
+
+  if (chg > 2) { reasons.push(`Up ${chg.toFixed(2)}% today on momentum`); if (signal === 'HOLD' && !conflictedIndicators) signal = 'BUY'; confidence += 5; }
+  else if (chg < -2) { reasons.push(`Down ${Math.abs(chg).toFixed(2)}% — selling pressure`); if (signal === 'HOLD' && !conflictedIndicators) signal = 'SHORT'; confidence += 5; }
 
   const news = findRelevantNews(sym, getLastNews());
   news.forEach(n => {
     const h = (n.headline || '').toLowerCase();
-    if (/beat|surge|raise|upgrade|buy|record|strong/.test(h)) { confidence += 4; if (signal === 'HOLD') signal = 'BUY'; }
-    if (/miss|cut|downgrade|sell|weak|probe|investigation|tariff|war/.test(h)) { confidence += 4; if (signal === 'HOLD') signal = 'SHORT'; }
+    if (/beat|surge|raise|upgrade|buy|record|strong/.test(h)) { confidence += 4; if (signal === 'HOLD' && !conflictedIndicators) signal = 'BUY'; }
+    if (/miss|cut|downgrade|sell|weak|probe|investigation|tariff|war/.test(h)) { confidence += 4; if (signal === 'HOLD' && !conflictedIndicators) signal = 'SHORT'; }
   });
 
-  confidence = Math.min(92, Math.max(48, confidence));
+  reasons.push('Confidence is advisory, not an answer key');
+  confidence = Math.min(78, Math.max(45, confidence));
 
   const citations = news.map(n => ({
     idx: n.idx,

@@ -5,6 +5,7 @@
 
 import {
   fillMissingQuotes, getCachedQuote, ensureLiveQuoteForDisplay, isLiveAnchoredQuote,
+  isSimulationMode,
 } from '../api.js';
 import { CONFIG } from '../config.js';
 import { estimateInsiderFairValue } from '../events.js';
@@ -23,6 +24,27 @@ let selectedListing = null;
 let pendingOrder = null;
 const lastRenderedPrices = new Map();
 
+/**
+ * Chart honesty pill — tape is simulated after boot; "live-seeded" means baselines
+ * came from a real quote fetch, not tick-by-tick brokerage streaming.
+ * @param {object|null|undefined} q
+ * @returns {{ cls: string, text: string }}
+ */
+export function tapeHonestyLabel(q) {
+  const sim = isSimulationMode() || !!(q && q.simulated);
+  if (!sim) {
+    // Pre-boot / rare cold path only
+    return { cls: 'on', text: 'Quote baselines' };
+  }
+  if (isLiveAnchoredQuote(q)) {
+    return { cls: 'sim', text: 'Simulated tape · live-seeded' };
+  }
+  const src = String(q?.source || '');
+  if (src === 'seed' || !q) {
+    return { cls: 'sim', text: 'Simulated tape · seed' };
+  }
+  return { cls: 'sim', text: 'Simulated tape · cached' };
+}
 export function renderTradePanel(state) {
   const selectedSym = getSelectedSym();
   fillMissingQuotes([selectedSym]);
@@ -51,11 +73,11 @@ export function renderTradePanel(state) {
 
   const metaRow = document.getElementById('chart-meta-row');
   if (metaRow) {
-    const live = q && !q.simulated;
+    const honesty = tapeHonestyLabel(q);
     const chips = meta.indices.filter(i => i !== meta.exchange && i !== 'ETF');
     const halt = getHaltInfo(selectedSym);
     metaRow.innerHTML = `
-      <span class="live-pill ${live ? 'on' : 'sim'}"><span class="live-dot"></span>${live ? 'Live' : 'Sim'}</span>
+      <span class="live-pill ${honesty.cls}" title="Desk clock drives prices after baselines load — not a live brokerage feed"><span class="live-dot"></span>${honesty.text}</span>
       <span class="meta-strong">${meta.exchange}</span>
       ${halt ? `<span class="meta-chip halt-chip" data-gloss="trading-halted" data-gloss-sym="${selectedSym}">TRADING HALTED</span>` : ''}
       ${chips.map(i => `<span class="meta-chip">${i}</span>`).join('')}

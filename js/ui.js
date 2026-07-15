@@ -4,6 +4,7 @@ import { logoMarkHtml, installLogoErrorHandler } from './logos.js';
 import {
   getCachedQuote, isApiConfigured, getLastNews,
   fillMissingQuotes, isNetworkOnline, getLastFetchAt, getConnectionLabel,
+  isLiveAnchoredQuote,
 } from './api.js';
 import { formatMarketClock } from './market.js';
 import { getMacroState } from './macro.js';
@@ -399,12 +400,12 @@ function renderFeedStatus(apiStatus) {
   const detail = document.getElementById('feed-status-detail');
   const wrap = document.getElementById('feed-status');
 
-  // Pill reflects real connectivity (not transient toast-style apiStatus messages)
+  // Pill reflects connectivity for baseline fetches — never "Live" (that reads as streaming tape)
   const connected = isNetworkOnline();
   let pillMode = 'offline';
   let pillText = 'Offline';
   if (mode === 'loading') { pillMode = 'loading'; pillText = 'Sync'; }
-  else if (connected) { pillMode = 'online'; pillText = 'Live'; }
+  else if (connected) { pillMode = 'online'; pillText = 'Online'; }
 
   if (pill) pill.className = `feed-live-pill ${pillMode}`;
   if (liveLbl) liveLbl.textContent = pillText;
@@ -556,7 +557,9 @@ function renderStats(state) {
     { lbl: 'Prev Close', val: `$${(q.prevClose || q.price).toFixed(2)}` },
     { lbl: 'Change', val: `${q.changePct >= 0 ? '+' : ''}${(q.changePct || 0).toFixed(2)}%` },
     { lbl: 'Sector', val: getSymbolSector(selectedSym) },
-    { lbl: 'Data', val: q.simulated ? 'Simulated' : 'Live' },
+    { lbl: 'Data', val: q.simulated
+      ? (isLiveAnchoredQuote(q) ? 'Sim · live-seeded' : 'Simulated')
+      : (isLiveAnchoredQuote(q) ? 'Baseline (live-seeded)' : 'Baseline') },
     { lbl: 'Trades', val: state.portfolio.totalTrades },
     { lbl: 'Realized P&L', val: fmtPnL(state.portfolio.realizedPnL) },
   ];
@@ -838,6 +841,11 @@ export function showDaySummary(stats) {
     if (stats.optionsExpired) {
       chips.push(`<span class="eod-chip warn">${stats.optionsExpired} option(s) expired</span>`);
     }
+    const processWins = Array.isArray(stats.processWins) ? stats.processWins : [];
+    for (const win of processWins) {
+      if (!win?.text) continue;
+      chips.push(`<span class="eod-chip process">${escapeHtml(win.text)}</span>`);
+    }
     extra.innerHTML = chips.length ? `<div class="eod-chips">${chips.join('')}</div>` : '';
   }
 
@@ -911,6 +919,12 @@ export function switchView(viewId) {
     try {
       const root = document.getElementById('collection-log-root');
       if (root) root.dataset.collectionForce = '1';
+    } catch (_) { /* ignore */ }
+  }
+  if (next === 'vault' && prev !== 'vault') {
+    try {
+      const root = document.getElementById('vault-root');
+      if (root) root.dataset.vaultForce = '1';
     } catch (_) { /* ignore */ }
   }
   if (prev === 'achievements' && next !== 'achievements') {

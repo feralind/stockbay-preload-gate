@@ -56,7 +56,7 @@ import {
 import {
   startFirstTradeWalkthrough, completeWalkthroughReset, checkAndShowPerkCallouts,
   maybeStartPortfolioTour, maybeShowMarginCallCoach, maybeShowCircuitHaltCoach,
-  maybeShowSimStatusCoach, showCoachmark, hideCoachmark,
+  maybeShowSimStatusCoach, maybeShowGraduationCoach, showCoachmark, hideCoachmark,
 } from './onboarding-walkthrough.js';
 import {
   createFinanceState, takeLoan, makeLoanPayment, quoteLoan, getFirmDebt,
@@ -110,6 +110,15 @@ import { initGlossaryTooltips } from './glossary-tooltips.js';
 import { archiveRun } from './leaderboard.js';
 import { toast, clearToasts, showAlert, showConfirm, bindDialogUI, deferDaySummary, isCoachQuiet, clearDeferredNotifications } from './notify.js';
 import { bindSaveIO } from './save-io.js';
+import {
+  DESK_WIPE_FLAG_KEY,
+  markDeskWipe,
+  clearDeskWipeFlags,
+  consumeDeskWipeOnBoot,
+  shouldBlockSaveAfterForeignWipe,
+  wipeRunSaveKeys,
+  isDeskWipePending,
+} from './save-wipe.js';
 import { sanitizeRunData } from './save-sanitize.js';
 import { bindOverlayStack, registerOverlayClosers } from './overlays.js';
 import { bindHotkeys } from './hotkeys.js';
@@ -405,6 +414,8 @@ let shutdownToken = '';
 
 function writeSaveToDisk() {
   if (window.__stockwayDisableSave) return false;
+  // Another tab archived & reset — never push this tab's stale run back.
+  if (shouldBlockSaveAfterForeignWipe()) return false;
   try {
     const data = buildSaveData();
     const payload = JSON.stringify(data);
@@ -423,6 +434,10 @@ function writeSaveToDisk() {
     } catch (_) { /* slots are best-effort */ }
 
     saveDirty = false;
+    // Fresh boot after reset: first successful write clears the wipe sentinel.
+    try {
+      if (isDeskWipePending()) clearDeskWipeFlags();
+    } catch (_) { /* ignore */ }
     return true;
   } catch (e) {
     console.warn('Save failed', e);
@@ -442,24 +457,22 @@ function clearAllSaveData({ archive = true, keepQuoteBaseline = false } = {}) {
       });
     } catch (_) { /* best-effort */ }
   }
+  // Flag first so boot + other tabs honor the wipe even if reload is slow.
+  try { markDeskWipe(); } catch (_) { /* ignore */ }
   window.__stockwayDisableSave = true;
   saveDirty = false;
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const key = CONFIG.SAVE_KEY;
-  const wipeKeys = [
-    key,
-    `${key}__tmp`,
-    `${key}_slot`,
-    'stockway_onboarded_v1',
-    'stockway_alert_history_v1',
-  ];
-  if (!keepQuoteBaseline) wipeKeys.push(CONFIG.QUOTE_BASELINE_KEY);
-  wipeKeys.forEach((k) => {
-    try { localStorage.removeItem(k); } catch (_) {}
-  });
+  if (autosaveInterval) {
+    clearInterval(autosaveInterval);
+    autosaveInterval = null;
+  }
+  try { stopMarketClock(); } catch (_) { /* ignore */ }
+  const extra = ['stockway_onboarded_v1', 'stockway_alert_history_v1'];
+  if (!keepQuoteBaseline) extra.push(CONFIG.QUOTE_BASELINE_KEY);
+  wipeRunSaveKeys({ also: extra });
   // Profile name/photo persist; vault equip slots must not survive a wiped inventory.
   try { clearProfileCosmetics(); } catch (_) { /* ignore */ }
   // Reset in-memory market + Fed before reload (Day 1, Pre-Market, Fed 4.50%)
@@ -681,13 +694,33 @@ function bindSaveLifecycle() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushSave();
   });
+  // Another tab hit Archive & reset — drop stale in-memory run; don't rewrite it.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== DESK_WIPE_FLAG_KEY || !e.newValue) return;
+    window.__stockwayDisableSave = true;
+    saveDirty = false;
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (autosaveInterval) {
+      clearInterval(autosaveInterval);
+      autosaveInterval = null;
+    }
+    try { stopMarketClock(); } catch (_) { /* ignore */ }
+    try { location.reload(); } catch (_) { /* ignore */ }
+  });
 }
 
 function loadGame() {
   try {
+    // Intentional reset: re-wipe run keys and skip slot recovery so an old
+    // checkpoint cannot undo Archive & reset across a slow reload.
+    if (consumeDeskWipeOnBoot()) return false;
+
     let raw = localStorage.getItem(CONFIG.SAVE_KEY);
     if (!raw) {
-      // Recover from rotating slot if main key missing
+      // Recover from rotating slot if main key missing (crash / partial write only)
       try {
         const slots = JSON.parse(localStorage.getItem(`${CONFIG.SAVE_KEY}_slot`) || '[]');
         if (slots[0]?.data) raw = JSON.stringify(slots[0].data);
@@ -834,6 +867,7 @@ function applyConfirmOrderResult(result) {
     return;
   }
 
+  let graduationShown = false;
   if (result.toast) toast(result.toast.msg, { type: result.toast.type });
 
   if (result.kind === 'close') {
@@ -842,6 +876,7 @@ function applyConfirmOrderResult(result) {
     recordDayTrade(result.pnl || 0);
     adjustReputation(state.meta, repFromPnL(result.pnl || 0), result.action === 'cover' ? 'cover' : 'close');
     maybeApplyVaultDeskAura(result.pnl || 0);
+    graduationShown = maybeShowGraduationCoach(state, { saveGame });
   } else if (result.kind === 'open') {
     if (result.incrementShortsOpened) state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
     noteBuy(!!result.isDeal);
@@ -865,7 +900,7 @@ function applyConfirmOrderResult(result) {
   if (result.checkAchievements) checkAchievements();
   if (result.save) saveGame(result.save);
   if (result.render) renderAll(state);
-  if (result.checkPerkCallouts) checkAndShowPerkCallouts(state, { saveGame });
+  if (result.checkPerkCallouts && !graduationShown) checkAndShowPerkCallouts(state, { saveGame });
 }
 
 function applyCloseOptionResult(result) {
@@ -873,6 +908,7 @@ function applyCloseOptionResult(result) {
   if (result.noteSell) {
     noteSell(result.pnl || 0);
     maybeApplyVaultDeskAura(result.pnl || 0);
+    maybeShowGraduationCoach(state, { saveGame });
   }
   if (result.recordDayTrade) recordDayTrade();
   if (result.checkAchievements) checkAchievements();
@@ -941,11 +977,12 @@ function bindState() {
     renderAll(state);
   };
 
-  state.onCloseLong = (sym) => {
+  state.onCloseLong = (sym, opts = {}) => {
     const result = closeLongFlow(state, sym, {
       getCachedQuote,
       applySlippage: (args) => applyRelicAwareSlippage(state, args),
       confirmNotional: CONFIG.CONFIRM_NOTIONAL_USD,
+      exitReason: opts.exitReason,
     });
     if (result?.needsConfirm) {
       openOrderConfirm(result.confirmDraft, state);
@@ -954,11 +991,12 @@ function bindState() {
     applyConfirmOrderResult(result);
   };
 
-  state.onCoverShort = (sym) => {
+  state.onCoverShort = (sym, opts = {}) => {
     const result = coverShortFlow(state, sym, {
       getCachedQuote,
       applySlippage: (args) => applyRelicAwareSlippage(state, args),
       confirmNotional: CONFIG.CONFIRM_NOTIONAL_USD,
+      exitReason: opts.exitReason,
     });
     if (result?.needsConfirm) {
       openOrderConfirm(result.confirmDraft, state);
@@ -1246,13 +1284,25 @@ function bindState() {
   };
 
   state.onFireStaff = async (staffId) => {
-    const ok = await showConfirm('Let this employee go? Payroll stops tomorrow.', {
+    const ok = await showConfirm('Let this employee go? One day of pay is due as severance.', {
       title: 'Fire employee', label: 'STAFF', okText: 'Fire', cancelText: 'Keep',
     });
     if (!ok) return;
     fireStaff(staffId, state);
     adjustReputation(state.meta, -5, 'fire');
-    toast('Employee released', { type: 'warn' });
+    toast('Employee released · severance paid if cash allowed', { type: 'warn' });
+    document.getElementById('staff-history-overlay')?.classList.add('hidden');
+    const profile = document.getElementById('staff-roster-profile');
+    if (profile) {
+      profile.classList.add('hidden');
+      profile.setAttribute('hidden', '');
+      profile.innerHTML = '';
+    }
+    const listWrap = document.getElementById('staff-roster-list-wrap');
+    if (listWrap) {
+      listWrap.classList.remove('hidden');
+      listWrap.removeAttribute('hidden');
+    }
     checkAchievements();
     saveGame();
     renderAll(state);
@@ -1397,7 +1447,8 @@ function bindState() {
     const r = purchaseEstate(state, assetId, { netWorth: firmNetWorth() });
     if (r.ok) {
       const flairNote = r.asset.flair ? ` · flair “${r.asset.flair}”` : '';
-      toast(`Estate acquired: ${r.asset.name}${flairNote}`, { type: 'success' });
+      const closeNote = r.closingFee > 0 ? ` · $${r.closingFee.toLocaleString()} closing` : '';
+      toast(`Estate acquired: ${r.asset.name}${flairNote}${closeNote}`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Estate → ${r.asset.name}` };
       checkAchievements();
       saveGame();
@@ -1616,10 +1667,11 @@ function checkRiskOrders() {
 
   if (risk.trigger) {
     toast(risk.trigger.msg, { type: risk.trigger.type });
+    const exitOpts = { exitReason: risk.trigger.exitReason };
     if (risk.trigger.action === 'closeLong') {
-      state.onCloseLong(risk.trigger.sym);
+      state.onCloseLong(risk.trigger.sym, exitOpts);
     } else {
-      state.onCoverShort(risk.trigger.sym);
+      state.onCoverShort(risk.trigger.sym, exitOpts);
     }
   }
 }
@@ -1677,6 +1729,7 @@ function handleDayEnd(day) {
   stopMarketClock();
   setPauseButton(false);
   checkAchievements();
+  maybeShowGraduationCoach(state, { saveGame });
   saveGame({ immediate: true });
 }
 
@@ -1967,7 +2020,14 @@ async function init() {
         const chartSym = getSelectedSym();
         if (chartSym) {
           const q = getCachedQuote(chartSym);
-          if (q?.price) updateLastCandleFromQuote(chartSym, q.price);
+          if (q?.price) {
+            updateLastCandleFromQuote(chartSym, q.price);
+            // Keep Trade header print locked to the same tape the candle tracks
+            const priceEl = document.getElementById('chart-price');
+            if (priceEl && document.getElementById('view-trade')?.classList.contains('active')) {
+              priceEl.textContent = `$${Number(q.price).toFixed(2)}`;
+            }
+          }
         }
       }
       // Throttle full paints — rebinding every tick breaks buttons at 5x speed
@@ -2168,6 +2228,11 @@ async function init() {
     document.getElementById('day-summary-continue')?.addEventListener('click', continueNextDay);
     document.getElementById('staff-history-close')?.addEventListener('click', () => {
       document.getElementById('staff-history-overlay')?.classList.add('hidden');
+    });
+    document.getElementById('staff-history-overlay')?.addEventListener('click', (e) => {
+      if (e.target?.id === 'staff-history-overlay') {
+        e.currentTarget.classList.add('hidden');
+      }
     });
 
     document.getElementById('btn-claim-all')?.addEventListener('click', () => {
@@ -2563,8 +2628,8 @@ async function init() {
     ensureSmokeStaffUnlock: () => {
       if (!state.perks.includes('scanner')) state.perks.push('scanner');
       if (!state.perks.includes('hrDept')) state.perks.push('hrDept');
-      // Cheapest seat is currently $450 hire — keep a cushion for smoke.
-      state.portfolio.cash = Math.max(Number(state.portfolio.cash) || 0, 2500);
+      // Cheapest seat is currently $550 hire — keep a cushion for smoke.
+      state.portfolio.cash = Math.max(Number(state.portfolio.cash) || 0, 3500);
       renderAll(state);
       return { perks: [...state.perks], cash: state.portfolio.cash };
     },

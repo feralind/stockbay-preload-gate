@@ -47,7 +47,7 @@ Example: Short 1 TSLA @ $250 → cover @ $220 = <strong>+$30</strong>.
   {
     id: 'trade-ticket',
     title: 'Chart, Ticket &amp; Limit Orders',
-    body: `Chart ranges: <strong>1D · 5D · 1M · 6M · YTD · 1Y · 5Y · MAX</strong> (hotkeys 1–8). Tabs: Chart, News, Stats. With <strong>Analyst Reports</strong>, overlays and support/resistance hints appear.
+    body: `Chart ranges: <strong>1D · 5D · 1M · 6M · 1Y · MAX</strong> (hotkeys 1–6). Tabs: Chart, News, Stats. With <strong>Analyst Reports</strong>, overlays and support/resistance hints appear.
 <br><br>
 <strong>Trade bar:</strong> shares · Market or Limit · optional Stop Loss (SL) / Take Profit (TP) · Buy Long · Short · Sell/Cover.
 <br><br>
@@ -147,13 +147,22 @@ Mistakes cost small cash blunders. Compliance + training keep the desk clean. Ac
   },
   {
     id: 'offline',
-    title: 'Offline / Live Status',
+    title: 'Offline / Online Status',
     body: `The desk always simulates prices from baselines — it is not tick-by-tick streaming.
 <br><br>
-• <strong>Live / Connected</strong> — can fetch base quotes and news when you Refresh or on the online re-anchor timer<br>
+• <strong>Online</strong> — can fetch base quotes and news when you Refresh or on the re-anchor timer<br>
 • <strong>Offline / Cached</strong> — uses last successful baselines (or built-in seeds). Trading, staff, loans, and the clock keep running<br>
 <br><br>
-Brand status in the header shows Connected, Cached, Seeds, etc. Hit <strong>Refresh</strong> when online to re-anchor.`,
+Brand status in the header shows Online, Cached, Seeds, etc. The chart pill says <strong>Simulated tape</strong> because the desk clock drives prices after those baselines load. Hit <strong>Refresh</strong> when online to re-anchor.`,
+  },
+  {
+    id: 'compressed-realism',
+    title: 'Compressed realism',
+    body: `StockWay runs on a fast clock so you can practice in hours what would take months on a real calendar — at 1×, about <strong>30 real minutes</strong> equals one game day.
+<br><br>
+The tape is <strong>simulated</strong> after live (or seed) baselines load. That is intentional: you are here to learn sizing, risk, patience, and credit — the same habits that matter in real trading — not to chase a live brokerage stream.
+<br><br>
+Some sessions will feel great when a clean decision pays. Some will feel flat or rough even when you did the process right. That mix is the point. Treat paper money like real risk so the lessons transfer when you leave the desk.`,
   },
   {
     id: 'saves',
@@ -217,8 +226,9 @@ export const GLOSSARY = [
   { cat: 'MARKET', term: 'Price alert', def: 'Toast when a watchlist symbol crosses your above/below level.' },
   { cat: 'MARKET', term: 'Trading halt', def: 'Symbol paused for new buys/shorts after a ~7% move from session open (~15 game minutes). Sell/cover still allowed.', glossId: 'trading-halted' },
   { cat: 'MARKET', term: 'Simulation', def: 'Live Yahoo prices seed the open and charts; once the accelerated clock runs, drift, sector betas, events, and circuit breakers drive the tape — not the real market.' },
+  { cat: 'MARKET', term: 'Compressed realism', def: 'Fast game clock (~30 real minutes per day at 1×) with the same lessons as real trading: size, risk, patience, credit — not tick-by-tick brokerage streaming.' },
   { cat: 'MARKET', term: 'Offline', def: 'Desk keeps running from last fetched baselines (or seeds). No quote/news API calls until you Refresh or reconnect. Paper money only — nothing leaves the browser except quote lookups.' },
-  { cat: 'MARKET', term: 'Live / Connected', def: 'Online means the desk can fetch base quotes through the StockWay proxy — not tick-by-tick streaming, and not a brokerage.' },
+  { cat: 'MARKET', term: 'Online', def: 'Online means the desk can fetch base quotes through the StockWay proxy — not tick-by-tick streaming, and not a brokerage.' },
   { cat: 'MARKET', term: 'Slippage', def: 'Fill can differ from mid — larger size and thin sessions slip more. Smart Routing reduces it.', glossId: 'slippage' },
   { cat: 'MARKET', term: 'Liquidity', def: 'How easily you enter/exit near a fair price; thin tape widens fills.', glossId: 'liquidity' },
   { cat: 'MARKET', term: 'Beta', def: 'How loudly a name tends to move with the broader market.', glossId: 'beta' },

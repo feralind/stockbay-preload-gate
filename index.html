@@ -355,9 +355,7 @@
                   <button class="tf-btn" data-res="5D">5D</button>
                   <button class="tf-btn" data-res="1M">1M</button>
                   <button class="tf-btn" data-res="6M">6M</button>
-                  <button class="tf-btn" data-res="YTD">YTD</button>
                   <button class="tf-btn" data-res="1Y">1Y</button>
-                  <button class="tf-btn" data-res="5Y">5Y</button>
                   <button class="tf-btn" data-res="MAX">MAX</button>
                 </div>
                 <div class="chart-style-group" role="toolbar" aria-label="Chart style">
@@ -539,11 +537,14 @@
           </div>
 
           <div class="hr-tab-panel hidden" id="staff-panel-roster" data-staff-panel="roster" role="tabpanel" hidden>
-            <div class="staff-section-head roster-head">
-              <h4>Team board <span id="roster-count-full"></span></h4>
-              <span class="staff-section-hint">Lane · activity · coverage · payroll / day</span>
+            <div id="staff-roster-list-wrap">
+              <div class="staff-section-head roster-head">
+                <h4>Team board <span id="roster-count-full"></span></h4>
+                <span class="staff-section-hint">Click a name for profile · activity · buys &amp; sells</span>
+              </div>
+              <div id="staff-roster" class="roster-list"></div>
             </div>
-            <div id="staff-roster" class="roster-list"></div>
+            <div id="staff-roster-profile" class="staff-roster-profile hidden" hidden></div>
           </div>
 
           <div class="hr-tab-panel hidden" id="staff-panel-hire" data-staff-panel="hire" role="tabpanel" hidden>
@@ -865,14 +866,14 @@
     </div>
   </div>
 
-  <!-- Staff history modal -->
-  <div id="staff-history-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="staff-history-title">
-    <div class="modal">
+  <!-- Staff employee dossier -->
+  <div id="staff-history-overlay" class="modal-overlay staff-dossier-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="staff-history-title">
+    <div class="modal staff-dossier-modal">
       <div class="modal-head">
-        <h2 id="staff-history-title">Employee History</h2>
-        <button class="btn-icon modal-x" id="staff-history-close">✕</button>
+        <h2 id="staff-history-title">Employee</h2>
+        <button class="btn-icon modal-x" id="staff-history-close" type="button">✕</button>
       </div>
-      <div id="staff-history-body" class="staff-history-body"></div>
+      <div id="staff-history-body" class="staff-history-body staff-dossier-body"></div>
     </div>
   </div>
 

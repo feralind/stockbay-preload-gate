@@ -1,7 +1,12 @@
 // @ts-check
 /**
  * Estates panel — image-first bento categories → option submenus.
- * Important: do NOT rewrite innerHTML on every renderAll tick (causes hover flash).
+ *
+ * renderAll thrash guard (mandatory for all interactive panels):
+ * - Structure fingerprint must NOT include live cash / NW / quotes — those change
+ *   every tick and remount the bento, killing CSS :hover (Residences glow stutter).
+ * - Skip rebuild when `estatesStructureKey` matches; call `patchEstatesLive` instead.
+ * See `.cursor/rules/stockway-ui-no-tick-thrash.mdc` and AGENTS.md.
  */
 
 import {
@@ -47,20 +52,18 @@ function mediaHtml(media, className = 'estate-media-img') {
 }
 
 /**
- * Structure fingerprint — ownership / gates / selection. Not live quote NW churn.
+ * Structure fingerprint — ownership / navigation only.
+ * Do NOT include cash or live NW: quote ticks remount the bento and kill :hover
+ * (seen as Residences glow thrash at 10x). Gate/Ready status is patched in place.
  * @param {object} state
- * @param {number} netWorth
+ * @param {number} [_netWorth]
  */
-function estatesStructureKey(state, netWorth) {
+function estatesStructureKey(state, _netWorth) {
   const owned = Array.isArray(state.estateOwned) ? state.estateOwned.join(',') : '';
   const spent = Number(state.estateSpentTotal) || 0;
   const credit = Number(state.estateCreditUsed) || 0;
   const extracted = Number(state.estateEquityExtracted) || 0;
   const cashOutN = Number(state.estateCashOutCount) || 0;
-  // Bucket NW so tiny quote noise doesn't rebuild the catalog.
-  const nwBucket = Math.floor(Math.max(0, Number(netWorth) || 0) / 1000);
-  const rep = Math.floor(Number(state.meta?.reputation) || 0);
-  const cashBucket = Math.floor(Math.max(0, Number(state.portfolio?.cash) || 0) / 100);
   // Day matters for cash-out cooldown UI; only changes at day-end (not every tick).
   const day = getDayCount();
   return [
@@ -72,9 +75,6 @@ function estatesStructureKey(state, netWorth) {
     credit,
     extracted,
     cashOutN,
-    nwBucket,
-    rep,
-    cashBucket,
     day,
   ].join('|');
 }
@@ -273,6 +273,94 @@ function ledgerSnapshot(state) {
     cashOut,
     cooldownLeft,
   };
+}
+
+/**
+ * Soft-update ledger + Ready/Locked affordances without destroying the DOM.
+ * Keeps CSS :hover / grid expand stable across renderAll ticks.
+ * @param {object} state
+ * @param {number} netWorth
+ */
+function patchEstatesLive(state, netWorth) {
+  patchLedgerPills(state);
+  const root = document.getElementById('estates-root');
+  if (!root) return;
+
+  for (const cat of ESTATE_CATEGORIES) {
+    const btn = root.querySelector(`[data-estate-category="${cat.id}"]`);
+    if (!btn) continue;
+    const options = getEstatesByCategory(cat.id);
+    const ownedCount = options.filter((a) => (state.estateOwned || []).includes(a.id)).length;
+    const unlocked = !cat.requiresCategory || ownsEstateCategory(state, cat.requiresCategory);
+    const ready = unlocked && options.some((a) => canPurchaseEstate(state, a.id, { netWorth }).ok);
+    const lockHint = !unlocked
+      ? `Requires ${getEstateCategory(cat.requiresCategory)?.name || cat.requiresCategory}`
+      : '';
+    btn.classList.toggle('is-locked', !unlocked);
+    btn.classList.toggle('is-ready', !!ready);
+    if (unlocked) {
+      btn.removeAttribute('aria-disabled');
+      btn.removeAttribute('title');
+    } else {
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('title', lockHint);
+    }
+    const statusEl = btn.querySelector('.estate-bento-status');
+    if (statusEl) {
+      statusEl.textContent = !unlocked
+        ? 'Locked'
+        : ownedCount
+          ? `${ownedCount}/${options.length}`
+          : ready
+            ? 'Ready'
+            : 'Browse';
+    }
+  }
+
+  root.querySelectorAll('[data-estate-select]').forEach((btn) => {
+    const id = btn.getAttribute('data-estate-select');
+    if (!id) return;
+    const asset = ESTATE_ASSETS.find((a) => a.id === id);
+    if (!asset) return;
+    const owned = (state.estateOwned || []).includes(asset.id);
+    const gate = owned
+      ? { ok: false, reason: 'Owned', code: 'owned' }
+      : canPurchaseEstate(state, asset.id, { netWorth });
+    const status = owned ? 'Owned' : gate.ok ? 'Ready' : gate.code === 'cash' ? 'Cash short' : 'Locked';
+    btn.classList.toggle('is-owned', owned);
+    btn.classList.toggle('is-ready', !!(gate.ok && !owned));
+    btn.classList.toggle('is-selected', selectedAssetId === asset.id);
+    const meta = btn.querySelector('.estate-option-meta');
+    if (meta) meta.textContent = `${status} · ${fmt(asset.price)}`;
+  });
+
+  const buy = /** @type {HTMLButtonElement | null} */ (root.querySelector('.btn-estate-buy'));
+  if (buy) {
+    const id = buy.getAttribute('data-estate-id');
+    const asset = id ? ESTATE_ASSETS.find((a) => a.id === id) : null;
+    if (asset) {
+      const owned = (state.estateOwned || []).includes(asset.id);
+      const gate = owned
+        ? { ok: false, reason: 'Already owned', code: 'owned' }
+        : canPurchaseEstate(state, asset.id, { netWorth });
+      if (owned) {
+        buy.disabled = true;
+        buy.textContent = 'In portfolio';
+        buy.removeAttribute('title');
+        buy.classList.remove('btn-accent');
+      } else if (gate.ok) {
+        buy.disabled = false;
+        buy.textContent = `Acquire — ${fmt(asset.price)}`;
+        buy.removeAttribute('title');
+        buy.classList.add('btn-accent');
+      } else {
+        buy.disabled = true;
+        buy.textContent = `${gate.reason || 'Locked'} · ${fmt(asset.price)}`;
+        buy.title = gate.reason || '';
+        buy.classList.remove('btn-accent');
+      }
+    }
+  }
 }
 
 /**
@@ -502,8 +590,8 @@ export function renderEstates(state, { netWorth = 0 } = {}) {
 
   const key = estatesStructureKey(state, lastNetWorth);
   if (!force && key === estatesSnap && root.childElementCount > 0) {
-    // Live numbers only — never blow away hover / selection DOM.
-    patchLedgerPills(state);
+    // Live numbers / Ready gates only — never blow away hover / selection DOM.
+    patchEstatesLive(state, lastNetWorth);
     return;
   }
 

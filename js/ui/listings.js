@@ -26,6 +26,13 @@ let listingsVisibleCount = CONFIG.LISTING_PAGE_SIZE;
 let listingsSort = 'deals';
 let listingsQuery = '';
 
+export const LISTING_DEAL_THRESHOLD_SCANNER = 0.08;
+export const LISTING_DEAL_THRESHOLD_NO_SCANNER = 0.12;
+const LISTING_DISCOUNT_SCANNER_MIN = 0.85;
+const LISTING_DISCOUNT_SCANNER_RANGE = 0.20;
+const LISTING_DISCOUNT_NO_SCANNER_MIN = 0.95;
+const LISTING_DISCOUNT_NO_SCANNER_RANGE = 0.12;
+
 /** Hot listings sliding-window rotation */
 let hotRotationOffset = 0;
 let hotRotationTimer = null;
@@ -353,7 +360,7 @@ export function syncListingsFromQuotes(state, symbols = null, { rescaleAsks = fa
         }
       }
       const hasScanner = state?.perks?.includes('scanner');
-      const dealThreshold = hasScanner ? 0.06 : 0.09;
+      const dealThreshold = hasScanner ? LISTING_DEAL_THRESHOLD_SCANNER : LISTING_DEAL_THRESHOLD_NO_SCANNER;
       if (l.trueValue > 0) {
         l.isDeal = (l.trueValue - l.price) / l.trueValue > dealThreshold;
       }
@@ -588,11 +595,11 @@ function makeListing(sym, id, cache, hasInsider, hasScanner = false) {
   const q = quoteForDisplay(sym);
   // Scanner: deeper discounts → more GREAT DEAL tags. Without it, asks sit closer to market.
   const discount = hasScanner
-    ? (0.85 + Math.random() * 0.22)
-    : (0.93 + Math.random() * 0.18);
+    ? (LISTING_DISCOUNT_SCANNER_MIN + Math.random() * LISTING_DISCOUNT_SCANNER_RANGE)
+    : (LISTING_DISCOUNT_NO_SCANNER_MIN + Math.random() * LISTING_DISCOUNT_NO_SCANNER_RANGE);
   const price = parseFloat((q.price * discount).toFixed(2));
   const trueValue = q.price * (0.97 + Math.random() * 0.06);
-  const dealThreshold = hasScanner ? 0.06 : 0.09;
+  const dealThreshold = hasScanner ? LISTING_DEAL_THRESHOLD_SCANNER : LISTING_DEAL_THRESHOLD_NO_SCANNER;
   const listing = {
     id, sym, name: getSymbolName(sym), sector: getSymbolSector(sym),
     price, trueValue, marketPrice: q.price, changePct: q.changePct || 0,

@@ -204,8 +204,8 @@ export const STAFF_ROLES = {
     mark: 'IN',
     color: '#8b949e',
     lane: 'ops',
-    salary: 45,
-    hireCost: 450,
+    salary: 48,
+    hireCost: 550,
     desc: 'Keeps listings fresh and the desk organized — no trading authority.',
     does: 'Refreshes market listings and files routine desk work.',
     never: 'Never buys, sells, shorts, or sizes positions.',
@@ -221,8 +221,8 @@ export const STAFF_ROLES = {
     mark: 'SC',
     color: '#58a6ff',
     lane: 'buy',
-    salary: 95,
-    hireCost: 1200,
+    salary: 105,
+    hireCost: 1500,
     desc: 'Snipes GREAT DEAL listings only when conviction and size rules clear.',
     does: 'Buys GREAT DEAL names when conviction ≥ 70 and cash is free.',
     never: 'Never chases non-deals, never adds past the size cap, never shorts.',
@@ -238,8 +238,8 @@ export const STAFF_ROLES = {
     mark: 'CO',
     color: '#79c0ff',
     lane: 'ops',
-    salary: 110,
-    hireCost: 1400,
+    salary: 120,
+    hireCost: 1700,
     desc: 'Suppresses firm mistake rate and flags underwater longs for review.',
     does: 'Audits the book and flags longs ≤ −5% vs cost.',
     never: 'Never places trades or changes position size.',
@@ -255,8 +255,8 @@ export const STAFF_ROLES = {
     mark: 'RA',
     color: '#56d4dd',
     lane: 'insight',
-    salary: 145,
-    hireCost: 1800,
+    salary: 155,
+    hireCost: 2200,
     desc: 'Promotes near-deals and lifts Scout / Junior Trader hit quality.',
     does: 'Marks undervalued listings as GREAT DEAL and writes AI pick notes.',
     never: 'Never executes orders or overrides the size rule for others.',
@@ -272,8 +272,8 @@ export const STAFF_ROLES = {
     mark: 'TR',
     color: '#3fb950',
     lane: 'buy',
-    salary: 130,
-    hireCost: 1600,
+    salary: 145,
+    hireCost: 2100,
     desc: 'Buys AI BUY picks only when confidence clears the desk bar.',
     does: `Buys AI BUY signals with confidence ≥ ${STAFF_AI_MIN_CONFIDENCE}.`,
     never: 'Never buys HOLD/SHORT, never averages into losers, never shorts.',
@@ -289,8 +289,8 @@ export const STAFF_ROLES = {
     mark: 'RK',
     color: '#f0883e',
     lane: 'sell',
-    salary: 165,
-    hireCost: 2000,
+    salary: 180,
+    hireCost: 2600,
     desc: 'Hard exits on longs — full take-profit or stop, never opens risk.',
     does: 'Fully exits longs at +12% take-profit or −7% stop.',
     never: 'Never buys, never shorts, never adds size.',
@@ -306,8 +306,8 @@ export const STAFF_ROLES = {
     mark: 'EX',
     color: '#d2a8ff',
     lane: 'sell',
-    salary: 140,
-    hireCost: 1750,
+    salary: 155,
+    hireCost: 2300,
     desc: 'Trims winners and cuts early losers — the firm’s dedicated seller.',
     does: 'Sells ~half of a long at +8% trim or −5% early cut.',
     never: 'Never buys, never shorts, never opens new names.',
@@ -323,8 +323,8 @@ export const STAFF_ROLES = {
     mark: 'SH',
     color: '#f85149',
     lane: 'short',
-    salary: 185,
-    hireCost: 2400,
+    salary: 205,
+    hireCost: 3200,
     desc: 'Opens small shorts only on extended upside prints.',
     does: 'Shorts overbought names (day change > +3%) with tight size.',
     never: 'Never longs, never stacks into existing shorts, never ignores margin.',
@@ -340,8 +340,8 @@ export const STAFF_ROLES = {
     mark: 'QT',
     color: '#a371f7',
     lane: 'buy',
-    salary: 240,
-    hireCost: 3200,
+    salary: 270,
+    hireCost: 4200,
     desc: 'Momentum buys with size caps; covers shorts that blow through stops.',
     does: 'Buys mild breakouts; covers shorts ≤ −6% vs entry.',
     never: 'Never ignores the size cap, never averages losers, never chase >5%.',
@@ -357,8 +357,8 @@ export const STAFF_ROLES = {
     mark: 'MP',
     color: '#e3b341',
     lane: 'lead',
-    salary: 420,
-    hireCost: 8000,
+    salary: 450,
+    hireCost: 11000,
     desc: 'Raises floor efficiency and occasional firm cash bonuses.',
     does: 'Boosts all staff efficiency; small periodic firm bonuses.',
     never: 'Never personally snipes or overrides buy/sell risk rules.',
@@ -470,12 +470,15 @@ export function getTier(member) {
 }
 
 export function getDailySalary(staff) {
-  return staff.filter(s => s.active).reduce((sum, s) => {
-    const role = STAFF_ROLES[s.roleId];
-    const tierMult = s.tier === 'expert' ? 1.25 : s.tier === 'veteran' ? 1.1 : 1;
-    const tenureMult = staffTenurePayMult(s);
-    return sum + Math.round((role?.salary || 0) * tierMult * tenureMult);
-  }, 0);
+  return staff.filter(s => s.active).reduce((sum, s) => sum + getMemberDailySalary(s), 0);
+}
+
+/** Single-seat day pay (tier + tenure multipliers). */
+export function getMemberDailySalary(member) {
+  if (!member) return 0;
+  const role = STAFF_ROLES[member.roleId];
+  const tierMult = member.tier === 'expert' ? 1.25 : member.tier === 'veteran' ? 1.1 : 1;
+  return Math.round((role?.salary || 0) * tierMult * staffTenurePayMult(member));
 }
 
 /** One-time hire cash sunk into the current roster (catalog hireCost × headcount). */
@@ -1048,7 +1051,15 @@ export function fireStaff(staffId, state) {
   state.stats = state.stats || {};
   state.stats.fires = (state.stats.fires || 0) + 1;
   if (m) {
-    state.staffLog?.unshift({ time: Date.now(), staff: 'HR', action: `Fired ${m.name}` });
+    const severance = getMemberDailySalary(m);
+    const paid = Math.min(Math.max(0, Number(state.portfolio?.cash) || 0), severance);
+    if (paid > 0 && state.portfolio) state.portfolio.cash -= paid;
+    const sevNote = paid > 0 ? ` · $${paid.toLocaleString()} severance` : '';
+    state.staffLog?.unshift({
+      time: Date.now(),
+      staff: 'HR',
+      action: `Fired ${m.name}${sevNote}`,
+    });
   }
-  return { ok: true };
+  return { ok: true, severance: m ? getMemberDailySalary(m) : 0 };
 }

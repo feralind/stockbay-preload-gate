@@ -26,6 +26,7 @@ export function createMetaState() {
     marginCallCoachShown: false,
     circuitHaltCoachShown: false,
     simStatusCoachShown: false,
+    graduationCoachShown: false,
     blackMarketLegendCoachShown: false,
     /** Desk Prestige REP granted today from equipped vault cosmetics. */
     vaultAuraRepToday: 0,

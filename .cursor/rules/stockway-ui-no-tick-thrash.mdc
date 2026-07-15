@@ -1,19 +1,40 @@
 ---
-description: Prevent UI flash/stutter from renderAll DOM thrash
-globs: js/ui/**/*.js,css/styles.css
-alwaysApply: false
+description: Prevent UI flash/stutter — never remount panels on renderAll ticks
+alwaysApply: true
 ---
 
 # StockWay UI — no tick thrash
 
-`renderAll` runs frequently (market ticks, events). Rewriting a panel's full `innerHTML` every time destroys hover/focus and causes flash/blink/stutter (Estates regression).
+`renderAll` runs on **every market tick**. Full `innerHTML` rewrites destroy hover/focus and cause flash/blink/stutter.
 
-When adding or changing interactive panels:
+**Seen in production:** Estates Residences glow thrash at 10x — fingerprint included live **cash/NW**, so ticks remounted the bento and killed CSS `:hover`.
 
-1. **Fingerprint / skip** unchanged DOM (`setHtmlIfChanged` in dashboard, structure keys in estates).
-2. **Patch live values** with `textContent` — do not remount card grids to update numbers.
-3. **One-shot enter animations** only on real navigation; remove the class after `animationend`.
-4. Prefer **border/opacity** hover over transform + image-scale + box-shadow + backdrop-filter on large tiles.
-5. Avoid continuous CSS **filter/blur animations** on large surfaces.
+## Required pattern for any interactive panel
 
-References: `js/ui/dashboard.js`, `js/ui/estates.js`.
+Estates, Staff/HR, Vault, Collection, Achievements, Finance, Dashboard widgets, **and any new feature surface**:
+
+1. **Structure fingerprint / skip** — rebuild DOM only when ownership, selection, navigation, or catalog identity changes.
+2. **Patch live values** with `textContent` / class toggles / attribute updates — never remount a card grid to refresh numbers.
+3. **One-shot enter animations** only on real navigation; strip the class after `animationend`.
+4. Prefer **border/opacity** hover — not transform + image-scale + box-shadow + backdrop-filter on large tiles.
+5. Avoid continuous CSS **filter/blur** animations on large surfaces.
+6. Bind clicks with **delegation once** (or only after a real remount) — do not re-`onclick=` every tick.
+
+## Fingerprint anti-patterns (will reintroduce Estates stutter)
+
+**Do NOT** put these in a structure key / snap string:
+
+- Live `portfolio.cash`, quote prices, or fine-grained net worth
+- Per-tick progress meters, clocks, or “last updated” timestamps
+- Anything that changes more than a few times per second while the player hovers
+
+**Do** put: owned ids, selected id, active tab/category, ledger open, day index, spent totals that only change on buy/sell actions.
+
+Patch Ready/Locked/affordability **in place** when cash/NW moves (`patchEstatesLive`, `patchRosterLive`, `setHtmlIfChanged`).
+
+## References
+
+- `js/ui/estates.js` — `estatesStructureKey` + `patchEstatesLive`
+- `js/ui/dashboard.js` — `setHtmlIfChanged`
+- `js/ui/staff.js` / `js/ui/vault.js` — roster/vault snaps
+- Rule file: `.cursor/rules/stockway-ui-no-tick-thrash.mdc`

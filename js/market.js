@@ -23,6 +23,7 @@ let dayRealized = 0;
 let speedMultiplier = 1;
 /** Broad risk-on / risk-off state in [-1, 1]. Mean-reverts toward 0. */
 let marketBeta = 0;
+let tapeRegime = getTapeRegime(dayCount);
 
 /** Session open anchors for circuit breakers (reset each game day). */
 const sessionOpen = new Map();
@@ -110,6 +111,13 @@ export function onMarketTick(fn) {
 
 export function getMarketBeta() {
   return marketBeta;
+}
+
+export function getTapeRegime(day = dayCount) {
+  const d = Math.max(1, Math.floor(Number(day) || 1));
+  let h = Math.imul(d ^ 0x9e3779b9, 2654435761) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0;
+  return (h % 10) < 4 ? 'chop' : 'trend';
 }
 
 function currentMinuteOfDay() {
@@ -341,6 +349,7 @@ function advanceMarket(minutes) {
     marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
     marketDate = new Date(marketDate.getTime() - pre * 60000);
     dayCount++;
+    tapeRegime = getTapeRegime(dayCount);
     resetSessionAnchors();
     rollQuotesForNewDay();
     stepMacroTowardNeutral(0.03);
@@ -435,12 +444,17 @@ function simulateMarketMinute() {
     const hash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + tickSeed;
     const deterministic = Math.sin(hash * 0.17) * vol * 0.5;
     const random = (Math.random() - 0.5) * vol;
+    const idiosyncratic = deterministic + random;
     let drift = computeSymbolDrift({
       marketBeta,
       sector,
-      idiosyncratic: deterministic + random,
+      idiosyncratic,
       sectorVol: vol,
     });
+    if (tapeRegime === 'chop') {
+      drift += idiosyncratic * 0.35;
+      if (Math.floor(tickSeed / 17) % 2 === 1) drift *= -0.65;
+    }
     // Thin sessions: small random spread pad (wider effective prints)
     if (liq.spreadPad) drift += (Math.random() - 0.5) * 2 * liq.spreadPad;
     drift = Math.max(-MAX_DRIFT_PER_MINUTE, Math.min(MAX_DRIFT_PER_MINUTE, drift));
@@ -552,6 +566,7 @@ export function forceAdvanceGameDay() {
   marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
   marketDate = new Date(marketDate.getTime() - pre * 60000);
   dayCount++;
+  tapeRegime = getTapeRegime(dayCount);
   resetSessionAnchors();
   stepMacroTowardNeutral(0.03);
   emit('dayEnd', { day: summaryDay });
@@ -570,6 +585,7 @@ export function resetMarketForNewRun() {
   dayRealized = 0;
   speedMultiplier = 1;
   marketBeta = 0;
+  tapeRegime = getTapeRegime(dayCount);
   pausedByUser = false;
   pausedByBackground = false;
   marketRunning = true;
@@ -609,6 +625,7 @@ export function serializeMarket() {
     dayRealized,
     speedMultiplier,
     marketBeta,
+    tapeRegime,
     macro: serializeMacro(),
     halts: haltList,
     sessionOpen: openList,
@@ -629,6 +646,10 @@ export function loadMarket(data) {
   // Migration: older saves omit marketBeta → start neutral
   const beta = Number(data?.marketBeta);
   marketBeta = Number.isFinite(beta) ? Math.max(-1, Math.min(1, beta)) : 0;
+  // Migration: older saves omit tapeRegime → derive from current day
+  tapeRegime = data?.tapeRegime === 'chop' || data?.tapeRegime === 'trend'
+    ? data.tapeRegime
+    : getTapeRegime(dayCount);
   // Migration: older saves omit macro → baseline Fed/10Y
   loadMacro(data?.macro);
 

@@ -71,6 +71,14 @@ function sanitizePosition(pos, { isShort = false } = {}) {
   if (pos.stopLoss != null && Number.isFinite(Number(pos.stopLoss))) out.stopLoss = Number(pos.stopLoss);
   if (pos.takeProfit != null && Number.isFinite(Number(pos.takeProfit))) out.takeProfit = Number(pos.takeProfit);
   if (pos.priceCorrectedAck) out.priceCorrectedAck = true;
+  const entryPct = Number(pos.notionalPctAtEntry);
+  if (Number.isFinite(entryPct) && entryPct >= 0 && entryPct <= 10) {
+    out.notionalPctAtEntry = entryPct;
+  }
+  const mae = Number(pos.worstUnrealizedPct);
+  if (Number.isFinite(mae) && mae <= 0 && mae >= -1) {
+    out.worstUnrealizedPct = mae;
+  }
   return out;
 }
 
@@ -124,6 +132,38 @@ function sanitizePortfolio(portfolio) {
   p.realizedPnL = Number.isFinite(Number(p.realizedPnL)) ? Number(p.realizedPnL) : 0;
   p.totalTrades = Math.max(0, Math.floor(Number(p.totalTrades) || 0));
   p.history = Array.isArray(p.history) ? p.history.slice(0, 200) : [];
+  if (Array.isArray(p.dayPatienceWins)) {
+    p.dayPatienceWins = p.dayPatienceWins
+      .filter((w) => w && typeof w === 'object' && typeof w.id === 'string' && typeof w.text === 'string')
+      .slice(0, 8)
+      .map((w) => ({ id: String(w.id).slice(0, 40), text: String(w.text).slice(0, 200) }));
+  } else {
+    delete p.dayPatienceWins;
+  }
+
+  const rawRedExitMarkers = Array.isArray(p.dayLastRedExit)
+    ? p.dayLastRedExit
+    : (p.dayLastRedExit ? [p.dayLastRedExit] : []);
+  const redExitMarkers = rawRedExitMarkers
+    .filter((m) => m && typeof m === 'object')
+    .map((m) => {
+      const sym = String(m.sym || '').trim().toUpperCase();
+      const day = Math.floor(Number(m.day));
+      if (!/^[A-Z0-9.\-]{1,16}$/.test(sym) || !Number.isFinite(day) || day < 1) return null;
+      return { sym, day };
+    })
+    .filter(Boolean)
+    .slice(-8);
+  if (redExitMarkers.length) {
+    p.dayLastRedExit = redExitMarkers;
+  } else {
+    delete p.dayLastRedExit;
+  }
+  if (p.dayChased === true) {
+    p.dayChased = true;
+  } else {
+    delete p.dayChased;
+  }
 
   if (p.marginCall && typeof p.marginCall === 'object') {
     const level = p.marginCall.level === 'call' || p.marginCall.level === 'warn' ? p.marginCall.level : null;
@@ -303,6 +343,7 @@ export function sanitizeRunData(run) {
     m.marginCallCoachShown = !!m.marginCallCoachShown;
     m.circuitHaltCoachShown = !!m.circuitHaltCoachShown;
     m.simStatusCoachShown = !!m.simStatusCoachShown;
+    m.graduationCoachShown = !!m.graduationCoachShown;
     m.blackMarketLegendCoachShown = !!m.blackMarketLegendCoachShown;
     m.vaultAuraRepToday = Math.max(0, Math.floor(Number(m.vaultAuraRepToday) || 0));
     const claimedFlairs = new Set(

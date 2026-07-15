@@ -41,3 +41,12 @@ for Windows only — ignore them on this VM and use the npm scripts directly).
 - Optional Finnhub news: copy `finnhub.key.example` → `finnhub.key` (gitignored). Quotes work via Yahoo
   without any key; without a key `/api/news` just returns an empty list.
 - Game saves live in `localStorage` under `stockway_save_v1`.
+
+### UI — no tick thrash (mandatory)
+
+`renderAll` runs on market ticks. **Never** rewrite a whole interactive panel’s `innerHTML` every tick — that kills hover and causes Estates-style flash/stutter.
+
+- Fingerprint structure only (owned ids, selection, tab/category). **Do not** put live cash / NW / quotes in the snap key.
+- Patch numbers with `textContent`; use `setHtmlIfChanged` / `patchEstatesLive` / roster snaps as models.
+- Project rule (always on): `.cursor/rules/stockway-ui-no-tick-thrash.mdc`.
+- Canonical fix: `js/ui/estates.js`.

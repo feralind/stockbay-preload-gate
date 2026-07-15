@@ -123,6 +123,7 @@ export function forceCoverShort(portfolio, sym, shares, price) {
       price: px,
       side: 'short',
       pnl: pnl - commission,
+      exitReason: 'margin',
       time: Date.now(),
     });
     if (portfolio.history.length > 200) portfolio.history.pop();
@@ -147,10 +148,10 @@ function raiseCashFromLongs(portfolio, need) {
     if (raised >= needAmt) break;
     const stillNeed = needAmt - raised;
     const shares = Math.min(row.pos.shares, Math.max(1, Math.ceil(stillNeed / row.px)));
-    const r = sellLong(portfolio, row.sym, shares, row.px);
+    const r = sellLong(portfolio, row.sym, shares, row.px, { exitReason: 'margin' });
     if (r.ok) {
       raised += shares * row.px;
-      actions.push({ type: 'sell', sym: row.sym, shares, price: row.px, pnl: r.pnl });
+      actions.push({ type: 'sell', sym: row.sym, shares, price: row.px, pnl: r.pnl, exitReason: 'margin' });
     }
   }
   return { raised, actions };
@@ -186,7 +187,7 @@ export function liquidateForMarginCall(portfolio, { liquidationScale = 1 } = {})
         actions.push(...sold);
       }
 
-      let covered = coverShort(portfolio, worst.sym, shares, px);
+      let covered = coverShort(portfolio, worst.sym, shares, px, { exitReason: 'margin' });
       let forced = false;
       if (!covered.ok) {
         covered = forceCoverShort(portfolio, worst.sym, shares, px);
@@ -199,6 +200,7 @@ export function liquidateForMarginCall(portfolio, { liquidationScale = 1 } = {})
           shares,
           price: px,
           pnl: covered.pnl,
+          exitReason: 'margin',
         });
         continue;
       }

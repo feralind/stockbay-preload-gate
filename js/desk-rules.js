@@ -41,6 +41,8 @@ export function applyRelicAwareSlippage(state, args) {
 
 /**
  * Relic grace bonus first, then primeBroker +8, then estate resilience.
+ * Quiet Poor-credit friction: when the weaker of personal/business credit is
+ * below Fair (580), shave 5 minutes — no new toasts.
  * @param {object} state
  * @param {number} [baseMinutes]
  */
@@ -48,5 +50,16 @@ export function getDeskMarginGraceMinutes(state, baseMinutes = MARGIN_CALL_GRACE
   let grace = getRelicMarginGraceMinutes(getEquippedRelicIds(state), baseMinutes);
   if (state?.perks?.includes('primeBroker')) grace += 8;
   grace += getEstateGraceBonus(state);
+
+  const finance = state?.finance;
+  if (finance && typeof finance === 'object') {
+    const pc = Number(finance.personalCredit);
+    const bc = Number(finance.businessCredit);
+    const worst = Math.min(
+      Number.isFinite(pc) ? pc : 850,
+      Number.isFinite(bc) ? bc : 850,
+    );
+    if (worst < 580) grace = Math.max(8, grace - 5);
+  }
   return grace;
 }

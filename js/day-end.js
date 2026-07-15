@@ -7,6 +7,7 @@ import { getNetEquity, settleExpiredOptions } from './portfolio.js';
 import { getFirmDebt, processDailyLoans } from './finance.js';
 import { getDayStats } from './market.js';
 import { payDailySalaries, tickStaffTenureDay } from './staff.js';
+import { collectProcessWins } from './process-wins.js';
 import {
   updateChallengeProgress,
   claimChallenge,
@@ -121,6 +122,17 @@ export function runDayEndSettlement(state, day) {
 
   const expiredOpts = settleExpiredOptions(state.portfolio, day);
 
+  const processWins = collectProcessWins({
+    loanEvents,
+    portfolio: state.portfolio,
+    day,
+  });
+  if (state.portfolio) {
+    state.portfolio.dayPatienceWins = [];
+    state.portfolio.dayLastRedExit = [];
+    state.portfolio.dayChased = false;
+  }
+
   const daySummary = {
     ...stats,
     day,
@@ -139,6 +151,7 @@ export function runDayEndSettlement(state, day) {
     estateNetIncome: estateDay.netIncome,
     optionsExpired: expiredOpts.length,
     repossessions,
+    processWins,
   };
 
   return {
@@ -155,6 +168,7 @@ export function runDayEndSettlement(state, day) {
     payroll,
     bestRun,
     expiredOpts,
+    processWins,
     daySummary,
   };
 }

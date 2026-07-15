@@ -258,10 +258,23 @@ export function markSimStatusCoachShown(meta) {
   return meta;
 }
 
+/** Pure: first trusted-rank graduation coachmark for this save. */
+export function shouldShowGraduationCoach(meta) {
+  if (!meta || meta.graduationCoachShown) return false;
+  // Fire once at/above Trusted Trader (120+), including jumps past that band.
+  return (Number(meta.reputation) || 0) >= 120;
+}
+
+export function markGraduationCoachShown(meta) {
+  if (!meta) return meta;
+  meta.graduationCoachShown = true;
+  return meta;
+}
+
 const MARGIN_CALL_COACH_TEXT =
   'Margin call: your equity cushion fell below what brokers require to keep leveraged bets open. '
   + 'Cover shorts or sell longs to raise the cushion — or the desk will liquidate for you. '
-  'Real brokers do the same so one bad short cannot owe more than the account holds.';
+  + 'Real brokers do the same so one bad short cannot owe more than the account holds.';
 
 const CIRCUIT_HALT_COACH_TEXT =
   'Trading halt: this symbol moved so fast from the session open that the “exchange” paused new buys/shorts. '
@@ -269,9 +282,22 @@ const CIRCUIT_HALT_COACH_TEXT =
   + 'The halt lifts after a few game minutes.';
 
 const SIM_STATUS_COACH_TEXT =
-  'Honesty check: Live/Connected means StockWay can fetch base quotes — not a brokerage and not tick-by-tick streaming. '
-  + 'Once the accelerated clock runs, drift, events, and circuit breakers drive the tape (Simulation) — not the real market. '
+  'Honesty check: Online means StockWay can fetch base quotes — not a brokerage and not tick-by-tick streaming. '
+  + 'Once baselines load, the desk clock runs a Simulated tape (live-seeded or seed/cached). '
   + 'Offline uses cached baselines or seeds; paper money never leaves the browser except quote lookups.';
+
+const GRADUATION_COACH_TEXT =
+  'Trusted Trader: you are past the tutorial desk now. '
+  + 'From here, judgment and firm identity matter more than prompts — what you buy, what you pass on, and how you size risk become the story of this shop. '
+  + 'No more hand-holding: run the desk like your name is on the door.';
+
+/** Exported for quality tests — keep all three sentences concatenated. */
+export {
+  MARGIN_CALL_COACH_TEXT,
+  CIRCUIT_HALT_COACH_TEXT,
+  SIM_STATUS_COACH_TEXT,
+  GRADUATION_COACH_TEXT,
+};
 
 function canShowDomCoachmark() {
   return typeof document !== 'undefined'
@@ -353,6 +379,37 @@ export function maybeShowSimStatusCoach(state, { saveGame } = {}) {
   showCoachmark({
     target: target || 'body',
     text: SIM_STATUS_COACH_TEXT,
+    showNext: true,
+    onNext: () => hideCoachmark(),
+    onSkip: () => hideCoachmark(),
+  });
+  return true;
+}
+
+/**
+ * One-shot coachmark when REP first reaches Trusted Trader.
+ * Quiet walkthrough/tour modes never mark it shown, so it can fire later.
+ */
+export function maybeShowGraduationCoach(state, { saveGame } = {}) {
+  if (!state?.meta || !shouldShowGraduationCoach(state.meta)) return false;
+  if (isCoachQuiet()) return false;
+  if (!canShowDomCoachmark()) {
+    markGraduationCoachShown(state.meta);
+    saveGame?.({ immediate: true });
+    return true;
+  }
+  if (document.getElementById('onboard-overlay')
+    && !document.getElementById('onboard-overlay').classList.contains('hidden')) {
+    return false;
+  }
+  markGraduationCoachShown(state.meta);
+  saveGame?.({ immediate: true });
+  const target = document.getElementById('rep-stat-cell')
+    || document.getElementById('reputation')
+    || document.getElementById('dash-standing');
+  showCoachmark({
+    target: target || 'body',
+    text: GRADUATION_COACH_TEXT,
     showNext: true,
     onNext: () => hideCoachmark(),
     onSkip: () => hideCoachmark(),

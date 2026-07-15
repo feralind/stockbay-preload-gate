@@ -7,6 +7,15 @@
 
 import { getSpendableCash } from './portfolio.js';
 
+/** Closing costs on cash estate buys — soft friction, does not inflate estate equity book. */
+export const ESTATE_CLOSING_COST_PCT = 0.02;
+
+/**
+ * Business credit required to draw property HELOC-style credit.
+ * Matches Fair band floor in finance APR_CREDIT_TIERS — cash ownership stays allowed.
+ */
+export const ESTATE_CREDIT_MIN_BUSINESS = 580;
+
 /**
  * @typedef {'residences' | 'penthouses' | 'cars' | 'yachts' | 'islands'} EstateCategoryId
  */
@@ -890,8 +899,18 @@ export function canPurchaseEstate(state, assetId, ctx = {}) {
     return { ok: false, reason: `Requires ${asset.minRep} REP`, code: 'rep' };
   }
   const cash = getSpendableCash(state.portfolio || { cash: 0 });
-  if (cash < asset.price) return { ok: false, reason: 'Insufficient cash', code: 'cash' };
-  return { ok: true, asset };
+  const closingFee = Math.max(0, Math.round(asset.price * ESTATE_CLOSING_COST_PCT));
+  const totalDebit = asset.price + closingFee;
+  if (cash < totalDebit) {
+    return {
+      ok: false,
+      reason: closingFee > 0
+        ? `Need $${totalDebit.toLocaleString()} (includes $${closingFee.toLocaleString()} closing)`
+        : 'Insufficient cash',
+      code: 'cash',
+    };
+  }
+  return { ok: true, asset, closingFee, totalDebit };
 }
 
 /**
@@ -903,7 +922,19 @@ export function purchaseEstate(state, assetId, ctx = {}) {
   const gate = canPurchaseEstate(state, assetId, ctx);
   if (!gate.ok) return { ok: false, msg: gate.reason, code: gate.code };
   const asset = gate.asset;
-  state.portfolio.cash -= asset.price;
+  const closingFee = Math.max(0, Math.round(asset.price * ESTATE_CLOSING_COST_PCT));
+  const totalDebit = asset.price + closingFee;
+  const cash = getSpendableCash(state.portfolio || { cash: 0 });
+  if (cash < totalDebit) {
+    return {
+      ok: false,
+      msg: closingFee > 0
+        ? `Need $${totalDebit.toLocaleString()} (includes $${closingFee.toLocaleString()} closing)`
+        : 'Insufficient cash',
+      code: 'cash',
+    };
+  }
+  state.portfolio.cash -= totalDebit;
   if (!Array.isArray(state.estateOwned)) state.estateOwned = [];
   state.estateOwned.push(asset.id);
   state.estateSpentTotal = Math.max(0, Number(state.estateSpentTotal) || 0) + asset.price;
@@ -912,7 +943,13 @@ export function purchaseEstate(state, assetId, ctx = {}) {
     state.meta.estateFlair = String(asset.flair).slice(0, 40);
   }
   syncEstateDerived(state);
-  return { ok: true, asset, spent: asset.price };
+  return {
+    ok: true,
+    asset,
+    spent: asset.price,
+    closingFee,
+    totalDebit,
+  };
 }
 
 /**
@@ -921,6 +958,19 @@ export function purchaseEstate(state, assetId, ctx = {}) {
  */
 export function drawEstateCredit(state, amount) {
   syncEstateDerived(state);
+  // When finance is present, require Fair+ business credit (HELOC realism).
+  // Legacy/test states without finance stay allowed.
+  if (state?.finance && typeof state.finance === 'object') {
+    const businessCredit = Number(state.finance.businessCredit);
+    const score = Number.isFinite(businessCredit) ? businessCredit : 0;
+    if (score < ESTATE_CREDIT_MIN_BUSINESS) {
+      return {
+        ok: false,
+        msg: `Need ${ESTATE_CREDIT_MIN_BUSINESS}+ business credit to draw property credit (you have ${Math.round(score)})`,
+        code: 'credit',
+      };
+    }
+  }
   const want = Math.floor(Number(amount) || 0);
   if (!(want > 0)) return { ok: false, msg: 'Enter a positive amount', code: 'amount' };
   const available = getEstateCreditAvailable(state);

@@ -15,6 +15,10 @@ import { formatMarketClock } from '../market.js';
 import { escapeAttr, escapeHtml, fmt } from './shared.js';
 
 let activeVaultFilter = 'all';
+/** Last structure fingerprint — skip remount on every renderAll tick (scroll/hover slip). */
+let vaultSnap = '';
+/** @type {object | null} */
+let vaultUiState = null;
 
 const ITEM_GLYPH = {
   goldTerminal: '▣',
@@ -443,6 +447,7 @@ const VAULT_ITEM_IMAGES = {
   yachtBackground: 'assets/vault/study-of-the-tide.png',
   penthouseNight: 'assets/vault/nocturne-no-7.png',
   bullMarble: 'assets/vault/gilded-bull.png',
+  crashDayTape: 'assets/vault/first-edition-ticker-tape.png',
   auroraDeck: 'assets/vault/aurora-study.png',
   bronzeBullBust: 'assets/vault/bronze-figurine.png',
   apexBadge: 'assets/vault/signet-ring.png',
@@ -687,15 +692,107 @@ function cardStatusHtml({ owned, equipped, gate }) {
   return `<span class="vault-status locked">${escapeHtml(gate.reason || 'Locked')}</span>`;
 }
 
+/**
+ * Structure fingerprint — ownership / gates / filter. Not market-tick churn.
+ * @param {object} state
+ * @param {{ day: number, cash: number, rep: number, ownedIds: string[], bookValue: number, pledgedValue: number, spentTotal: number, auraTier: number, auraUsed: number, cosmeticsKey: string, salonKey: string, buyGateKey: string, pledgeLockKey: string }} snap
+ */
+function vaultStructureKey(snap) {
+  return [
+    activeVaultFilter,
+    snap.day,
+    snap.cash,
+    snap.rep,
+    snap.ownedIds.join(','),
+    snap.bookValue,
+    snap.pledgedValue,
+    snap.spentTotal,
+    snap.auraTier,
+    snap.auraUsed,
+    snap.cosmeticsKey,
+    snap.salonKey,
+    snap.buyGateKey,
+    snap.pledgeLockKey,
+  ].join('|');
+}
+
+/**
+ * Patch hero cash / book / pledged without remounting the card grid.
+ * @param {HTMLElement} root
+ * @param {{ cash: number, bookValue: number, pledgedValue: number }} vals
+ */
+function patchVaultHeroStats(root, vals) {
+  const stats = root.querySelectorAll('.vault-hero-stat strong');
+  if (stats.length < 3) return;
+  stats[0].textContent = fmt(vals.cash);
+  stats[1].textContent = fmt(vals.bookValue);
+  stats[2].textContent = fmt(vals.pledgedValue);
+}
+
+/**
+ * One-time delegated clicks — survives fingerprint skips without rebinding every tick.
+ * @param {HTMLElement} root
+ */
+function ensureVaultInteractions(root) {
+  if (root.dataset.vaultBound === '1') return;
+  root.dataset.vaultBound = '1';
+
+  root.addEventListener('click', (e) => {
+    const t = /** @type {HTMLElement} */ (e.target);
+    const filterBtn = t.closest?.('[data-vault-filter]');
+    if (filterBtn && root.contains(filterBtn)) {
+      activeVaultFilter = filterBtn.getAttribute('data-vault-filter') || 'all';
+      vaultSnap = '';
+      renderVault(vaultUiState || {});
+      return;
+    }
+    const buyBtn = t.closest?.('[data-vault-buy]');
+    if (buyBtn && root.contains(buyBtn)) {
+      const itemId = buyBtn.getAttribute('data-vault-buy');
+      if (itemId) vaultUiState?.onBuyVaultItem?.(itemId);
+      return;
+    }
+    const salonBtn = t.closest?.('[data-salon-buy]');
+    if (salonBtn && root.contains(salonBtn)) {
+      const itemId = salonBtn.getAttribute('data-salon-buy');
+      if (itemId) vaultUiState?.onBuySalonItem?.(itemId);
+      return;
+    }
+    const equipBtn = t.closest?.('[data-vault-equip]');
+    if (equipBtn && root.contains(equipBtn)) {
+      const itemId = equipBtn.getAttribute('data-vault-equip');
+      if (itemId) vaultUiState?.onEquipVaultItem?.(itemId);
+      return;
+    }
+    const pledgeBtn = t.closest?.('[data-vault-pledge]');
+    if (pledgeBtn && root.contains(pledgeBtn)) {
+      const itemId = pledgeBtn.getAttribute('data-vault-pledge');
+      if (itemId) vaultUiState?.onToggleVaultPledge?.(itemId);
+    }
+  });
+}
+
 export function renderVault(state) {
   const root = document.getElementById('vault-root');
   if (!root) return;
+  vaultUiState = state;
+
+  ensureVaultInteractions(root);
+
+  const view = document.getElementById('view-vault');
+  const force = root.dataset.vaultForce === '1';
+  if (force) delete root.dataset.vaultForce;
+  if (!force && view && !view.classList.contains('active') && root.childElementCount > 0) {
+    return;
+  }
+
   const day = formatMarketClock()?.day || 1;
   const rep = state.meta?.reputation || 0;
   const cash = getSpendableCash(state.portfolio || { cash: 0 });
   const ownedIds = Array.isArray(state.vaultOwned) ? state.vaultOwned : [];
   const ownedSet = new Set(ownedIds);
-  const pledgedSet = new Set(Array.isArray(state.vaultPledged) ? state.vaultPledged : []);
+  const pledgedIds = Array.isArray(state.vaultPledged) ? state.vaultPledged : [];
+  const pledgedSet = new Set(pledgedIds);
   const pledgedValue = getVaultPledgedAppraisal(state);
   const spentTotal = Math.max(0, Number(state.vaultSpentTotal) || 0);
   const bookValue = getVaultBookValue(state);
@@ -714,6 +811,46 @@ export function renderVault(state) {
     const item = (typeof id === 'string' && ownedSetForEquip.has(id)) ? getVaultItem(id) : null;
     return { ...entry, item };
   });
+
+  const cosmeticsKey = ['dashboard', 'background', 'badge', 'title']
+    .map((slot) => `${slot}:${cosmetics[slot] || ''}`)
+    .join(',');
+  const salonListing = getActiveSalonListing(day, { ownedIds });
+  const salonKey = salonListing?.item
+    ? `${salonListing.item.id}|${salonListing.expiresDay}|${(state.salonSeenExpired || []).join(',')}`
+    : `none|${(state.salonSeenExpired || []).join(',')}`;
+  const buyGateKey = Object.values(VAULT_ITEMS)
+    .map((item) => {
+      if (ownedSet.has(item.id)) return `${item.id}:own`;
+      const gate = canPurchaseVaultItem(item, { cash, vaultOwned: ownedIds, reputation: rep });
+      return `${item.id}:${gate.ok ? 'ok' : (gate.code || gate.reason || 'no')}`;
+    })
+    .join(',');
+  const pledgeLockKey = pledgedIds
+    .map((id) => `${id}:${loanLocksVaultPledge(state.finance, id) ? '1' : '0'}`)
+    .join(',');
+
+  const key = vaultStructureKey({
+    day,
+    cash,
+    rep,
+    ownedIds: ownedIds.slice().sort(),
+    bookValue,
+    pledgedValue,
+    spentTotal,
+    auraTier: aura.tier,
+    auraUsed,
+    cosmeticsKey,
+    salonKey,
+    buyGateKey,
+    pledgeLockKey: `${pledgedIds.slice().sort().join(',')}|${pledgeLockKey}`,
+  });
+
+  if (force) vaultSnap = '';
+  if (!force && key === vaultSnap && root.childElementCount > 0) {
+    patchVaultHeroStats(root, { cash, bookValue, pledgedValue });
+    return;
+  }
 
   const allItems = Object.values(VAULT_ITEMS).slice().sort((a, b) => {
     const aStarter = (a.repRequired || 0) === 0 ? 0 : 1;
@@ -797,6 +934,9 @@ export function renderVault(state) {
       </section>`
     : '';
 
+  // Preserve scroll across intentional rebuilds (filter / buy / equip).
+  const prevScroll = root.scrollTop;
+
   root.innerHTML = `
     <div class="vault-shell">
       <header class="vault-hero">
@@ -840,34 +980,6 @@ export function renderVault(state) {
     </div>
   `;
 
-  root.querySelectorAll('[data-vault-filter]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      activeVaultFilter = btn.getAttribute('data-vault-filter') || 'all';
-      renderVault(state);
-    });
-  });
-  root.querySelectorAll('[data-vault-buy]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const itemId = btn.getAttribute('data-vault-buy');
-      if (itemId) state.onBuyVaultItem?.(itemId);
-    });
-  });
-  root.querySelectorAll('[data-salon-buy]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const itemId = btn.getAttribute('data-salon-buy');
-      if (itemId) state.onBuySalonItem?.(itemId);
-    });
-  });
-  root.querySelectorAll('[data-vault-equip]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const itemId = btn.getAttribute('data-vault-equip');
-      if (itemId) state.onEquipVaultItem?.(itemId);
-    });
-  });
-  root.querySelectorAll('[data-vault-pledge]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const itemId = btn.getAttribute('data-vault-pledge');
-      if (itemId) state.onToggleVaultPledge?.(itemId);
-    });
-  });
+  vaultSnap = key;
+  root.scrollTop = prevScroll;
 }

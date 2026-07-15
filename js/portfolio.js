@@ -6,6 +6,7 @@ import { blackScholesPremium, defaultVol, optionGreeks } from './options-math.js
 import { earningsVolMultiplier } from './corporate-actions.js';
 import { accrueTaxablePnL, consumeLotsFifo, ensureTaxState } from './tax.js';
 import { applySlippage } from './slippage.js';
+import { maybeRecordPatienceWin, normalizeExitReason } from './process-wins.js';
 
 export { optionGreeks, defaultVol };
 
@@ -245,6 +246,31 @@ function logTrade(portfolio, entry) {
   portfolio.totalTrades++;
 }
 
+function getDayRedExitMarkers(portfolio) {
+  if (!portfolio) return [];
+  return Array.isArray(portfolio.dayLastRedExit)
+    ? portfolio.dayLastRedExit
+    : (portfolio.dayLastRedExit ? [portfolio.dayLastRedExit] : []);
+}
+
+function maybeMarkChased(portfolio, sym, day) {
+  if (!portfolio?.dayLastRedExit || portfolio.dayChased) return;
+  const chased = getDayRedExitMarkers(portfolio).some((m) => (
+    m?.sym === sym && m?.day === day
+  ));
+  if (chased) portfolio.dayChased = true;
+}
+
+function recordVoluntaryRedExit(portfolio, sym, day, exitReason, pnl) {
+  if (!portfolio || exitReason !== 'voluntary' || !(Number(pnl) < 0)) return;
+  const markers = getDayRedExitMarkers(portfolio)
+    .filter((m) => m?.sym && m?.day === day);
+  if (!markers.some((m) => m.sym === sym && m.day === day)) {
+    markers.push({ sym, day });
+  }
+  portfolio.dayLastRedExit = markers.slice(-8);
+}
+
 export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
@@ -256,8 +282,11 @@ export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
   }
   const cost = qty * px + CONFIG.COMMISSION;
   if (getAvailableForLong(portfolio, perks) < cost) return { ok: false, msg: 'Insufficient cash' };
+  const wasNew = !portfolio.longs[symbol];
+  const equityBefore = wasNew ? Math.max(0, getEquity(portfolio)) : 0;
   portfolio.cash -= cost;
   const day = getDayCount();
+  maybeMarkChased(portfolio, symbol, day);
   const p = portfolio.longs[symbol] || { shares: 0, avgPrice: 0, lots: [] };
   if (!Array.isArray(p.lots)) p.lots = [];
   // Migrate legacy position into a single lot before adding
@@ -267,6 +296,10 @@ export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
   p.avgPrice = (p.avgPrice * p.shares + px * qty) / (p.shares + qty);
   p.shares += qty;
   p.lots.push({ shares: qty, avgPrice: px, openedDay: day });
+  // Snapshot once at first open — never invent for legacy/add-on fills
+  if (wasNew && equityBefore > 0 && p.notionalPctAtEntry == null) {
+    p.notionalPctAtEntry = (qty * px) / equityBefore;
+  }
   // Adding shares re-averages cost — "avg kept" badge is no longer accurate
   if (p.priceCorrectedAck) delete p.priceCorrectedAck;
   if (risk.stopLoss) p.stopLoss = risk.stopLoss;
@@ -276,7 +309,7 @@ export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
   return { ok: true };
 }
 
-export function sellLong(portfolio, sym, shares, price) {
+export function sellLong(portfolio, sym, shares, price, opts = {}) {
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
   const symbol = normalizeSymbol(sym);
@@ -284,6 +317,8 @@ export function sellLong(portfolio, sym, shares, price) {
   // Exits allowed during circuit halt (risk reduction / stop-loss / margin raise)
   const p = portfolio.longs[symbol];
   if (!p || p.shares < qty) return { ok: false, msg: 'Not enough shares' };
+  const exitReason = normalizeExitReason(opts?.exitReason);
+  const worstUnrealizedPct = p.worstUnrealizedPct;
   const day = getDayCount();
   ensureTaxState(portfolio);
   if (!Array.isArray(p.lots) || p.lots.length === 0) {
@@ -306,8 +341,18 @@ export function sellLong(portfolio, sym, shares, price) {
   portfolio.realizedPnL += pnl;
   p.shares -= qty;
   if (p.shares <= 0) delete portfolio.longs[symbol];
-  logTrade(portfolio, { action: 'SELL', sym: symbol, shares: qty, price: px, side: 'long', pnl });
-  return { ok: true, pnl };
+  logTrade(portfolio, {
+    action: 'SELL',
+    sym: symbol,
+    shares: qty,
+    price: px,
+    side: 'long',
+    pnl,
+    exitReason,
+  });
+  recordVoluntaryRedExit(portfolio, symbol, day, exitReason, pnl);
+  maybeRecordPatienceWin(portfolio, { exitReason, pnl, worstUnrealizedPct, sym: symbol });
+  return { ok: true, pnl, exitReason };
 }
 
 /**
@@ -326,8 +371,11 @@ export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {
   }
   const margin = qty * px * CONFIG.MARGIN_REQUIREMENT;
   if (getAvailableForShort(portfolio) < margin) return { ok: false, msg: 'Insufficient margin' };
+  const wasNew = !portfolio.shorts[symbol];
+  const equityBefore = wasNew ? Math.max(0, getEquity(portfolio)) : 0;
   portfolio.cash -= margin;
   const day = getDayCount();
+  maybeMarkChased(portfolio, symbol, day);
   const p = portfolio.shorts[symbol] || { shares: 0, avgPrice: 0, marginHeld: 0, openedDay: day };
   // Weighted open day for adds
   if (p.shares > 0 && p.openedDay != null) {
@@ -338,6 +386,10 @@ export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {
   p.avgPrice = (p.avgPrice * p.shares + px * qty) / (p.shares + qty);
   p.shares += qty;
   p.marginHeld += margin;
+  // Snapshot once at first open — leave undefined on adds / legacy shorts
+  if (wasNew && equityBefore > 0 && p.notionalPctAtEntry == null) {
+    p.notionalPctAtEntry = (qty * px) / equityBefore;
+  }
   // Adding to a short re-averages — clear the "avg kept" badge
   if (p.priceCorrectedAck) delete p.priceCorrectedAck;
   if (risk.stopLoss) p.stopLoss = risk.stopLoss;
@@ -351,7 +403,7 @@ export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {
  * Cover settles PnL + releases margin (no full repurchase debit —
  * proceeds were never credited to cash).
  */
-export function coverShort(portfolio, sym, shares, price) {
+export function coverShort(portfolio, sym, shares, price, opts = {}) {
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
   const symbol = normalizeSymbol(sym);
@@ -359,6 +411,8 @@ export function coverShort(portfolio, sym, shares, price) {
   // Covers allowed during circuit halt (risk reduction)
   const p = portfolio.shorts[symbol];
   if (!p || p.shares < qty) return { ok: false, msg: 'No short position' };
+  const exitReason = normalizeExitReason(opts?.exitReason);
+  const worstUnrealizedPct = p.worstUnrealizedPct;
   const pnl = (p.avgPrice - px) * qty;
   const commission = CONFIG.COMMISSION;
   const marginHeld = Number(p.marginHeld) || 0;
@@ -369,13 +423,25 @@ export function coverShort(portfolio, sym, shares, price) {
   }
   portfolio.cash += cashDelta;
   portfolio.realizedPnL += pnl - commission;
-  const openedDay = p.openedDay ?? getDayCount();
-  accrueTaxablePnL(portfolio, pnl - commission, { openedDay, sellDay: getDayCount() });
+  const day = getDayCount();
+  const openedDay = p.openedDay ?? day;
+  const netPnl = pnl - commission;
+  accrueTaxablePnL(portfolio, netPnl, { openedDay, sellDay: day });
   p.shares -= qty;
   p.marginHeld -= marginRelease;
   if (p.shares <= 0) delete portfolio.shorts[symbol];
-  logTrade(portfolio, { action: 'COVER', sym: symbol, shares: qty, price: px, side: 'short', pnl: pnl - commission });
-  return { ok: true, pnl: pnl - commission };
+  logTrade(portfolio, {
+    action: 'COVER',
+    sym: symbol,
+    shares: qty,
+    price: px,
+    side: 'short',
+    pnl: netPnl,
+    exitReason,
+  });
+  recordVoluntaryRedExit(portfolio, symbol, day, exitReason, netPnl);
+  maybeRecordPatienceWin(portfolio, { exitReason, pnl: netPnl, worstUnrealizedPct, sym: symbol });
+  return { ok: true, pnl: netPnl, exitReason };
 }
 
 export function buyOption(portfolio, opt, hasOptionsPerk) {

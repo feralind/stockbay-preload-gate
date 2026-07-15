@@ -259,6 +259,7 @@ export function applyGmSkipCoaches(state) {
   m.marginCallCoachShown = true;
   m.circuitHaltCoachShown = true;
   m.simStatusCoachShown = true;
+  m.graduationCoachShown = true;
   m.blackMarketLegendCoachShown = true;
   m.perkCalloutsShown = Object.fromEntries(Object.keys(PERKS).map((id) => [id, true]));
 }

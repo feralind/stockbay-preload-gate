@@ -4464,6 +4464,10 @@ body.is-resizing-right * { cursor: col-resize !important; }
   color: var(--orange); border-color: color-mix(in srgb, var(--orange) 35%, var(--border));
   background: color-mix(in srgb, var(--orange) 10%, var(--bg3));
 }
+.eod-chip.process {
+  color: var(--blue); border-color: color-mix(in srgb, var(--blue) 35%, var(--border));
+  background: color-mix(in srgb, var(--blue) 10%, var(--bg3));
+}
 .eod-cta {
   display: block; width: calc(100% - 44px); margin: 16px 22px 22px;
   padding: 13px 16px; border-radius: 12px; font-size: 14px; font-weight: 700;
@@ -5034,9 +5038,160 @@ body.is-resizing-right * { cursor: col-resize !important; }
 }
 .roster-row {
   display: flex; gap: 12px; align-items: center;
-  background: var(--bg3); border: 1px solid var(--border);
+  background: var(--glass-bg); border: 1px solid var(--glass-stroke);
   border-left: 3px solid var(--role-color, var(--accent));
   border-radius: 14px; padding: 12px 14px;
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-blur-sm);
+  -webkit-backdrop-filter: var(--glass-blur-sm);
+}
+.roster-row-btn {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.roster-row-btn:hover {
+  border-color: color-mix(in srgb, var(--role-color, var(--accent)) 45%, var(--glass-stroke));
+  background: color-mix(in srgb, var(--role-color, var(--accent)) 8%, var(--glass-bg));
+}
+.roster-row-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 2px;
+}
+.roster-open-hint {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted); margin-top: 4px;
+}
+.hr-tr-open { cursor: pointer; }
+.hr-tr-open:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+.staff-roster-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.staff-roster-profile.hidden,
+.staff-roster-profile[hidden] { display: none !important; }
+#staff-roster-list-wrap.hidden,
+#staff-roster-list-wrap[hidden] { display: none !important; }
+.staff-roster-profile-enter {
+  animation: staffProfileIn 0.28s ease;
+}
+@keyframes staffProfileIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.staff-dossier-top {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+.staff-dossier-top-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--muted);
+}
+
+/* Employee dossier (roster click) */
+.staff-dossier-overlay .staff-dossier-modal {
+  width: min(720px, 94vw);
+  max-height: min(88vh, 860px);
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-stroke);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+}
+.staff-dossier-body {
+  overflow: auto;
+  padding: 4px 2px 8px;
+}
+.staff-dossier { display: flex; flex-direction: column; gap: 12px; }
+.staff-dossier-grid {
+  display: grid;
+  grid-template-columns: 1.15fr 0.85fr;
+  gap: 12px;
+  align-items: stretch;
+}
+.staff-dossier-profile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: 10px 14px;
+  --hr-glow: var(--role-color, #58a6ff);
+}
+.staff-dossier-avatar {
+  width: 64px; height: 64px; border-radius: 16px;
+  display: grid; place-items: center;
+  font-size: 18px; font-weight: 800; color: #0b1220;
+  letter-spacing: 0.02em;
+  grid-row: 1 / 2;
+}
+.staff-dossier-id { min-width: 0; }
+.staff-dossier-name { font-size: 20px; letter-spacing: -0.03em; display: block; }
+.staff-dossier-title { font-size: 13px; color: var(--muted); margin: 2px 0 8px; }
+.staff-dossier-meta-line {
+  display: flex; gap: 10px; justify-content: space-between;
+  font-size: 12px; margin-top: 4px;
+}
+.staff-dossier-meta-line span { color: var(--muted); }
+.staff-dossier-meta-line em { font-style: normal; font-variant-numeric: tabular-nums; }
+.staff-dossier-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.staff-dossier-metrics {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.staff-metric {
+  border-radius: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-stroke-soft);
+  background: color-mix(in srgb, #fff 4%, transparent);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.staff-metric em { font-style: normal; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.staff-metric strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.staff-metric-pay { background: color-mix(in srgb, #ec4899 14%, transparent); border-color: color-mix(in srgb, #ec4899 28%, var(--glass-stroke)); }
+.staff-metric-pnl { background: color-mix(in srgb, #22c55e 12%, transparent); border-color: color-mix(in srgb, #22c55e 28%, var(--glass-stroke)); }
+.staff-metric-win { background: color-mix(in srgb, #3b82f6 12%, transparent); border-color: color-mix(in srgb, #3b82f6 28%, var(--glass-stroke)); }
+.staff-metric-size { background: color-mix(in srgb, #f59e0b 12%, transparent); border-color: color-mix(in srgb, #f59e0b 28%, var(--glass-stroke)); }
+
+.staff-dossier-activity { --hr-glow: #22c55e; align-items: center; }
+.hr-gauge {
+  position: relative;
+  width: min(100%, 220px);
+  margin: 4px auto 0;
+}
+.hr-gauge-svg { width: 100%; height: auto; display: block; }
+.hr-gauge-track { stroke: color-mix(in srgb, #fff 10%, transparent); }
+.hr-gauge-fill { stroke: color-mix(in srgb, #4ade80 70%, #22c55e); transition: stroke-dasharray 0.35s ease; }
+.hr-gauge-center {
+  position: absolute; left: 50%; bottom: 6px; transform: translateX(-50%);
+  text-align: center; line-height: 1.15;
+}
+.hr-gauge-center strong {
+  display: block; font-size: 28px; font-weight: 800; letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.hr-gauge-center span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.hr-gauge-center em { display: block; margin-top: 4px; font-style: normal; font-size: 11px; color: var(--muted); }
+
+.staff-dossier-log { --hr-glow: #8b5cf6; }
+.staff-dossier-log-list {
+  max-height: 220px; overflow: auto;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.staff-dossier-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end;
+}
+
+@media (max-width: 760px) {
+  .staff-dossier-grid { grid-template-columns: 1fr; }
+  .staff-dossier-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .roster-icon { font-size: 26px; width: 36px; text-align: center; }
 .roster-main { flex: 1; min-width: 0; }

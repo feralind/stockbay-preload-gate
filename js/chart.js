@@ -1,12 +1,13 @@
 // @ts-check
 /**
- * Trade chart — clean broker-style Apache ECharts candlesticks.
+ * Trade chart â€” clean broker-style Apache ECharts candlesticks.
  * Public API kept stable for app.js / chart-panel / quality tests.
  */
 import {
   syncQuoteToPrice, shouldRejectLiveCandleTick, LIVE_CANDLE_MAX_JUMP_PCT,
   candleBarVolFraction, isSimulationMode, getCachedQuote,
 } from './api.js';
+import { getMarketTime } from './market.js';
 
 /** @type {any} */
 let chart = null;
@@ -22,17 +23,23 @@ let lastBars = [];
 let lastCandle = null;
 let lastLiveUpdateAt = 0;
 let userZoomed = false;
+let lastUserZoom = { start: 0, end: 100 };
 /** @type {'candle' | 'wave'} */
 let chartStyle = 'candle';
 let showMa = true;
 let showSr = false;
 let fitRetryTimer = null;
 let fitRaf = 0;
+let pendingPaint = false;
+let pendingPaintResetZoom = true;
 
 const LIVE_UPDATE_MS = 100;
 const LIVE_MAX_JUMP_PCT = LIVE_CANDLE_MAX_JUMP_PCT;
 const MIN_VISIBLE_BARS = 40;
-const MAX_VISIBLE_BARS = 110;
+const MAX_VISIBLE_BARS = 120;
+/** Single-session clock ranges â€” time-only axis labels + tight spear defense. */
+const SESSION_RANGES = new Set(['1D', '1', '5', '15', '60']);
+/** Multi-bar ranges that still use intraday Yahoo intervals (need date+time labels). */
 const INTRADAY_RANGES = new Set(['1D', '5D', '1M', '1', '5', '15', '60']);
 const LONG_RANGES = new Set(['6M', 'YTD', '1Y', '5Y', 'MAX', 'D']);
 const CHART_STYLE_KEY = 'stockway_chart_style_v1';
@@ -104,11 +111,17 @@ export function clampBarToPeers(bar, peerRange, mid) {
 }
 
 /**
- * Broker-style Y window: pad the real session range.
- * Last-bar spears are ignored for high/low; last close is soft-pinned.
+ * Broker-style Y window for the bars in view.
+ * - Always keep the last close on-screen (live HUD tape).
+ * - 1D: ignore forming-bar spear high/low so one bad wick doesn't own the pane.
+ * - Multi-day / long: fit real H/L â€” never re-center with a hard maxSpan that clips ATH.
  */
 export function computePriceAxisRange(bars, range = '1D') {
   if (!Array.isArray(bars) || !bars.length) return null;
+  const key = String(range || '1D').toUpperCase();
+  const session = isSessionRange(key);
+  const longRange = LONG_RANGES.has(key);
+
   const completed = bars.length > 1 ? bars.slice(0, -1) : bars;
   const highs = completed.map((b) => Number(b.high)).filter((v) => Number.isFinite(v) && v > 0);
   const lows = completed.map((b) => Number(b.low)).filter((v) => Number.isFinite(v) && v > 0);
@@ -118,26 +131,41 @@ export function computePriceAxisRange(bars, range = '1D') {
   const sortedLow = [...lows].sort((a, b) => a - b);
   const pick = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * p)))];
 
-  // Light winsorize so one bad completed wick doesn't own the pane
-  let minV = pick(sortedLow, completed.length >= 16 ? 0.05 : 0);
-  let maxV = pick(sortedHigh, completed.length >= 16 ? 0.95 : 1);
-  const sessionMid = (minV + maxV) / 2 || 1;
+  let minV;
+  let maxV;
+  if (session && completed.length >= 16) {
+    minV = pick(sortedLow, 0.05);
+    maxV = pick(sortedHigh, 0.95);
+  } else if (longRange && completed.length >= 40) {
+    minV = pick(sortedLow, 0.01);
+    maxV = pick(sortedHigh, 0.99);
+  } else {
+    minV = sortedLow[0];
+    maxV = sortedHigh[sortedHigh.length - 1];
+  }
 
-  const lastClose = Number(bars[bars.length - 1]?.close) || 0;
+  const sessionMid = (minV + maxV) / 2 || 1;
+  const last = bars[bars.length - 1];
+  const lastClose = Number(last?.close) || 0;
+
+  // Live close is the HUD quote â€” must stay visible or the chart looks "displaced" over time.
   if (lastClose > 0) {
-    const soft = Math.max((maxV - minV) * 0.15, sessionMid * 0.002);
-    const pinned = Math.min(maxV + soft, Math.max(minV - soft, lastClose));
-    minV = Math.min(minV, pinned);
-    maxV = Math.max(maxV, pinned);
+    minV = Math.min(minV, lastClose);
+    maxV = Math.max(maxV, lastClose);
+  }
+
+  // Non-session: also include last bar H/L. Session: ignore spear wicks on the forming bar.
+  if (!session && last) {
+    const lastHigh = Number(last.high);
+    const lastLow = Number(last.low);
+    if (Number.isFinite(lastHigh) && lastHigh > 0) maxV = Math.max(maxV, lastHigh);
+    if (Number.isFinite(lastLow) && lastLow > 0) minV = Math.min(minV, lastLow);
   }
 
   const mid = (minV + maxV) / 2 || sessionMid;
   let span = Math.max(maxV - minV, mid * 0.001);
-  const key = String(range || '1D').toUpperCase();
-  const intraday = isIntradayRange(key);
 
-  // Quiet day floor — enough air that normal bars don't look gigantic
-  const minSpan = mid * (intraday ? 0.018 : LONG_RANGES.has(key) ? 0.08 : 0.03);
+  const minSpan = mid * (session ? 0.018 : longRange ? 0.06 : 0.028);
   if (span < minSpan) {
     const extra = (minSpan - span) / 2;
     minV -= extra;
@@ -145,14 +173,21 @@ export function computePriceAxisRange(bars, range = '1D') {
     span = maxV - minV;
   }
 
-  // Hard ceiling only for absurd leftover outliers
-  const maxSpan = mid * (intraday ? 0.06 : LONG_RANGES.has(key) ? 0.6 : 0.22);
-  if (span > maxSpan) {
-    minV = mid - maxSpan / 2;
-    maxV = mid + maxSpan / 2;
+  // Session only: tame absurd leftover completed-bar outliers, then re-pin last close.
+  if (session) {
+    const maxSpan = mid * 0.12;
+    if (span > maxSpan) {
+      minV = mid - maxSpan / 2;
+      maxV = mid + maxSpan / 2;
+    }
+    if (lastClose > 0) {
+      minV = Math.min(minV, lastClose);
+      maxV = Math.max(maxV, lastClose);
+    }
   }
 
-  const pad = Math.max((maxV - minV) * 0.1, mid * 0.002);
+  const padRatio = session ? 0.12 : longRange ? 0.1 : 0.12;
+  const pad = Math.max((maxV - minV) * padRatio, mid * 0.003);
   return {
     min: Math.max(0.01, minV - pad),
     max: maxV + pad,
@@ -174,17 +209,16 @@ function sanitizeLastBarInPlace() {
   }
 }
 
+/**
+ * Live forming bar must track the HUD quote. Cap absurd wicks, but never move close off `price`.
+ */
 export function applyLiveCandleTick(bar, price, maxRangePct) {
   if (!bar) return null;
   const px = Number(price);
   if (!(px > 0)) return null;
   let open = Number(bar.open);
   if (!(open > 0)) open = px;
-  const mid = (open + px) / 2 || px;
-  const cap = mid * (Number(maxRangePct) > 0 ? maxRangePct : 0.02);
-  if (Math.abs(px - open) > cap) {
-    open = px - Math.sign(px - open || 1) * cap * 0.9;
-  }
+  // Keep the bar's session open â€” rewriting open made candles fight the tape.
   const next = {
     time: bar.time,
     open,
@@ -192,6 +226,9 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
     high: Math.max(Number(bar.high) || px, open, px),
     low: Math.min(Number(bar.low) || px, open, px),
   };
+  const mid = (open + px) / 2 || px;
+  const cap = mid * Math.max(0.006, Number(maxRangePct) > 0 ? Number(maxRangePct) : 0.02);
+  // Keep wicks tight to the body so a long sit doesn't grow a monster spear candle.
   if (next.high - next.low > cap) {
     const bodyHigh = Math.max(open, px);
     const bodyLow = Math.min(open, px);
@@ -199,8 +236,76 @@ export function applyLiveCandleTick(bar, price, maxRangePct) {
     const room = Math.max(0, cap - bodySpan);
     next.high = bodyHigh + room * 0.55;
     next.low = Math.max(0.01, bodyLow - room * 0.45);
+    next.high = Math.max(next.high, open, px);
+    next.low = Math.min(next.low, open, px);
   }
   return next;
+}
+
+/** After wick hygiene, force last close back to the live quote (HUD â†” candle lock). */
+function pinLastBarClose(price) {
+  const px = Number(price);
+  if (!(px > 0) || !lastBars.length) return;
+  const i = lastBars.length - 1;
+  const bar = lastBars[i];
+  const open = Number(bar.open) > 0 ? Number(bar.open) : px;
+  const high = Math.max(Number(bar.high) || px, open, px);
+  const low = Math.min(Number(bar.low) || px, open, px);
+  lastBars[i] = { ...bar, open, high, low, close: px };
+  if (lastCandle) {
+    lastCandle.open = open;
+    lastCandle.high = high;
+    lastCandle.low = low;
+    lastCandle.close = px;
+  }
+}
+
+/**
+ * Advance the forming bar when game-clock crosses the next 5m/15m/60m bucket.
+ * Without this, hours of sim drift get smashed into one candle and the pane looks wrecked.
+ * @returns {boolean} true when a new bar was appended
+ */
+export function maybeRollFormingBar(price) {
+  const px = Number(price);
+  if (!(px > 0)) return false;
+  const key = String(lastRange || '1D').toUpperCase();
+  // Only roll intraday buckets â€” daily+ history is refreshed via loadChart / TF change.
+  if (!INTRADAY_RANGES.has(key)) return false;
+
+  const bucketSec = Math.max(60, rangeBarMinutes(key) * 60);
+  let ts;
+  try {
+    ts = Math.floor(getMarketTime().getTime() / 1000);
+  } catch {
+    ts = Math.floor(Date.now() / 1000);
+  }
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const bucketStart = Math.floor(ts / bucketSec) * bucketSec;
+
+  if (!lastBars.length) {
+    lastBars = [{ time: bucketStart, open: px, high: px, low: px, close: px, volume: 0 }];
+    lastBarCount = 1;
+    lastCandle = { ...lastBars[0] };
+    return true;
+  }
+
+  const last = lastBars[lastBars.length - 1];
+  const lastT = Number(last.time) || 0;
+  if (bucketStart <= lastT) return false;
+
+  lastBars.push({
+    time: bucketStart,
+    open: px,
+    high: px,
+    low: px,
+    close: px,
+    volume: 0,
+  });
+  const maxKeep = key === '1D' ? 130 : key === '5D' ? 220 : 200;
+  if (lastBars.length > maxKeep) lastBars = lastBars.slice(-maxKeep);
+  lastBarCount = lastBars.length;
+  lastCandle = { ...lastBars[lastBarCount - 1] };
+  return true;
 }
 
 export function sanitizeOhlcBar(open, high, low, close, maxRangePct = 0.08) {
@@ -322,6 +427,10 @@ function getCss(name) {
   }
 }
 
+function isSessionRange(range) {
+  return SESSION_RANGES.has(String(range || '1D').toUpperCase());
+}
+
 function isIntradayRange(range) {
   return INTRADAY_RANGES.has(String(range || '1D').toUpperCase());
 }
@@ -339,13 +448,23 @@ function theme() {
   };
 }
 
-function formatAxisLabel(ts, intraday) {
+function formatAxisLabel(ts, range = lastRange) {
   const d = new Date(Number(ts) * 1000);
   if (!Number.isFinite(d.getTime())) return '';
-  if (intraday) {
+  const key = String(range || '1D').toUpperCase();
+  if (isSessionRange(key)) {
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   }
-  if (lastRange === 'MAX' || lastRange === '5Y') {
+  // 5D / 1M: date + time so day boundaries don't look like the clock jumped backward
+  if (key === '5D' || key === '1M') {
+    return d.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+  if (key === 'MAX' || key === '5Y') {
     return d.toLocaleDateString([], { month: 'short', year: '2-digit' });
   }
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
@@ -353,7 +472,7 @@ function formatAxisLabel(ts, intraday) {
 
 function formatPrice(v) {
   const n = Number(v);
-  if (!Number.isFinite(n)) return '—';
+  if (!Number.isFinite(n)) return 'â€”';
   if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   if (Math.abs(n) >= 100) return n.toFixed(2);
   if (Math.abs(n) >= 1) return n.toFixed(3);
@@ -398,28 +517,160 @@ function calcMA(data, period) {
 
 function targetVisibleBars() {
   const width = chartHost?.clientWidth || 400;
-  const byWidth = Math.floor(width / 8);
+  const byWidth = Math.floor(width / 7);
   const base = Math.min(MAX_VISIBLE_BARS, Math.max(MIN_VISIBLE_BARS, byWidth || MIN_VISIBLE_BARS));
-  if (lastRange === 'MAX') return Math.min(64, Math.max(40, Math.floor(base * 0.7)));
-  if (lastRange === '5Y') return Math.min(90, Math.max(48, base));
+  // Long history: show more of the recent window so candles aren't a single-pixel scribble
+  if (lastRange === 'MAX') return Math.min(96, Math.max(48, Math.floor(base * 0.85)));
+  if (lastRange === '5Y') return Math.min(110, Math.max(56, base));
+  if (lastRange === '1Y' || lastRange === '6M' || lastRange === 'YTD') {
+    return Math.min(MAX_VISIBLE_BARS, Math.max(64, base));
+  }
   return base;
 }
 
 function defaultDataZoom() {
   const n = lastBarCount;
-  const shared = { xAxisIndex: [0, 1], filterMode: 'filter' };
+  const shared = {
+    xAxisIndex: [0, 1],
+    filterMode: 'none',
+    zoomLock: false,
+    preventDefaultMouseMove: false,
+  };
   if (n <= 0) {
     return [
-      { type: 'inside', ...shared, start: 0, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
-      { type: 'slider', ...shared, show: false, start: 0, end: 100 },
+      {
+        type: 'inside',
+        ...shared,
+        start: 0,
+        end: 100,
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true,
+        moveOnMouseWheel: false,
+      },
+      { type: 'slider', ...shared, show: true, height: 18, bottom: 4, start: 0, end: 100 },
     ];
   }
   const want = targetVisibleBars();
   const start = n <= want ? 0 : Math.max(0, ((n - want) / n) * 100);
   return [
-    { type: 'inside', ...shared, start, end: 100, zoomOnMouseWheel: true, moveOnMouseMove: true },
-    { type: 'slider', ...shared, show: false, start, end: 100 },
+    {
+      type: 'inside',
+      ...shared,
+      start,
+      end: 100,
+      zoomOnMouseWheel: true,
+      moveOnMouseMove: true,
+      moveOnMouseWheel: false,
+    },
+    {
+      type: 'slider',
+      ...shared,
+      show: true,
+      height: 18,
+      bottom: 4,
+      start,
+      end: 100,
+      brushSelect: false,
+    },
   ];
+}
+
+/** Bars in the current (or default) zoom window — Y-axis must fit these, not all history. */
+export function sliceBarsForAxis(bars, startPct = 0, endPct = 100) {
+  if (!Array.isArray(bars) || !bars.length) return [];
+  const n = bars.length;
+  const lo = Math.min(100, Math.max(0, Number(startPct) || 0));
+  const hi = Math.min(100, Math.max(lo, Number(endPct) || 100));
+  const i0 = Math.max(0, Math.floor((lo / 100) * n));
+  const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((hi / 100) * n)));
+  return bars.slice(i0, i1);
+}
+
+function zoomNum(v, fallback = 0) {
+  if (Array.isArray(v)) v = v[0];
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function readZoomPercents() {
+  if (!userZoomed) {
+    const dz = defaultDataZoom()[0];
+    return { start: zoomNum(dz.start, 0), end: zoomNum(dz.end, 100) };
+  }
+  try {
+    const opt = chart?.getOption?.();
+    const dz = opt?.dataZoom?.[0];
+    const start = zoomNum(dz?.start, NaN);
+    const end = zoomNum(dz?.end, NaN);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      lastUserZoom = { start, end };
+      return { start, end };
+    }
+  } catch { /* ignore */ }
+  return { start: lastUserZoom.start, end: lastUserZoom.end };
+}
+
+function axisRangeForPercents(startPct, endPct) {
+  const slice = sliceBarsForAxis(lastBars, startPct, endPct);
+  return computePriceAxisRange(slice.length ? slice : lastBars, lastRange);
+}
+
+function axisRangeForView() {
+  const { start, end } = readZoomPercents();
+  return axisRangeForPercents(start, end);
+}
+
+/** Apply a zoom window and re-fit price (+ volume) to the visible bars in one paint. */
+function applyViewWindow(startPct, endPct, { markUserZoom = true, updateDataZoom = true } = {}) {
+  if (!chart || !lastBars.length) return;
+  let nextStart = Math.max(0, Math.min(100, Number(startPct) || 0));
+  let nextEnd = Math.max(0, Math.min(100, Number(endPct) || 100));
+  if (nextEnd - nextStart < 2) {
+    const mid = (nextStart + nextEnd) / 2;
+    nextStart = Math.max(0, mid - 1);
+    nextEnd = Math.min(100, mid + 1);
+  }
+  if (markUserZoom) userZoomed = true;
+
+  const axis = axisRangeForPercents(nextStart, nextEnd);
+  const slice = sliceBarsForAxis(lastBars, nextStart, nextEnd);
+  let volMax = 0;
+  for (const b of slice) volMax = Math.max(volMax, Number(b.volume) || 0);
+
+  if (markUserZoom || updateDataZoom) {
+    lastUserZoom = { start: nextStart, end: nextEnd };
+  }
+
+  const opt = {
+    yAxis: [
+      {
+        min: axis?.min,
+        max: axis?.max,
+        scale: true,
+      },
+      {
+        min: 0,
+        max: volMax > 0 ? volMax * 1.2 : undefined,
+        scale: false,
+      },
+    ],
+  };
+  if (updateDataZoom) {
+    opt.dataZoom = [
+      { start: nextStart, end: nextEnd },
+      { start: nextStart, end: nextEnd },
+    ];
+  }
+
+  try {
+    chart.setOption(opt);
+  } catch { /* ignore */ }
+}
+
+function syncPriceAxisFromView() {
+  if (!chart || !lastBars.length) return;
+  const { start, end } = readZoomPercents();
+  applyViewWindow(start, end, { markUserZoom: userZoomed });
 }
 
 function buildTooltipHtml(barIndex) {
@@ -431,7 +682,7 @@ function buildTooltipHtml(barIndex) {
   const chg = bar.open > 0 ? ((bar.close - bar.open) / bar.open) * 100 : 0;
   const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
   const when = formatTooltipTime(bar.time, isIntradayRange(lastRange));
-  const sym = String(currentSym || '').toUpperCase() || '—';
+  const sym = String(currentSym || '').toUpperCase() || 'â€”';
   return `
     <div style="min-width:128px;max-width:160px;line-height:1.35">
       <div style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${t.muted};margin-bottom:3px">${sym}</div>
@@ -447,18 +698,17 @@ function buildTooltipHtml(barIndex) {
     </div>`;
 }
 
-/** ECharts candle datum: [open, close, low, high] — raw sanitized OHLC, no visual smash. */
+/** ECharts candle datum: [open, close, low, high] â€” raw sanitized OHLC, no visual smash. */
 function toOhlc(bars) {
   return bars.map((b) => [b.open, b.close, b.low, b.high]);
 }
 
 function buildOption() {
   const t = theme();
-  const intraday = isIntradayRange(lastRange);
   const isWave = chartStyle === 'wave';
   // Index categories stay unique; clock labels are formatting only.
   const cats = lastBars.map((_, i) => String(i));
-  const axis = computePriceAxisRange(lastBars, lastRange);
+  const axis = axisRangeForView();
   const ohlc = toOhlc(lastBars);
   const closes = lastBars.map((b) => b.close);
   const vols = lastBars.map((b) => ({
@@ -492,10 +742,39 @@ function buildOption() {
     }
   }
 
-  const zoom = userZoomed ? undefined : defaultDataZoom();
+  // Preserve the user's slider/window on repaints; only reset when paint(true).
+  let zoomOpt;
+  if (userZoomed) {
+    const { start, end } = readZoomPercents();
+    zoomOpt = [
+      {
+        type: 'inside',
+        xAxisIndex: [0, 1],
+        filterMode: 'none',
+        start,
+        end,
+        zoomOnMouseWheel: true,
+        moveOnMouseMove: true,
+        moveOnMouseWheel: false,
+      },
+      {
+        type: 'slider',
+        xAxisIndex: [0, 1],
+        filterMode: 'none',
+        show: true,
+        height: 18,
+        bottom: 4,
+        start,
+        end,
+        brushSelect: false,
+      },
+    ];
+  } else {
+    zoomOpt = defaultDataZoom();
+  }
   const labelFmt = (value) => {
     const bar = lastBars[Number(value)];
-    return bar ? formatAxisLabel(bar.time, intraday) : '';
+    return bar ? formatAxisLabel(bar.time, lastRange) : '';
   };
 
   return {
@@ -544,8 +823,8 @@ function buildOption() {
     },
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     grid: [
-      { left: 8, right: 58, top: 12, bottom: '24%', containLabel: false },
-      { left: 8, right: 58, top: '80%', bottom: 26, containLabel: false },
+      { left: 8, right: 58, top: 12, bottom: '28%', containLabel: false },
+      { left: 8, right: 58, top: '80%', bottom: 36, containLabel: false },
     ],
     xAxis: [
       {
@@ -604,7 +883,7 @@ function buildOption() {
         splitLine: { show: false },
       },
     ],
-    dataZoom: zoom || defaultDataZoom(),
+    dataZoom: zoomOpt,
     series: [
       {
         id: 'candles',
@@ -678,14 +957,45 @@ function buildOption() {
   };
 }
 
-function paint(resetZoom = true) {
-  if (!chart || !lastBars.length) return;
+/** True once the host box has a real, laid-out size we can trust for bar-count / axis math. */
+function hostHasRealSize() {
+  return !!chartHost && chartHost.clientWidth > 8 && chartHost.clientHeight > 8;
+}
+
+function paintNow(resetZoom) {
   if (resetZoom) userZoomed = false;
   try {
     chart.setOption(buildOption(), { notMerge: true });
   } catch (err) {
     console.warn('chart paint failed', err);
   }
+}
+
+function paint(resetZoom = true) {
+  if (!chart || !lastBars.length) return;
+  if (!hostHasRealSize()) {
+    // Container is display:none (e.g. Trade tab not open yet) or not laid out.
+    // Painting now would compute bar count / Y-axis range off a guessed width
+    // and visibly "snap" once the real size shows up â€” so wait for it instead.
+    pendingPaint = true;
+    pendingPaintResetZoom = resetZoom;
+    return;
+  }
+  pendingPaint = false;
+  paintNow(resetZoom);
+}
+
+/** Run a deferred paint now that the host has a real size. Returns true if it painted. */
+function flushPendingPaint() {
+  if (!pendingPaint || !chart || !lastBars.length) return false;
+  if (!hostHasRealSize()) return false;
+  pendingPaint = false;
+  try {
+    const size = hostSize();
+    chart.resize({ width: size.w, height: size.h });
+  } catch { /* ignore */ }
+  paintNow(pendingPaintResetZoom);
+  return true;
 }
 
 export async function waitForChartLib(maxMs = 10000) {
@@ -740,7 +1050,18 @@ function rebuildChart(container) {
     height: h,
   });
 
-  chart.on('datazoom', () => { userZoomed = true; });
+  chart.on('datazoom', (evt) => {
+    userZoomed = true;
+    const batch = Array.isArray(evt?.batch) && evt.batch[0] ? evt.batch[0] : evt;
+    const start = zoomNum(batch?.start, NaN);
+    const end = zoomNum(batch?.end, NaN);
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      applyViewWindow(start, end, { markUserZoom: true, updateDataZoom: false });
+    } else {
+      const z = readZoomPercents();
+      applyViewWindow(z.start, z.end, { markUserZoom: true, updateDataZoom: false });
+    }
+  });
 
   resizeObserver = new ResizeObserver(() => {
     if (!chart || !chartHost) return;
@@ -748,6 +1069,11 @@ function rebuildChart(container) {
     try {
       const size = hostSize();
       chart.resize({ width: size.w, height: size.h });
+    } catch { /* ignore */ }
+    // Container just went from hidden/0-size to a real size — paint against real dims.
+    if (flushPendingPaint()) return;
+    try {
+      if (!userZoomed) fitChartToData();
     } catch { /* ignore */ }
   });
   resizeObserver.observe(container);
@@ -759,7 +1085,7 @@ export async function initChart(container) {
   if (!container) return false;
   const ok = await waitForChartLib();
   if (!ok) {
-    container.innerHTML = '<div class="chart-error">Chart library loading… refresh if this persists.</div>';
+    container.innerHTML = '<div class="chart-error">Chart library loadingâ€¦ refresh if this persists.</div>';
     return false;
   }
   rebuildChart(container);
@@ -775,6 +1101,12 @@ export function setChartStyle(style) {
   const next = style === 'wave' ? 'wave' : 'candle';
   chartStyle = next;
   try { localStorage.setItem(CHART_STYLE_KEY, next); } catch { /* ignore */ }
+  try {
+    document.querySelectorAll('.chart-style-btn').forEach((btn) => {
+      const want = btn.getAttribute('data-chart-style') === 'wave' ? 'wave' : 'candle';
+      btn.classList.toggle('active', want === next);
+    });
+  } catch { /* ignore */ }
   paint(false);
 }
 
@@ -783,10 +1115,12 @@ export function scheduleFitChart() {
   if (fitRaf) cancelAnimationFrame(fitRaf);
   fitRaf = requestAnimationFrame(() => {
     fitRaf = 0;
+    if (flushPendingPaint()) return;
     resizeChart();
     if (!userZoomed) fitChartToData();
     fitRetryTimer = setTimeout(() => {
       fitRetryTimer = null;
+      if (flushPendingPaint()) return;
       resizeChart();
       if (!userZoomed) fitChartToData();
     }, 120);
@@ -795,24 +1129,25 @@ export function scheduleFitChart() {
 
 export function fitChartToData() {
   if (!chart || lastBarCount <= 0) return;
+  if (flushPendingPaint()) return;
   if (!chartHost || chartHost.clientWidth <= 8) return;
   userZoomed = false;
   try {
-    chart.setOption({ dataZoom: defaultDataZoom() });
+    const dz = defaultDataZoom()[0];
+    applyViewWindow(zoomNum(dz.start, 0), zoomNum(dz.end, 100), { markUserZoom: false });
   } catch { /* ignore */ }
 }
 
 export function zoomChart(direction) {
   if (!chart || lastBarCount <= 0) return;
-  userZoomed = true;
   try {
-    const opt = chart.getOption();
-    const dz = opt?.dataZoom?.[0];
-    const start = Number(dz?.start ?? 0);
-    const end = Number(dz?.end ?? 100);
-    const span = Math.max(5, end - start);
-    const factor = direction > 0 ? 0.82 : 1.22;
-    const newSpan = Math.min(100, Math.max(8, span * factor));
+    const { start, end } = readZoomPercents();
+    const span = Math.max(3, end - start);
+    // Zoom in = smaller window; zoom out = larger window (more history).
+    const factor = direction > 0 ? 0.72 : 1.45;
+    let newSpan = Math.min(100, Math.max(4, span * factor));
+    // One more click past near-full should snap to full history.
+    if (direction < 0 && span >= 70) newSpan = 100;
     const center = (start + end) / 2;
     let nextStart = center - newSpan / 2;
     let nextEnd = center + newSpan / 2;
@@ -824,12 +1159,9 @@ export function zoomChart(direction) {
       nextStart -= (nextEnd - 100);
       nextEnd = 100;
     }
-    chart.setOption({
-      dataZoom: [
-        { start: Math.max(0, nextStart), end: Math.min(100, nextEnd) },
-        { start: Math.max(0, nextStart), end: Math.min(100, nextEnd) },
-      ],
-    });
+    nextStart = Math.max(0, nextStart);
+    nextEnd = Math.min(100, nextEnd);
+    applyViewWindow(nextStart, nextEnd, { markUserZoom: true });
   } catch { /* ignore */ }
 }
 
@@ -860,28 +1192,39 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
   }));
 
   const lastIdx = formatted.length - 1;
-  if (lastIdx >= 0 && currentSym) {
-    const q = getCachedQuote(currentSym);
-    const px = Number(q?.price);
+  const liveQuotePx = currentSym ? Number(getCachedQuote(currentSym)?.price) : 0;
+  if (lastIdx >= 0 && liveQuotePx > 0) {
     const bar = formatted[lastIdx];
-    if (px > 0 && bar?.close > 0 && !shouldRejectLiveCandleTick(bar.close, px)) {
-      const capped = applyLiveCandleTick(bar, px, maxLiveBarRangePct(lastRange));
+    // Prefer pinning the forming bar to the HUD quote. Large gaps rebase via loadChart path.
+    if (bar?.close > 0 && !shouldRejectLiveCandleTick(bar.close, liveQuotePx, 0.12)) {
+      const capped = applyLiveCandleTick(bar, liveQuotePx, maxLiveBarRangePct(lastRange));
       if (capped) {
         formatted[lastIdx] = {
           time: bar.time,
           open: capped.open,
           high: capped.high,
           low: capped.low,
-          close: capped.close,
+          close: liveQuotePx,
           volume: bar.volume || 0,
         };
       }
     }
   }
 
-  if (lastIdx >= 1) {
+  if (lastIdx >= 1 && !(liveQuotePx > 0)) {
+    // Historical hygiene only when we don't have a live quote to pin to
     const mid = Number(formatted[lastIdx - 1]?.close) || Number(formatted[lastIdx]?.close) || 0;
     formatted[lastIdx] = clampBarToPeers(formatted[lastIdx], peerMedianRange(formatted), mid);
+  } else if (lastIdx >= 0 && liveQuotePx > 0) {
+    // Wick trim vs peers is fine â€” close must stay on the quote
+    const mid = Number(formatted[Math.max(0, lastIdx - 1)]?.close) || liveQuotePx;
+    const clamped = clampBarToPeers(formatted[lastIdx], peerMedianRange(formatted), mid);
+    formatted[lastIdx] = {
+      ...clamped,
+      close: liveQuotePx,
+      high: Math.max(clamped.high, clamped.open, liveQuotePx),
+      low: Math.min(clamped.low, clamped.open, liveQuotePx),
+    };
   }
 
   lastBars = formatted;
@@ -901,13 +1244,40 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   const px = Number(price);
   if (!Number.isFinite(px) || px <= 0) return false;
 
+  // New game-time bucket â†’ append a real bar instead of growing one forever.
+  if (maybeRollFormingBar(px)) {
+    lastLiveUpdateAt = Date.now();
+    try {
+      paint(!userZoomed);
+    } catch { return false; }
+    return true;
+  }
+
   const anchor = Number(lastCandle.close);
   if (anchor > 0) {
-    const maxJump = opts.maxJumpPct ?? LIVE_MAX_JUMP_PCT;
+    const maxJump = opts.maxJumpPct ?? (isSimulationMode() ? 0.15 : LIVE_MAX_JUMP_PCT);
     if (shouldRejectLiveCandleTick(anchor, px, maxJump)) {
-      if (!isSimulationMode()) {
-        try { syncQuoteToPrice(want, anchor, { source: 'candle' }); } catch { /* ignore */ }
+      if (isSimulationMode()) {
+        // Sim tape is authoritative â€” snap the forming bar instead of freezing the chart.
+        pinLastBarClose(px);
+        lastLiveUpdateAt = Date.now();
+        // Host not visible/sized yet â€” data above is still updated, just skip the
+        // partial render (a full correct paint runs once the container is shown).
+        if (pendingPaint || !hostHasRealSize()) return true;
+        try {
+          const axis = axisRangeForView();
+          const isWave = chartStyle === 'wave';
+          chart.setOption({
+            yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
+            series: [
+              { id: 'candles', data: isWave ? [] : toOhlc(lastBars) },
+              { id: 'wave', data: isWave ? lastBars.map((b) => b.close) : [] },
+            ],
+          });
+        } catch { return false; }
+        return true;
       }
+      try { syncQuoteToPrice(want, anchor, { source: 'candle' }); } catch { /* ignore */ }
       return false;
     }
   }
@@ -924,7 +1294,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   lastCandle.open = next.open;
   lastCandle.high = next.high;
   lastCandle.low = next.low;
-  lastCandle.close = next.close;
+  lastCandle.close = px;
 
   const i = lastBars.length - 1;
   lastBars[i] = {
@@ -932,12 +1302,16 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
     open: next.open,
     high: next.high,
     low: next.low,
-    close: next.close,
+    close: px,
   };
-  sanitizeLastBarInPlace();
+  // Do NOT peer-clamp close here â€” that was desyncing the chart from the HUD price.
+
+  // Host not visible/sized yet â€” data above is still updated, just skip the
+  // partial render (a full correct paint runs once the container is shown).
+  if (pendingPaint || !hostHasRealSize()) return true;
 
   try {
-    const axis = computePriceAxisRange(lastBars, lastRange);
+    const axis = axisRangeForView();
     const isWave = chartStyle === 'wave';
     chart.setOption({
       yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
