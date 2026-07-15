@@ -419,6 +419,15 @@ export function sanitizeRunData(run) {
     const f = { ...createFinanceState(), ...out.finance };
     f.personalCredit = clamp(Math.floor(Number(f.personalCredit) || 600), 300, 850);
     f.businessCredit = clamp(Math.floor(Number(f.businessCredit) || 630), 300, 850);
+    // Old desks defaulted to personal 680 / business 700 — Series 7 lit green on Day 1.
+    // Virgin files (never borrowed) still holding those exact scores get the thin-file retune.
+    const borrowed = Math.max(0, Number(f.totalBorrowed) || 0);
+    const loans = Array.isArray(f.loans) ? f.loans.length : 0;
+    const virgin = borrowed === 0 && loans === 0 && f.firstCreditDay == null;
+    if (virgin) {
+      if (f.personalCredit === 680) f.personalCredit = 600;
+      if (f.businessCredit === 700) f.businessCredit = 630;
+    }
     const lastLate = Math.floor(Number(f.lastLateDay));
     f.lastLateDay = Number.isFinite(lastLate) && lastLate >= 1 ? lastLate : null;
     if (!Array.isArray(f.loans)) f.loans = [];

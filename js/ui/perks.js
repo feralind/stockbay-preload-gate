@@ -136,9 +136,9 @@ function perksRenderSignature(statusById, isFull, header) {
     const s = statusById[p.id];
     return `${p.id}:${s.owned ? 1 : 0}:${s.canBuy ? 1 : 0}:${s.statusCls}:${s.status}`;
   }).join('|');
-  if (!isFull) return `shop-v3|${board}|${header.licenseKey}`;
+  if (!isFull) return `shop-v4|${board}|${header.licenseKey}`;
   return [
-    'full-v3',
+    'full-v4',
     board,
     header.licenseKey,
     header.ownedCount,
@@ -172,7 +172,7 @@ function licenseBoardHtml(snap) {
         <header class="license-card-head">
           <span class="license-card-tier">Tier ${lic.order + 1}</span>
           <h4 class="license-card-name">${lic.name}</h4>
-          <span class="license-card-status ${stateCls}">${statusLbl}</span>
+          <span class="license-card-status license-badge-chip tier-${id} ${stateCls}">${statusLbl}</span>
         </header>
         <p class="license-card-blurb">${lic.blurb}</p>
         <p class="license-card-unlocks"><strong>Unlocks:</strong> ${lic.unlocks}</p>

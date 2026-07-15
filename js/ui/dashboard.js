@@ -68,6 +68,7 @@ let chartHoverBound = false;
 
 const DASH_TEAL = '#2dd4bf';
 const DASH_GOLD = '#eab308';
+const DASH_ROSE = '#ef6868';
 const INDEX_SYMS = ['SPY', 'QQQ', 'DIA', 'IWM', 'GLD'];
 const RIBBON_FALLBACK = ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'AMZN', 'META', 'AMD', 'SLV', 'USO', 'TLT'];
 
@@ -761,8 +762,8 @@ function paintEquityChart(canvas, geom, hoverIdx = -1) {
 
   ctx.clearRect(0, 0, w, h);
 
-  // Grid
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  // Grid — thin glass lines
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)';
   ctx.lineWidth = 1;
   ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
   ctx.fillStyle = '#71717a';
@@ -790,8 +791,29 @@ function paintEquityChart(canvas, geom, hoverIdx = -1) {
     ctx.stroke();
   }
 
-  // Teal equity
-  ctx.strokeStyle = DASH_TEAL;
+  // Equity path + glass underfill (window polarity: last vs first)
+  const eqUp = pts.length >= 2 ? pts[pts.length - 1] >= pts[0] : true;
+  const fillTop = eqUp ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 104, 104, 0.15)';
+  const fillBot = eqUp ? 'rgba(16, 185, 129, 0)' : 'rgba(239, 104, 104, 0)';
+  const stroke = eqUp ? DASH_TEAL : DASH_ROSE;
+
+  ctx.beginPath();
+  pts.forEach((v, i) => {
+    const x = xAt(i);
+    const y = yAt(v);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(xAt(pts.length - 1), padT + plotH);
+  ctx.lineTo(xAt(0), padT + plotH);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+  grad.addColorStop(0, fillTop);
+  grad.addColorStop(1, fillBot);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.strokeStyle = stroke;
   ctx.lineWidth = 2;
   ctx.beginPath();
   pts.forEach((v, i) => {
@@ -825,7 +847,7 @@ function paintEquityChart(canvas, geom, hoverIdx = -1) {
     ctx.moveTo(x, padT);
     ctx.lineTo(x, padT + plotH);
     ctx.stroke();
-    ctx.fillStyle = DASH_TEAL;
+    ctx.fillStyle = stroke;
     ctx.beginPath();
     ctx.arc(x, y, 3.2, 0, Math.PI * 2);
     ctx.fill();

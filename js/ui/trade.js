@@ -28,7 +28,10 @@ const lastRenderedPrices = new Map();
 let buySuspendClearTimer = null;
 
 const BUY_SUSPEND_TITLE = 'Trading Desk Suspended: 30s cool-down from risk management';
-const BUY_OPEN_CONTROL_IDS = ['btn-buy-long', 'btn-short', 'btn-options', 'btn-quick-short'];
+const BUY_OPEN_CONTROL_IDS = [
+  'btn-buy-long', 'btn-short', 'btn-options',
+  'btn-quick-long', 'btn-quick-short',
+];
 
 /**
  * In-place disable of open-side controls while buySuspendUntilMs is active.

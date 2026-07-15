@@ -24,7 +24,7 @@ import {
   getNetEquity, getFirmNetWorth,
   ensurePendingOrders, ensureOrderTickets,
   markPriceCorrectedNotices,
-  armBuySuspend, shouldArmRevengeCooloff,
+  armBuySuspend, shouldArmRevengeCooloff, isBuySuspended,
 } from './portfolio.js';
 import {
   confirmOrderFlow,
@@ -922,7 +922,7 @@ function maybeArmRevengeCooloff(pnl) {
   armBuySuspend(state.portfolio);
   const first = !teachMomentShown(state.meta, 'firstRevengeCooloff');
   if (first) {
-    fireTeachMoment('firstRevengeCooloff', TEACH_MOMENTS.firstRevengeCooloff.text, 'realized');
+    fireTeachMoment('firstRevengeCooloff', TEACH_MOMENTS.firstRevengeCooloff.text, 'btn-quick-long');
   } else {
     toast('Desk cool-down: new opens locked 30s after a heavy loss', { type: 'warn' });
   }
@@ -2742,6 +2742,18 @@ async function init() {
       return r;
     },
     disableSave: () => { window.__stockwayDisableSave = true; },
+    /** Arm revenge cool-down + first-time coachmark (QA / screenshot). */
+    forceRevengeCooloff: (pnl = -1e9) => {
+      if (state.meta?.teachMomentsShown?.firstRevengeCooloff) {
+        delete state.meta.teachMomentsShown.firstRevengeCooloff;
+      }
+      maybeArmRevengeCooloff(Number(pnl) || -1e9);
+      renderAll(state);
+      return {
+        until: state.portfolio?.buySuspendUntilMs ?? null,
+        suspended: isBuySuspended(state.portfolio),
+      };
+    },
     /** Unlock intern hire path for UI smoke without grinding cash. */
     ensureSmokeStaffUnlock: () => {
       if (!state.perks.includes('scanner')) state.perks.push('scanner');

@@ -165,7 +165,14 @@ export function computePriceAxisRange(bars, range = '1D') {
   const mid = (minV + maxV) / 2 || sessionMid;
   let span = Math.max(maxV - minV, mid * 0.001);
 
-  const minSpan = mid * (session ? 0.018 : longRange ? 0.06 : 0.028);
+  // Floor the Y window so flat / cents-level days don't over-zoom into cliffs.
+  // Prefer live close as baseline; keep prior session/longRange % floors as a lower bound.
+  const baseline = (lastClose > 0 ? lastClose : mid) || 1;
+  const minSpan = Math.max(
+    baseline * 0.025,
+    5.0,
+    mid * (session ? 0.018 : longRange ? 0.06 : 0.028),
+  );
   if (span < minSpan) {
     const extra = (minSpan - span) / 2;
     minV -= extra;
@@ -443,8 +450,51 @@ function theme() {
     border: themeColors?.border || getCss('--glass-stroke') || 'rgba(255,255,255,0.12)',
     blue: themeColors?.blue || getCss('--blue') || '#60a5fa',
     orange: '#f59e0b',
-    grid: themeColors?.chartGrid || getCss('--chart-grid') || 'rgba(148,163,184,0.08)',
+    // Thin glass split lines (not theme.chartGrid — that token is a solid panel bg).
+    grid: 'rgba(255,255,255,0.05)',
     cross: 'rgba(148,163,184,0.35)',
+  };
+}
+
+/** Window polarity for Wave underfill — last close vs first close in view. */
+function waveWindowUp(bars) {
+  if (!Array.isArray(bars) || bars.length < 2) return true;
+  const first = Number(bars[0]?.close);
+  const last = Number(bars[bars.length - 1]?.close);
+  if (!Number.isFinite(first) || !Number.isFinite(last)) return true;
+  return last >= first;
+}
+
+/** Glass area fill under Wave stroke (ECharts linear gradient). */
+function waveAreaStyle(up) {
+  return {
+    color: {
+      type: 'linear',
+      x: 0,
+      y: 0,
+      x2: 0,
+      y2: 1,
+      colorStops: up
+        ? [
+          { offset: 0, color: 'rgba(16, 185, 129, 0.15)' },
+          { offset: 1, color: 'rgba(16, 185, 129, 0.0)' },
+        ]
+        : [
+          { offset: 0, color: 'rgba(239, 104, 104, 0.15)' },
+          { offset: 1, color: 'rgba(239, 104, 104, 0.0)' },
+        ],
+    },
+  };
+}
+
+/** Stroke + underfill for the visible Wave window. */
+function wavePaintStyle(bars, startPct = 0, endPct = 100) {
+  const t = theme();
+  const slice = sliceBarsForAxis(bars, startPct, endPct);
+  const up = waveWindowUp(slice.length ? slice : bars);
+  return {
+    lineStyle: { width: 2, color: up ? (t.up || '#10b981') : (t.down || '#ef6868') },
+    areaStyle: waveAreaStyle(up),
   };
 }
 
@@ -661,6 +711,10 @@ function applyViewWindow(startPct, endPct, { markUserZoom = true, updateDataZoom
       { start: nextStart, end: nextEnd },
     ];
   }
+  if (chartStyle === 'wave') {
+    const ws = wavePaintStyle(lastBars, nextStart, nextEnd);
+    opt.series = [{ id: 'wave', lineStyle: ws.lineStyle, areaStyle: ws.areaStyle }];
+  }
 
   try {
     chart.setOption(opt);
@@ -719,6 +773,8 @@ function buildOption() {
   }));
   const ma20 = showMa && !isWave && lastBars.length >= 20 ? calcMA(lastBars, 20) : [];
   const ma50 = showMa && !isWave && lastBars.length >= 50 ? calcMA(lastBars, 50) : [];
+  const zoomPct = readZoomPercents();
+  const waveStyle = isWave ? wavePaintStyle(lastBars, zoomPct.start, zoomPct.end) : null;
 
   /** @type {any[]} */
   const markLineData = [];
@@ -913,16 +969,8 @@ function buildOption() {
         showSymbol: false,
         smooth: 0.12,
         connectNulls: false,
-        lineStyle: { width: 2, color: t.up },
-        areaStyle: isWave ? {
-          color: {
-            type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-            colorStops: [
-              { offset: 0, color: `${t.up}40` },
-              { offset: 1, color: `${t.up}00` },
-            ],
-          },
-        } : undefined,
+        lineStyle: waveStyle?.lineStyle || { width: 2, color: t.up },
+        areaStyle: isWave ? waveStyle?.areaStyle : undefined,
       },
       {
         id: 'ma20',
@@ -1267,11 +1315,17 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
         try {
           const axis = axisRangeForView();
           const isWave = chartStyle === 'wave';
+          const z = readZoomPercents();
+          const ws = isWave ? wavePaintStyle(lastBars, z.start, z.end) : null;
           chart.setOption({
             yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
             series: [
               { id: 'candles', data: isWave ? [] : toOhlc(lastBars) },
-              { id: 'wave', data: isWave ? lastBars.map((b) => b.close) : [] },
+              {
+                id: 'wave',
+                data: isWave ? lastBars.map((b) => b.close) : [],
+                ...(ws || {}),
+              },
             ],
           });
         } catch { return false; }
@@ -1313,11 +1367,17 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   try {
     const axis = axisRangeForView();
     const isWave = chartStyle === 'wave';
+    const z = readZoomPercents();
+    const ws = isWave ? wavePaintStyle(lastBars, z.start, z.end) : null;
     chart.setOption({
       yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
       series: [
         { id: 'candles', data: isWave ? [] : toOhlc(lastBars) },
-        { id: 'wave', data: isWave ? lastBars.map((b) => b.close) : [] },
+        {
+          id: 'wave',
+          data: isWave ? lastBars.map((b) => b.close) : [],
+          ...(ws || {}),
+        },
       ],
     });
   } catch {

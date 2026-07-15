@@ -51,12 +51,121 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-* { scrollbar-width: thin; scrollbar-color: #2a3140 transparent; }
-::-webkit-scrollbar { width: 8px; height: 8px; }
+* { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.12) transparent; }
+::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #2a3140; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #3a4558; }
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); }
 ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+
+/* Quiet frosted scrollbars on dashboard / glass overflow hosts */
+.glass-scrollable-container,
+.dash-card,
+.dash-discover-card,
+.news-panel,
+.stats-panel,
+.portfolio-activity,
+.holdings-card,
+.listings-board,
+.events-board,
+.events-feed,
+.mini-listings,
+.ai-chat-log,
+.ai-chat-log-side,
+.trade-watchlist,
+#view-trade .trade-watchlist,
+.watchlist-list,
+.estate-option-grid,
+.estate-detail-panel,
+.staff-view,
+.staff-log,
+.hr-table-wrap,
+.alert-history-list,
+.sidebar-left,
+.options-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+.glass-scrollable-container::-webkit-scrollbar,
+.dash-card::-webkit-scrollbar,
+.dash-discover-card::-webkit-scrollbar,
+.news-panel::-webkit-scrollbar,
+.stats-panel::-webkit-scrollbar,
+.portfolio-activity::-webkit-scrollbar,
+.holdings-card::-webkit-scrollbar,
+.listings-board::-webkit-scrollbar,
+.events-board::-webkit-scrollbar,
+.events-feed::-webkit-scrollbar,
+.mini-listings::-webkit-scrollbar,
+.ai-chat-log::-webkit-scrollbar,
+.ai-chat-log-side::-webkit-scrollbar,
+.trade-watchlist::-webkit-scrollbar,
+#view-trade .trade-watchlist::-webkit-scrollbar,
+.watchlist-list::-webkit-scrollbar,
+.estate-option-grid::-webkit-scrollbar,
+.estate-detail-panel::-webkit-scrollbar,
+.staff-view::-webkit-scrollbar,
+.staff-log::-webkit-scrollbar,
+.hr-table-wrap::-webkit-scrollbar,
+.alert-history-list::-webkit-scrollbar,
+.sidebar-left::-webkit-scrollbar,
+.options-panel::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+.glass-scrollable-container::-webkit-scrollbar-track,
+.dash-card::-webkit-scrollbar-track,
+.dash-discover-card::-webkit-scrollbar-track,
+.news-panel::-webkit-scrollbar-track,
+.stats-panel::-webkit-scrollbar-track,
+.portfolio-activity::-webkit-scrollbar-track,
+.holdings-card::-webkit-scrollbar-track,
+.listings-board::-webkit-scrollbar-track,
+.events-board::-webkit-scrollbar-track,
+.events-feed::-webkit-scrollbar-track,
+.mini-listings::-webkit-scrollbar-track,
+.ai-chat-log::-webkit-scrollbar-track,
+.ai-chat-log-side::-webkit-scrollbar-track,
+.trade-watchlist::-webkit-scrollbar-track,
+#view-trade .trade-watchlist::-webkit-scrollbar-track,
+.watchlist-list::-webkit-scrollbar-track,
+.estate-option-grid::-webkit-scrollbar-track,
+.estate-detail-panel::-webkit-scrollbar-track,
+.staff-view::-webkit-scrollbar-track,
+.staff-log::-webkit-scrollbar-track,
+.hr-table-wrap::-webkit-scrollbar-track,
+.alert-history-list::-webkit-scrollbar-track,
+.sidebar-left::-webkit-scrollbar-track,
+.options-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.glass-scrollable-container::-webkit-scrollbar-thumb,
+.dash-card::-webkit-scrollbar-thumb,
+.dash-discover-card::-webkit-scrollbar-thumb,
+.news-panel::-webkit-scrollbar-thumb,
+.stats-panel::-webkit-scrollbar-thumb,
+.portfolio-activity::-webkit-scrollbar-thumb,
+.holdings-card::-webkit-scrollbar-thumb,
+.listings-board::-webkit-scrollbar-thumb,
+.events-board::-webkit-scrollbar-thumb,
+.events-feed::-webkit-scrollbar-thumb,
+.mini-listings::-webkit-scrollbar-thumb,
+.ai-chat-log::-webkit-scrollbar-thumb,
+.ai-chat-log-side::-webkit-scrollbar-thumb,
+.trade-watchlist::-webkit-scrollbar-thumb,
+#view-trade .trade-watchlist::-webkit-scrollbar-thumb,
+.watchlist-list::-webkit-scrollbar-thumb,
+.estate-option-grid::-webkit-scrollbar-thumb,
+.estate-detail-panel::-webkit-scrollbar-thumb,
+.staff-view::-webkit-scrollbar-thumb,
+.staff-log::-webkit-scrollbar-thumb,
+.hr-table-wrap::-webkit-scrollbar-thumb,
+.alert-history-list::-webkit-scrollbar-thumb,
+.sidebar-left::-webkit-scrollbar-thumb,
+.options-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
 
 /* Hide native number spinners — scroll wheel adjusts values instead */
 input[type=number]::-webkit-inner-spin-button,
@@ -627,7 +736,7 @@ body.electron .stat-popover {
 .stat-cell:first-child { padding-left: 2px; }
 .stat-cell:last-child { border-right: none; }
 .stat-lbl {
-  color: var(--metric-label); font-size: 10px; font-weight: 600;
+  color: var(--metric-label); font-size: 10px; font-weight: 400;
   letter-spacing: 0.06em; text-transform: uppercase; margin: 0;
 }
 .stat-num {
@@ -637,7 +746,8 @@ body.electron .stat-popover {
   color: var(--metric-value);
   text-shadow: var(--metric-value-shadow);
 }
-.rep-cell .stat-num { color: var(--accent); text-shadow: none; }
+/* License HUD chip owns its tier tint — do not force solid accent */
+.rep-cell .stat-num.license-badge-chip { text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4); }
 .stat-num.up,
 .stat-num.down { text-shadow: none; }
 
@@ -656,25 +766,26 @@ body.electron .stat-popover {
   min-width: 248px;
   max-width: 300px;
   padding: 12px 14px;
-  background: var(--glass-bg);
+  background: color-mix(in srgb, #12161c 92%, transparent);
   background-clip: padding-box;
-  border: 1px solid var(--glass-stroke);
-  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--ach-gold, #c9a227) 28%, rgba(255, 255, 255, 0.12));
+  border-radius: 12px;
   overflow: hidden;
-  box-shadow: var(--glass-shadow), var(--glass-glow-accent);
-  backdrop-filter: var(--glass-blur-sm);
-  -webkit-backdrop-filter: var(--glass-blur-sm);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   pointer-events: auto;
-  color: var(--text);
+  color: #e8eaed;
 }
 .stat-popover[hidden] { display: none !important; }
 .stat-popover-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  margin-bottom: 8px;
+  font-family: var(--ach-display, Fraunces, Georgia, serif);
+  font-size: 14px;
+  font-weight: 560;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: #f3efe6;
+  margin-bottom: 6px;
 }
 .stat-popover-blurb {
   font-size: 11px;
@@ -748,15 +859,24 @@ body.electron .stat-popover {
   font-variant-numeric: tabular-nums;
 }
 
-/* Glossary tips — same window language as equity/REP popovers */
+/* Glossary tips — Achievements cursor-tip shell (follow pointer, never trap hover) */
 .gloss-tip-root {
-  pointer-events: auto;
+  pointer-events: none !important;
   z-index: 12050;
-  max-width: min(300px, calc(100vw - 16px));
+  max-width: min(280px, calc(100vw - 24px));
 }
 .gloss-tip-root.hidden,
 .gloss-tip-root[hidden] {
   display: none !important;
+}
+.gloss-tip-root .stat-popover-row {
+  margin-top: 4px;
+  color: color-mix(in srgb, #c8cdd4 88%, transparent);
+}
+.gloss-tip-root .stat-popover-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: color-mix(in srgb, #c8cdd4 75%, transparent);
 }
 .gloss-tip-bullets {
   margin: 6px 0 0;
@@ -2610,8 +2730,9 @@ body.is-resizing-right * { cursor: col-resize !important; }
   padding: 2px 8px; border-radius: 999px;
   border: 1px solid var(--glass-stroke-soft); color: var(--muted);
 }
-.license-card-status.is-held { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.license-card-status.is-ready { color: var(--up, #37c98b); border-color: color-mix(in srgb, var(--up, #37c98b) 45%, transparent); }
+/* Legacy solid status colors — skipped when crystalline chip is present */
+.license-card-status.is-held:not(.license-badge-chip) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.license-card-status.is-ready:not(.license-badge-chip) { color: var(--up, #37c98b); border-color: color-mix(in srgb, var(--up, #37c98b) 45%, transparent); }
 .license-card-blurb { margin: 0; font-size: 12px; color: var(--text); line-height: 1.5; }
 .license-card-unlocks { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
 .license-card-teaches {
@@ -2720,11 +2841,83 @@ body.is-resizing-right * { cursor: col-resize !important; }
 }
 .perk .btn-accent { --btn-tone: var(--tier-accent, var(--accent)); }
 .rep-rank {
-  font-weight: 600; letter-spacing: 0.02em;
+  font-weight: 400; letter-spacing: 0.02em;
   color: color-mix(in srgb, var(--accent) 85%, var(--muted));
   text-transform: none; font-size: 10px;
 }
 .rep-cell .stat-lbl { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+
+/* Crystalline licensing badges — low-opacity glass tint + neon border */
+.license-badge-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  background-clip: padding-box;
+  max-width: 100%;
+}
+.license-badge-chip.tier-retail {
+  background: rgba(203, 213, 225, 0.08);
+  border: 1px solid rgba(203, 213, 225, 0.3);
+  color: #E2E8F0;
+  box-shadow: none;
+}
+.license-badge-chip.tier-series7 {
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  color: #60A5FA;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.15);
+}
+.license-badge-chip.tier-research {
+  background: rgba(168, 85, 247, 0.12);
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  color: #C084FC;
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.15);
+}
+.license-badge-chip.tier-regd {
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.5);
+  color: #FACC15;
+  box-shadow: 0 0 12px rgba(234, 179, 8, 0.2);
+}
+/* HUD short-name chip sits on the metric row */
+#reputation.license-badge-chip {
+  font-size: 11px;
+  line-height: 1.2;
+  margin-top: 1px;
+}
+/* License board status chips reuse the same glass rule */
+.license-card-status.license-badge-chip {
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+.license-card-status.license-badge-chip.is-held,
+.license-card-status.license-badge-chip.is-ready,
+.license-card-status.license-badge-chip.is-locked {
+  /* Tier tint wins over legacy solid status colors */
+  border-color: inherit;
+}
+
+/* Asset name truncation — keep columns from blowing out */
+.ticker-name-label,
+.watch-name,
+.dash-ticker-name,
+.symbol-name,
+.deal-card-name,
+.listing-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
 
 /* Narrow main pane (~616px): wrap day/clock under stats; shorten REP label */
 @container top-bar (max-width: 700px) {
@@ -5512,6 +5705,35 @@ body.is-resizing-right * { cursor: col-resize !important; }
   backdrop-filter: var(--glass-blur-sm) !important;
   -webkit-backdrop-filter: var(--glass-blur-sm) !important;
   box-shadow: var(--glass-shadow) !important;
+  font-weight: 400;
+}
+.dash-desk .dash-index-card,
+.dash-desk .dash-ticker-card {
+  font-weight: 400;
+}
+.dash-desk .stat-lbl,
+.dash-desk .dash-card-head,
+.dash-desk .dash-hero-eyebrow,
+.dash-desk .dash-ticker-name {
+  font-weight: 400;
+}
+.dash-desk .stat-num,
+.dash-desk .dash-ticker-price {
+  font-weight: 700;
+  color: var(--metric-value);
+  text-shadow: var(--metric-value-shadow);
+}
+.dash-desk .dash-ticker-pct,
+.dash-desk .dash-ticker-trend {
+  font-weight: 700;
+}
+.dash-desk .stat-num.up,
+.dash-desk .stat-num.down {
+  text-shadow: none;
+}
+.dash-desk .btn,
+.dash-desk .btn-sm {
+  font-weight: 700;
 }
 .dash-desk .dash-row {
   border-bottom-color: var(--dash-card-border);
@@ -8522,7 +8744,7 @@ body[data-luxury="dynastyWing"] .dashboard-view {
   --glass-glow-accent: 0 0 28px color-mix(in srgb, var(--accent) 22%, transparent);
   --glass-bg: linear-gradient(155deg, var(--glass-fill-strong), var(--glass-fill));
   --chart-bg: transparent;
-  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-grid: rgba(255, 255, 255, 0.05);
 }
 
 /*

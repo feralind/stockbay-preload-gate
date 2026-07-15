@@ -1236,13 +1236,37 @@ async function main() {
       // Spear high must not own the pane
       assert.ok(axis.max < 360, `axis.max adopted spear high: ${axis.max}`);
       assert.ok(axis.max - completedMax < 12, `axis stretched too far past session: ${axis.max - completedMax}`);
-      assert.ok(axis.max - axis.min >= 311 * 0.018, 'min span too tight');
+      // Composite floor: max(2.5% baseline, $5, legacy session %)
+      const floorSpan = Math.max(316.4 * 0.025, 5.0, 311 * 0.018);
+      assert.ok(axis.max - axis.min >= floorSpan, `min span too tight: ${axis.max - axis.min}`);
 
       const peer = peerMedianRange(bars);
       const clamped = clampBarToPeers(bars[bars.length - 1], peer, 311);
       const maxR = Math.max(peer * 2.2, 311 * 0.0025);
       assert.ok(clamped.high - clamped.low <= maxR + 0.02, `peer clamp still tall: ${clamped.high - clamped.low}`);
       assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
+    });
+
+    test('computePriceAxisRange enforces $5 / 2.5% floor on flat cheap names', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 24; i++) {
+        const px = 40 + (i % 3) * 0.05;
+        bars.push({
+          time: now - (23 - i) * 300,
+          open: px, high: px + 0.08, low: px - 0.06, close: px + 0.02, volume: 800,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 40.2, high: 40.35, low: 40.15, close: 40.25, volume: 1200,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      const span = axis.max - axis.min;
+      // Absolute $5 floor dominates on ~$40 names (2.5% ≈ $1.01)
+      assert.ok(span >= 5.0, `flat cheap name over-zoomed: span=${span}`);
+      assert.ok(axis.max >= 40.25 && axis.min <= 40.25, 'live close must stay on-screen');
     });
 
     test('applyLiveCandleTick keeps close glued to live quote price', () => {
@@ -2902,13 +2926,14 @@ async function main() {
     const glossMod = await import(pathToFileURL(path.join(__dirname, '../js/glossary-tooltips.js')).href);
     const {
       GLOSS_TIPS, listGlossTipIds, resolveGlossTip, buildGlossTipHtml, getGlossHoverMs,
-      resyncGlossaryHover,
+      resyncGlossaryHover, hideGlossTip,
     } = glossMod;
-    test('glossary tip dwell is 0.5s and survives re-render sync', () => {
+    test('glossary tip dwell is 0.5s first-open; retarget swaps while tip is open', () => {
       assert.equal(getGlossHoverMs(), 500);
       assert.equal(typeof resyncGlossaryHover, 'function');
+      assert.equal(typeof hideGlossTip, 'function');
     });
-    test('glossary tips cover desk markers with equity-style sheets', () => {
+    test('glossary tips cover desk markers with achievement-style cursor sheets', () => {
       const ids = listGlossTipIds();
       assert.ok(ids.length >= 15, 'enough desk glossary tips');
       const required = [
@@ -2922,8 +2947,8 @@ async function main() {
         assert.ok(tip?.title, `${id} needs title`);
         assert.ok(tip?.blurb?.length > 20, `${id} needs blurb`);
         const html = buildGlossTipHtml(tip);
-        assert.match(html, /stat-popover-title/);
-        assert.match(html, /stat-popover-blurb/);
+        assert.match(html, /ach-cursor-tip-name/);
+        assert.match(html, /ach-cursor-tip-desc/);
         assert.ok(html.includes(tip.title.replace(/&/g, '&amp;')) || html.includes(tip.title), `${id} title in html`);
       }
     });
@@ -3746,6 +3771,36 @@ async function main() {
     assert.ok(clean.meta.reputation <= 100000);
     assert.ok(clean.finance.personalCredit <= 850);
     assert.ok(clean.finance.businessCredit >= 300);
+  });
+
+  test('sanitizeRunData retunes virgin old-default credit so Series 7 is not Day-1 green', () => {
+    const clean = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 500, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      finance: {
+        personalCredit: 680,
+        businessCredit: 700,
+        loans: [],
+        totalBorrowed: 0,
+        firstCreditDay: null,
+      },
+    });
+    assert.equal(clean.finance.personalCredit, 600);
+    assert.equal(clean.finance.businessCredit, 630);
+    // Earned scores on a non-virgin file are kept.
+    const earned = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 5000, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      finance: {
+        personalCredit: 680,
+        businessCredit: 700,
+        loans: [],
+        totalBorrowed: 1000,
+        firstCreditDay: 3,
+      },
+    });
+    assert.equal(earned.finance.personalCredit, 680);
+    assert.equal(earned.finance.businessCredit, 700);
   });
 
   test('sanitizeRunData strips unknown vault IDs from save', () => {

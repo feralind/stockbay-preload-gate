@@ -87,7 +87,8 @@ import { PRIVATE_SALON_POOL } from './private-salon.js';
 import { THE_SEAT } from './the-seat.js';
 import { getEffectiveOfficeTier } from './office.js';
 import { getHighestOwnedLuxury } from './luxury.js';
-import { resyncGlossaryHover } from './glossary-tooltips.js';
+import { hideGlossTip, resyncGlossaryHover } from './glossary-tooltips.js';
+import { hideAchievementCursorTip } from './ui/achievements.js';
 
 installLogoErrorHandler();
 configurePortfolioUi({ switchView, openOrderConfirm });
@@ -220,6 +221,19 @@ function scheduleHideStatPopover() {
     activeStatPopover.hidden = true;
     activeStatPopover = null;
   }, STAT_POPOVER_HIDE_MS);
+}
+
+/** Force-hide equity / license popovers on view change. */
+export function hideStatPopovers() {
+  clearTimeout(statPopoverHideTimer);
+  for (const id of ['equity-popover', 'rep-popover']) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.remove('is-open');
+      el.hidden = true;
+    }
+  }
+  activeStatPopover = null;
 }
 
 function fillEquityPopover(el, state) {
@@ -355,6 +369,13 @@ function renderHeader(state) {
   setText('buying-power', fmt(getBuyingPower(portfolio, perks, finance?.personalCredit)));
   const heldLicense = getHighestLicense(state.licenses);
   setText('reputation', heldLicense.short);
+  const repEl = document.getElementById('reputation');
+  if (repEl) {
+    const tier = ['retail', 'series7', 'research', 'regd'].includes(heldLicense.id)
+      ? heldLicense.id
+      : 'retail';
+    repEl.className = `stat-num license-badge-chip tier-${tier}`;
+  }
   const rankEl = document.getElementById('rep-rank');
   if (rankEl) rankEl.textContent = heldLicense.name;
   updateStatPopovers(state);
@@ -933,13 +954,12 @@ export function switchView(viewId) {
     } catch (_) { /* ignore */ }
   }
   if (prev === 'achievements' && next !== 'achievements') {
-    const tip = document.getElementById('ach-cursor-tip');
-    if (tip) {
-      tip.hidden = true;
-      tip.classList.remove('is-on');
-    }
+    hideAchievementCursorTip();
   }
   if (prev !== next) {
+    hideGlossTip();
+    hideStatPopovers();
+    hideAchievementCursorTip();
     viewChangeListeners.forEach((fn) => {
       try { fn(next, prev); } catch { /* ignore listener errors */ }
     });

@@ -102,12 +102,21 @@ function ensureAchTip() {
 
 function hideAchTip() {
   tipVisible = false;
+  if (tipRaf) {
+    cancelAnimationFrame(tipRaf);
+    tipRaf = 0;
+  }
   const tip = document.getElementById('ach-cursor-tip');
   if (tip) {
     tip.hidden = true;
     tip.classList.remove('is-on');
     delete tip.dataset.forId;
   }
+}
+
+/** Force-hide for view navigation (export). */
+export function hideAchievementCursorTip() {
+  hideAchTip();
 }
 
 function scheduleTipMove() {

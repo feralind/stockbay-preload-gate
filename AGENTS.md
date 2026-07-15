@@ -50,3 +50,10 @@ for Windows only — ignore them on this VM and use the npm scripts directly).
 - Patch numbers with `textContent`; use `setHtmlIfChanged` / `patchEstatesLive` / roster snaps as models.
 - Project rule (always on): `.cursor/rules/stockway-ui-no-tick-thrash.mdc`.
 - Canonical fix: `js/ui/estates.js`.
+
+### UI — cursor tips (mandatory)
+
+Glossary / Dashboard / Portfolio “Cash” tips must match Achievements: gold-border cursor sheet, instant swap when moving target-to-target, force-hide on every `switchView`.
+
+- Rule (always on): `.cursor/rules/stockway-cursor-tips.mdc`
+- Code: `js/glossary-tooltips.js`, `js/ui/achievements.js`, hide calls in `js/ui.js` `switchView`

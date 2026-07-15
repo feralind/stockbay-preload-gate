@@ -173,7 +173,7 @@ function buyPerk(mods, state, perkId, reserve, track) {
 function maybeBuyLicense(mods, state, style, day, track) {
   const next = mods.licenses.getNextLicense(state.licenses);
   if (!next) return false;
-  const reserve = style === 'careful' ? 1200 : style === 'aggressive' ? 100 : 800;
+  const reserve = (style === 'careful' || style === 'optimal') ? 1200 : style === 'aggressive' ? 100 : 800;
   const netWorth = firmNetWorth(mods, state);
   const snap = mods.licenses.licenseSnapshot(state, { day, netWorth });
   if (!mods.licenses.canTakeLicenseExam(next.id, snap).ok) return false;
@@ -336,15 +336,15 @@ function borrowIfNeeded(mods, state, style, day) {
   const cash = Number(state.portfolio.cash) || 0;
   const debt = activeDebt(mods, state);
   const netWorth = firmNetWorth(mods, state);
-  const maxDebtPct = style === 'careful' ? 0.28 : style === 'aggressive' ? 1.2 : 0.55;
-  const trigger = style === 'careful' ? 650 : style === 'aggressive' ? 1650 : 300;
+  const maxDebtPct = (style === 'careful' || style === 'optimal') ? 0.28 : style === 'aggressive' ? 1.2 : 0.55;
+  const trigger = (style === 'careful' || style === 'optimal') ? 650 : style === 'aggressive' ? 1650 : 300;
   if (cash >= trigger) return null;
   if (netWorth > 0 && debt > Math.max(1000, netWorth * maxDebtPct)) return null;
 
   const firmStrength = Math.max(0, netWorth);
   const companyMax = mods.finance.maxBorrowableAmount('chase', 'company', state.finance, 50, day, { firmStrength });
   const personalMax = mods.finance.maxBorrowableAmount('chase', 'personal', state.finance, 50, day, { firmStrength });
-  const target = style === 'aggressive' ? 3200 : style === 'careful' ? 900 : 600;
+  const target = style === 'aggressive' ? 3200 : (style === 'careful' || style === 'optimal') ? 900 : 600;
 
   if (companyMax >= 100) {
     const amount = Math.max(100, Math.min(target, companyMax));
@@ -358,7 +358,8 @@ function borrowIfNeeded(mods, state, style, day) {
 }
 
 function maybeBuyEstate(mods, state, style, day) {
-  if (style === 'afk' || day < 250) return null;
+  // 'optimal' skips estates — roughly NW-neutral in-model, and closing costs drag.
+  if (style === 'afk' || style === 'optimal' || day < 250) return null;
   const netWorth = firmNetWorth(mods, state);
   const candidates = style === 'aggressive'
     ? ['coastalResidence', 'harborVilla']
@@ -447,7 +448,8 @@ function activeCheckpoints(days) {
 
 async function runScenario(mods, style) {
   localStorage.clear();
-  const seed = { careful: 49217, aggressive: 91873, afk: 30091 }[style];
+  // 'optimal' shares careful's seed: same market luck, different desk decisions.
+  const seed = { careful: 49217, optimal: 49217, aggressive: 91873, afk: 30091 }[style];
   const rand = seededRandom(seed);
   const previousRandom = Math.random;
   Math.random = rand;

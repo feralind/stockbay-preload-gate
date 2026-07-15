@@ -1,13 +1,15 @@
 // @ts-check
 /**
- * Desk glossary tips — 0.5s dwell, equity-popover visual language, anti-flicker across re-renders.
- * One-shot coachmarks / equity+license rich popovers stay separate; this covers ongoing “what is this?” help.
+ * Desk glossary tips — Achievements-style cursor sheets.
+ * First open keeps a short dwell; switching between gloss targets swaps immediately.
+ * Force-hide on switchView (see .cursor/rules/stockway-cursor-tips.mdc).
  */
 import { getHaltInfo, CIRCUIT_BREAK_PCT, CIRCUIT_HALT_MINUTES } from './market.js';
 
+/** First-open dwell only — retargets while a tip is already showing are instant. */
 const HOVER_MS = 500;
-/** Grace so DOM re-renders (market ticks) don't flash the tip off. */
-const HIDE_GRACE_MS = 220;
+/** Grace so DOM re-renders (market ticks) don't flash the tip off between siblings. */
+const HIDE_GRACE_MS = 120;
 
 /**
  * @typedef {{
@@ -353,13 +355,11 @@ export function buildGlossTipHtml(tip) {
   const arcane = tip.arcane
     ? `<div class="gloss-tip-arcane"><span class="gloss-tip-arcane-label">Desk Lore</span><p>${escapeHtml(tip.arcane)}</p></div>`
     : '';
-  const hasBody = !!(rows || bullets || note || arcane);
   return `
-    <div class="stat-popover-title">${escapeHtml(tip.title)}</div>
-    <p class="stat-popover-blurb">${escapeHtml(tip.blurb)}</p>
+    <strong class="ach-cursor-tip-name">${escapeHtml(tip.title)}</strong>
+    <span class="ach-cursor-tip-desc">${escapeHtml(tip.blurb || '')}</span>
     ${rows}
     ${bullets}
-    ${hasBody ? '<div class="stat-popover-sep"></div>' : ''}
     ${note}
     ${arcane}`;
 }
@@ -388,21 +388,17 @@ let lastPointerY = 0;
 function ensureTipEl() {
   if (tipEl?.isConnected) return tipEl;
   tipEl = document.getElementById('gloss-tooltip-root');
-  if (tipEl) return tipEl;
-  tipEl = document.createElement('div');
-  tipEl.id = 'gloss-tooltip-root';
-  tipEl.className = 'stat-popover gloss-tip-root hidden';
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.id = 'gloss-tooltip-root';
+    document.body.appendChild(tipEl);
+  }
+  // Same shell as Achievements cursor tip — pointer-events none so tips never trap hover.
+  tipEl.className = 'ach-cursor-tip gloss-tip-root';
   tipEl.setAttribute('role', 'tooltip');
   tipEl.setAttribute('aria-hidden', 'true');
   tipEl.hidden = true;
-  document.body.appendChild(tipEl);
-
-  tipEl.addEventListener('pointerenter', () => {
-    clearHideTimer();
-  });
-  tipEl.addEventListener('pointerleave', () => {
-    if (tipOpenId) scheduleHide(tipOpenId);
-  });
+  tipEl.classList.remove('is-on', 'is-open', 'hidden');
   return tipEl;
 }
 
@@ -441,9 +437,19 @@ function glossAtPoint(x, y) {
  * @param {string} id
  * @param {{ restart?: boolean }} [opts]
  */
+function tipIsVisible() {
+  return !!(tipOpenId && tipEl && !tipEl.hidden && tipEl.classList.contains('is-on'));
+}
+
 function armDwell(el, id, opts = {}) {
   clearHideTimer();
-  if (tipOpenId === id && tipEl && !tipEl.hidden) {
+  // Same tip already up — refresh position/content only.
+  if (tipOpenId === id && tipIsVisible()) {
+    showTip(el, id);
+    return;
+  }
+  // Tip already showing for another marker — swap immediately (Achievements handoff).
+  if (tipIsVisible() && tipOpenId !== id) {
     showTip(el, id);
     return;
   }
@@ -456,8 +462,9 @@ function armDwell(el, id, opts = {}) {
   clearShowTimer();
   tipTimer = setTimeout(() => {
     tipTimer = null;
-    const live = glossAtPoint(lastPointerX, lastPointerY)
-      || (el.isConnected ? el : document.querySelector(`[data-gloss="${cssEscape(id)}"]`));
+    // Only the live element under the cursor — never fall back to another view's
+    // matching data-gloss (that resurrected Cash tips after navigate).
+    const live = glossAtPoint(lastPointerX, lastPointerY);
     if (!(live instanceof HTMLElement)) return;
     if (live.getAttribute('data-gloss') !== id) return;
     showTip(live, id);
@@ -473,9 +480,8 @@ export function hideGlossTip() {
   pendingSince = 0;
   const el = tipEl || document.getElementById('gloss-tooltip-root');
   if (el) {
-    el.classList.add('hidden');
-    el.classList.remove('is-open');
     el.hidden = true;
+    el.classList.remove('is-on', 'is-open', 'hidden');
     el.setAttribute('aria-hidden', 'true');
     el.innerHTML = '';
     delete el.dataset.glossId;
@@ -483,24 +489,22 @@ export function hideGlossTip() {
 }
 
 /**
- * @param {HTMLElement} anchor
+ * Place like Achievements — follow cursor, flip near viewport edges.
  * @param {HTMLElement} popover
  */
-function placeTip(anchor, popover) {
-  const gap = 8;
-  const pad = 8;
+function placeTipAtCursor(popover) {
+  const pad = 14;
   popover.style.visibility = 'hidden';
   popover.hidden = false;
-  popover.classList.add('is-open');
-  popover.classList.remove('hidden');
-  const rect = anchor.getBoundingClientRect();
-  const pw = popover.offsetWidth || 280;
-  const ph = popover.offsetHeight || 160;
-  let left = rect.left;
-  let top = rect.bottom + gap;
-  if (left + pw > window.innerWidth - pad) left = window.innerWidth - pw - pad;
-  if (left < pad) left = pad;
-  if (top + ph > window.innerHeight - pad) top = Math.max(pad, rect.top - ph - gap);
+  popover.classList.add('is-on');
+  const tw = popover.offsetWidth || 220;
+  const th = popover.offsetHeight || 80;
+  let left = lastPointerX + pad;
+  let top = lastPointerY + pad;
+  if (left + tw > window.innerWidth - 8) left = lastPointerX - tw - pad;
+  if (top + th > window.innerHeight - 8) top = lastPointerY - th - pad;
+  if (left < 8) left = 8;
+  if (top < 8) top = 8;
   popover.style.left = `${Math.round(left)}px`;
   popover.style.top = `${Math.round(top)}px`;
   popover.style.visibility = '';
@@ -526,10 +530,7 @@ function showTip(el, id) {
     root.innerHTML = buildGlossTipHtml(tip);
   }
   root.setAttribute('aria-hidden', 'false');
-  placeTip(el, root);
-  requestAnimationFrame(() => {
-    if (tipOpenId === id && tipAnchor) placeTip(tipAnchor, root);
-  });
+  placeTipAtCursor(root);
 }
 
 /**
@@ -537,7 +538,6 @@ function showTip(el, id) {
  */
 function scheduleHide(id) {
   clearHideTimer();
-  // Keep dwell timer — portfolio re-renders fire pointerout while the cursor never moved.
   hideTimer = setTimeout(() => {
     hideTimer = null;
     const live = glossAtPoint(lastPointerX, lastPointerY);
@@ -548,14 +548,8 @@ function scheduleHide(id) {
         return;
       }
     }
-    if (tipEl?.matches?.(':hover')) return;
     hideGlossTip();
   }, HIDE_GRACE_MS);
-}
-
-function cssEscape(id) {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(id);
-  return String(id).replace(/"/g, '\\"');
 }
 
 /**
@@ -565,7 +559,8 @@ export function resyncGlossaryHover() {
   if (!initialized) return;
   const live = glossAtPoint(lastPointerX, lastPointerY);
   if (!(live instanceof HTMLElement)) {
-    if (tipOpenId && tipEl && !tipEl.hidden && tipEl.matches?.(':hover')) return;
+    // Cursor left the gloss target — do not keep a floating tip alive.
+    if (tipOpenId) hideGlossTip();
     return;
   }
   const id = live.getAttribute('data-gloss');
@@ -588,6 +583,7 @@ export function initGlossaryTooltips() {
   document.addEventListener('pointermove', (e) => {
     lastPointerX = e.clientX;
     lastPointerY = e.clientY;
+    if (tipOpenId && tipEl && !tipEl.hidden) placeTipAtCursor(tipEl);
   }, { passive: true });
 
   document.addEventListener('pointerover', (e) => {
@@ -608,12 +604,17 @@ export function initGlossaryTooltips() {
     const t = /** @type {HTMLElement} */ (e.target);
     const el = t?.closest?.('[data-gloss]');
     if (!(el instanceof HTMLElement)) return;
-    const to = /** @type {Node | null} */ (e.relatedTarget);
+    const to = /** @type {HTMLElement | null} */ (e.relatedTarget);
     if (to && el.contains(to)) return;
     const id = el.getAttribute('data-gloss');
     if (!id) return;
+    // Moving onto another gloss marker — don't hide/dwell; pointerover swaps instantly.
+    const nextGloss = to?.closest?.('[data-gloss]');
+    if (nextGloss instanceof HTMLElement && !nextGloss.classList.contains('has-stat-popover')) {
+      clearHideTimer();
+      return;
+    }
     scheduleHide(id);
-    // Node removal (re-render): immediately try to re-bind under the cursor.
     if (!to) {
       queueMicrotask(() => resyncGlossaryHover());
     }
@@ -621,15 +622,14 @@ export function initGlossaryTooltips() {
 
   document.addEventListener('pointerdown', (e) => {
     const t = /** @type {HTMLElement} */ (e.target);
-    if (t?.closest?.('#gloss-tooltip-root')) return;
     if (t?.closest?.('[data-gloss]')) {
       hideGlossTip();
     }
   });
 
-  window.addEventListener('resize', () => {
-    if (!tipOpenId || !tipAnchor || !tipEl || tipEl.hidden) return;
-    placeTip(tipAnchor, tipEl);
+  window.addEventListener('blur', () => hideGlossTip());
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hideGlossTip();
   });
 }
 
