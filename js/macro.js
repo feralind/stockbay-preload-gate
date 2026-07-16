@@ -73,10 +73,10 @@ export function fedShockMultiplier(templateId) {
  * Fed hike/cut: directional distance (existing). Housing/dollar: absolute distance from 4.5%.
  * Macro-blind templates return 1.
  */
-export function macroEventScale(templateId) {
+export function macroEventScale(templateId, macroScale = false) {
   const id = String(templateId || '');
   if (id === 'fed_hike' || id === 'fed_cut') return fedShockMultiplier(id);
-  if (id === 'housing_rates' || id === 'dollar_spike') {
+  if (macroScale) {
     const dist = Math.abs(fedFundsRate - MACRO_BASE_FED);
     return +(0.85 + Math.min(0.55, dist * 0.14)).toFixed(3);
   }

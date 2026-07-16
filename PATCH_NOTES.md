@@ -25,6 +25,7 @@ Four days on the desk. The firm got real estate, real licenses, and charts that 
 - **Buying Power** — Scales with personal credit band. Margin still stacks; cool-downs stop tilt spam.
 - **Estates & firm NW** — Property equity counts. Firm snapshot and portfolio allocation stay honest.
 - **Finance credit lessons** — The bank side teaches utilization, APR, and aging — not same-day farm loops.
+- **World Events depth** — Bigger sim catalog (~25 briefs), game-day pacing + Fed antiflip, rate-sensitive scale with Fed distance, halt-safe shocks, and a quiet “Your book” flag when a print hits what you hold. First Fed/oil teach + day-end lesson lines. Risk-off nastiness is felt on the tape only — no second HUD tell.
 
 ---
 

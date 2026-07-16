@@ -5434,12 +5434,19 @@ async function main() {
   test('macroEventScale amplifies housing/dollar when Fed is extreme', () => {
     resetMacroForTests(MACRO_BASE_FED, 4.2);
     assert.equal(macroEventScale('cyber_outage'), 1);
-    assert.equal(macroEventScale('housing_rates'), 0.85);
+    assert.equal(macroEventScale('housing_rates'), 1); // flag off → no scale
+    assert.equal(macroEventScale('housing_rates', true), 0.85);
+    assert.equal(macroEventScale('dollar_spike', true), 0.85);
     resetMacroForTests(6.5, 5.5);
-    assert.ok(macroEventScale('housing_rates') > 1);
-    assert.ok(macroEventScale('dollar_spike') > 1);
+    assert.ok(macroEventScale('housing_rates', true) > 1);
+    assert.ok(macroEventScale('dollar_spike', true) > 1);
+    assert.equal(macroEventScale('housing_rates'), 1);
     assert.ok(fedShockMultiplier('fed_hike') > 0.85);
+    assert.equal(macroEventScale('fed_hike'), fedShockMultiplier('fed_hike'));
+    assert.equal(macroEventScale('fed_cut', true), fedShockMultiplier('fed_cut')); // fed path ignores flag
     resetMacroForTests(MACRO_BASE_FED, 4.2);
+    const scaled = getEventTemplates().filter((t) => t.macroScale);
+    assert.deepEqual(scaled.map((t) => t.id).sort(), ['dollar_spike', 'housing_rates']);
   });
 
   test('halted symbols are skipped and never deferred after lift', () => {
@@ -5492,11 +5499,20 @@ async function main() {
     resetEventEngineStateForTests();
     clearRiskOffOverlay();
     resetMacroForTests(MACRO_BASE_FED, 4.2);
+    loadMarket({
+      ...mkt.serializeMarket(),
+      marketBeta: 0,
+    });
     const day = typeof mkt.getDayCount === 'function' ? mkt.getDayCount() : 1;
     const regime = mkt.getTapeRegime(day);
     const scare = getEventTemplates().find((t) => t.id === 'recession_scare');
+    assert.equal(scare.macroScale, undefined);
+    assert.equal(scare.riskOffOverlay, true);
     triggerEvent(scare, false, day);
     assert.equal(isRiskOffOverlayActive(), true);
+    // Stronger overlay: 150min / -0.28 nudge / 0.00018 pad (not generic 120/-0.22/0.00015)
+    assert.ok(Math.abs(getMarketBeta() - (-0.28)) < 1e-9, `beta ${getMarketBeta()}`);
+    assert.ok(Math.abs(getRiskOffNoisePad() - 0.00018) < 1e-12, `pad ${getRiskOffNoisePad()}`);
     assert.equal(mkt.getTapeRegime(day), regime);
     assert.ok(getMajorEventsToday().includes('recession_scare'));
     clearRiskOffOverlay();

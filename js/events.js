@@ -468,7 +468,7 @@ export function applyEvent(evt) {
     applyFedPolicy('cut');
     scale = macroEventScale('fed_cut');
   } else {
-    scale = macroEventScale(templateId);
+    scale = macroEventScale(templateId, !!evt.macroScale);
   }
 
   const shocks = new Map();
@@ -507,10 +507,10 @@ export function applyEvent(evt) {
   lastSkippedHalted = skippedHalted;
 
   // Silent risk-off overlay — never flips day's tapeRegime; no UI disclosure.
-  if (evt.riskOffOverlay || (evt.lean === 'bearish' && (evt.global || 0) <= -0.006)) {
-    installRiskOffOverlay({ gameMinutes: 120, betaNudge: -0.22, noisePad: 0.00015 });
-  } else if (templateId === 'recession_scare') {
+  if (templateId === 'recession_scare') {
     installRiskOffOverlay({ gameMinutes: 150, betaNudge: -0.28, noisePad: 0.00018 });
+  } else if (evt.riskOffOverlay || (evt.lean === 'bearish' && (evt.global || 0) <= -0.006)) {
+    installRiskOffOverlay({ gameMinutes: 120, betaNudge: -0.22, noisePad: 0.00015 });
   }
 
   return { applied, skippedHalted };

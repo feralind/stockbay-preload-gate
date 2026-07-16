@@ -69,11 +69,17 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Symbol logos (PNG → favicon → letter)
 
 ### World Events
-- Simulated desk briefs (Fed, oil, AI boom, bank stress, tariffs…)
-- Live wire headlines with real article links
+- ~25 simulated desk briefs (Fed, oil, housing/rates, cyber, M&A, strikes, recession scare, dollar, SEC…)
+- Game-day pacing + soft daily cap — events track the desk clock, not wall-clock spam
+- Cooldown / Fed antiflip — no hike→cut whiplash the same afternoon
+- Rate-sensitive prints (housing, dollar, Fed) scale with distance from baseline Fed funds
+- Per-print 5% cap and shared ±10% daily shock budget; halted names are skipped (never deferred)
+- Silent risk-off tape overlay on scare prints — beta/noise only; day’s trend/chop identity stays
+- “Your book” cue when a print hits a held stock or option
+- First Fed / first oil teach moments; day-end lesson line when a major template fired
+- Live wire headlines with real article links (Finnhub) — separate from sim teaching copy
 - News Wire perk — full stories + early headlines
 - Event cards with bull / bear / mixed lean
-- Sector & symbol price shocks
 - Compact events feed in the right rail
 
 ### Firm Progression
