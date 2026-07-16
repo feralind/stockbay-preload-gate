@@ -1,6 +1,10 @@
 // @ts-check
 import { CONFIG } from './config.js';
-import { getQuoteCache, isSimulationMode } from './api.js';
+import {
+  getQuoteCache, isSimulationMode,
+  foldAllSimDays, beginSimSessionFromQuotes, clearSimCandleLedger,
+  serializeSimCandleLedger, loadSimCandleLedger, recordSimTick,
+} from './api.js';
 import { getSymbolSector } from './symbols.js';
 import { serializeMacro, loadMacro, stepMacroTowardNeutral, resetMacro } from './macro.js';
 
@@ -14,6 +18,8 @@ let marketRunning = true;
 let pausedByUser = false;
 let pausedByBackground = false;
 let tickInterval = null;
+/** Wall-clock anchor for soft lag catch-up (Date.now()). */
+let lastWallClockMs = Date.now();
 let dayCount = 1;
 let dayStartEquity = CONFIG.STARTING_CASH;
 let dayStartCash = CONFIG.STARTING_CASH;
@@ -23,13 +29,61 @@ let dayRealized = 0;
 let speedMultiplier = 1;
 /** Broad risk-on / risk-off state in [-1, 1]. Mean-reverts toward 0. */
 let marketBeta = 0;
+let tapeRegime = getTapeRegime(dayCount);
+
+/**
+ * Silent risk-off overlay from large bearish world events.
+ * Never flips the day's trend/chop identity — only nudges beta + extra noise pad.
+ * Not disclosed in HUD/events UI (player feels it through price only).
+ */
+let riskOffOverlayUntilAbsMin = 0;
+let riskOffNoisePad = 0;
+
+function absoluteMarketMinute() {
+  return dayCount * 24 * 60 + marketDate.getHours() * 60 + marketDate.getMinutes();
+}
+
+/** @returns {boolean} */
+export function isRiskOffOverlayActive() {
+  return absoluteMarketMinute() < riskOffOverlayUntilAbsMin;
+}
+
+/** Extra per-minute noise while overlay is live (0 when idle). Silent — no UI. */
+export function getRiskOffNoisePad() {
+  return isRiskOffOverlayActive() ? riskOffNoisePad : 0;
+}
+
+/**
+ * Install a temporary overlay. Does not mutate tapeRegime.
+ * @param {{ gameMinutes?: number, betaNudge?: number, noisePad?: number }} [opts]
+ */
+export function installRiskOffOverlay(opts = {}) {
+  const mins = Math.max(30, Math.min(240, Math.floor(Number(opts.gameMinutes) || 120)));
+  const nudge = Number(opts.betaNudge);
+  const pad = Number(opts.noisePad);
+  riskOffOverlayUntilAbsMin = absoluteMarketMinute() + mins;
+  riskOffNoisePad = Number.isFinite(pad) ? Math.max(0, Math.min(0.0004, pad)) : 0.00015;
+  if (Number.isFinite(nudge) && nudge !== 0) {
+    marketBeta = Math.max(-1, Math.min(1, marketBeta + nudge));
+  }
+}
+
+/** Test helper — clear overlay without touching day regime. */
+export function clearRiskOffOverlay() {
+  riskOffOverlayUntilAbsMin = 0;
+  riskOffNoisePad = 0;
+}
 
 /** Session open anchors for circuit breakers (reset each game day). */
 const sessionOpen = new Map();
 /** Active halts: sym -> { day, untilMinute, reason, movePct } */
 const halts = new Map();
 
+/** Default / docs midpoint — live trips use per-symbol seeded bands. */
 export const CIRCUIT_BREAK_PCT = 0.07;
+/** Soft free-lunch fix: each name rolls a hidden trip band in [min, max] for the day. */
+export const CIRCUIT_BREAK_PCT_MIN = 0.065;
+export const CIRCUIT_BREAK_PCT_MAX = 0.085;
 export const CIRCUIT_HALT_MINUTES = 15;
 /** Hard cap on a single shock apply (events, drift, gaps use their own max via opts). */
 export const MAX_SHOCK_PCT = 0.04;
@@ -112,6 +166,31 @@ export function getMarketBeta() {
   return marketBeta;
 }
 
+export function getTapeRegime(day = dayCount) {
+  const d = Math.max(1, Math.floor(Number(day) || 1));
+  let h = Math.imul(d ^ 0x9e3779b9, 2654435761) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0;
+  return (h % 10) < 4 ? 'chop' : 'trend';
+}
+
+/**
+ * Pure: per-symbol circuit threshold for a game day (6.5%–8.5%).
+ * Seeded from day + symbol so reloads stay stable and players cannot memorize 7.0%.
+ */
+export function circuitHaltThreshold(sym, day = dayCount) {
+  const key = String(sym || '').toUpperCase();
+  const d = Math.max(1, Math.floor(Number(day) || 1));
+  let h = Math.imul(d ^ 0x9e3779b9, 2654435761) >>> 0;
+  for (let i = 0; i < key.length; i++) {
+    h = Math.imul(h ^ key.charCodeAt(i), 2246822507) >>> 0;
+  }
+  h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0;
+  const span = CIRCUIT_BREAK_PCT_MAX - CIRCUIT_BREAK_PCT_MIN;
+  const steps = 20; // 0.1% increments
+  const t = CIRCUIT_BREAK_PCT_MIN + ((h % (steps + 1)) / steps) * span;
+  return Math.round(t * 10000) / 10000;
+}
+
 function currentMinuteOfDay() {
   return marketDate.getHours() * 60 + marketDate.getMinutes();
 }
@@ -161,7 +240,8 @@ export function checkCircuitBreaker(sym, price) {
     return false;
   }
   const open = sessionOpen.get(key);
-  const { trip, movePct } = shouldTripCircuit(open, px);
+  const threshold = circuitHaltThreshold(key, dayCount);
+  const { trip, movePct } = shouldTripCircuit(open, px, threshold);
   // Seed→live / candle rebase: reset anchor instead of inventing a 1000% halt
   if (Math.abs(movePct) >= SESSION_OPEN_REBASE_PCT) {
     sessionOpen.set(key, px);
@@ -174,6 +254,7 @@ export function checkCircuitBreaker(sym, price) {
     untilMinute: until,
     reason: movePct > 0 ? 'limit-up' : 'limit-down',
     movePct,
+    threshold,
   };
   halts.set(key, info);
   emit('halt', { sym: key, ...info });
@@ -328,26 +409,36 @@ export function getDayStats(currentEquity, currentCash, currentDebt = 0) {
   };
 }
 
-function advanceMarket(minutes) {
+function advanceMarket(minutes, { soft = false } = {}) {
   marketDate = new Date(marketDate.getTime() + minutes * 60000);
   const closeM = CONFIG.MARKET_CLOSE.hour * 60 + CONFIG.MARKET_CLOSE.minute;
   const cur = marketDate.getHours() * 60 + marketDate.getMinutes();
 
   if (cur >= closeM + (CONFIG.EVENING_MINUTES ?? 60)) {
+    // Soft catch-up must never roll the day — caller should have stopped earlier.
+    if (soft) {
+      // Revert the overshoot so we remain on the current session day.
+      marketDate = new Date(marketDate.getTime() - minutes * 60000);
+      return false;
+    }
     // Evening wraps into next trading day (land in pre-market)
     const summaryDay = dayCount;
+    foldCareerCandleDay(summaryDay);
     marketDate.setDate(marketDate.getDate() + 1);
     const pre = CONFIG.PREMARKET_MINUTES ?? 30;
     marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
     marketDate = new Date(marketDate.getTime() - pre * 60000);
     dayCount++;
+    tapeRegime = getTapeRegime(dayCount);
     resetSessionAnchors();
     rollQuotesForNewDay();
+    beginCareerCandleSession();
     stepMacroTowardNeutral(0.03);
     emit('dayEnd', { day: summaryDay });
     emit('newDay', { day: dayCount });
   }
-  emit('tick', formatMarketClock());
+  if (!soft) emit('tick', formatMarketClock());
+  return true;
 }
 
 let staffTickCounter = 0;
@@ -378,6 +469,33 @@ export function rollQuotesForNewDay() {
   });
 }
 
+function foldCareerCandleDay(summaryDay) {
+  if (!isSimulationMode()) return;
+  const cache = getQuoteCache();
+  const entries = [];
+  cache.forEach((q, sym) => {
+    if (!(q?.price > 0)) return;
+    entries.push({
+      sym,
+      price: q.price,
+      open: q.open ?? q.sessionOpen ?? q.price,
+      high: q.high ?? q.price,
+      low: q.low ?? q.price,
+    });
+  });
+  foldAllSimDays(entries, { day: summaryDay });
+}
+
+function beginCareerCandleSession() {
+  if (!isSimulationMode()) return;
+  const cache = getQuoteCache();
+  const entries = [];
+  cache.forEach((q, sym) => {
+    if (q?.price > 0) entries.push({ sym, price: q.price });
+  });
+  beginSimSessionFromQuotes(entries);
+}
+
 export function applyPriceShock(sym, pct, { skipCircuit = false, maxPct = MAX_SHOCK_PCT, countDaily = false } = {}) {
   const key = String(sym || '').toUpperCase();
   if (isSymbolHalted(key)) return;
@@ -406,6 +524,9 @@ export function applyPriceShock(sym, pct, { skipCircuit = false, maxPct = MAX_SH
     simulated: true,
   };
   cache.set(key, next);
+  if (isSimulationMode()) {
+    try { recordSimTick(key, next.price); } catch { /* ignore */ }
+  }
   if (!skipCircuit) checkCircuitBreaker(key, next.price);
 }
 
@@ -435,12 +556,20 @@ function simulateMarketMinute() {
     const hash = sym.charCodeAt(0) + sym.charCodeAt(sym.length - 1) + tickSeed;
     const deterministic = Math.sin(hash * 0.17) * vol * 0.5;
     const random = (Math.random() - 0.5) * vol;
+    const idiosyncratic = deterministic + random;
     let drift = computeSymbolDrift({
       marketBeta,
       sector,
-      idiosyncratic: deterministic + random,
+      idiosyncratic,
       sectorVol: vol,
     });
+    if (tapeRegime === 'chop') {
+      drift += idiosyncratic * 0.35;
+      if (Math.floor(tickSeed / 17) % 2 === 1) drift *= -0.65;
+    }
+    // Silent risk-off overlay: extra noise only — does not flip tapeRegime.
+    const riskPad = getRiskOffNoisePad();
+    if (riskPad > 0) drift += (Math.random() - 0.5) * 2 * riskPad;
     // Thin sessions: small random spread pad (wider effective prints)
     if (liq.spreadPad) drift += (Math.random() - 0.5) * 2 * liq.spreadPad;
     drift = Math.max(-MAX_DRIFT_PER_MINUTE, Math.min(MAX_DRIFT_PER_MINUTE, drift));
@@ -467,28 +596,118 @@ export function getBaseMsPerTick() {
   return (realMin * 60 * 1000) / Math.max(1, ticks);
 }
 
+function getMsPerTick() {
+  return Math.max(50, getBaseMsPerTick() / Math.max(1, speedMultiplier));
+}
+
+/** Game minutes advanced by one clock tick in the current phase. */
+function getTickGameMinutes() {
+  if (isMarketOpen() || getDayPhase() === 'Pre-Market') return 1;
+  return CONFIG.CLOSED_ADVANCE_MINUTES ?? 5;
+}
+
+/** True if advancing `minutes` would trigger evening → next-day roll. */
+function wouldCrossDayBoundary(minutes) {
+  const next = new Date(marketDate.getTime() + minutes * 60000);
+  const closeM = CONFIG.MARKET_CLOSE.hour * 60 + CONFIG.MARKET_CLOSE.minute;
+  const cur = next.getHours() * 60 + next.getMinutes();
+  return cur >= closeM + (CONFIG.EVENING_MINUTES ?? 60);
+}
+
+function runOneLiveTick() {
+  const closedStep = CONFIG.CLOSED_ADVANCE_MINUTES ?? 5;
+  const phase = getDayPhase();
+  if (isMarketOpen()) {
+    advanceMarket(1);
+    simulateMarketMinute();
+    staffTickCounter++;
+    if (staffTickCounter % 8 === 0) emit('staffTick', {});
+  } else if (phase === 'Pre-Market') {
+    advanceMarket(1);
+    simulateMarketMinute();
+  } else {
+    advanceMarket(closedStep);
+    if (getDayPhase() === 'Evening') simulateMarketMinute();
+  }
+}
+
+/** One soft catch-up step — never crosses day-end. Returns false if blocked. */
+function runOneSoftCatchUpTick() {
+  const minutes = getTickGameMinutes();
+  if (wouldCrossDayBoundary(minutes)) return false;
+  const phase = getDayPhase();
+  if (isMarketOpen() || phase === 'Pre-Market') {
+    if (!advanceMarket(1, { soft: true })) return false;
+    simulateMarketMinute();
+  } else {
+    if (!advanceMarket(minutes, { soft: true })) return false;
+    if (getDayPhase() === 'Evening') simulateMarketMinute();
+  }
+  return true;
+}
+
+/**
+ * Soft wall-clock catch-up after minimize/lag.
+ * Advances local prices + clock within the current day only; never emits dayEnd.
+ * Caps at MAX_CATCHUP_GAME_MINUTES. Returns number of ticks processed.
+ */
+export function softCatchUp() {
+  // User pause: freeze wall clock — no catch-up debt while intentionally paused.
+  if (pausedByUser) {
+    lastWallClockMs = Date.now();
+    return 0;
+  }
+
+  const now = Date.now();
+  const msPerTick = getMsPerTick();
+  const delta = now - lastWallClockMs;
+  if (!(delta >= msPerTick)) return 0;
+
+  const owedTicks = Math.floor(delta / msPerTick);
+  const maxMinutes = CONFIG.MAX_CATCHUP_GAME_MINUTES ?? 240;
+  let minutesUsed = 0;
+  let processed = 0;
+  let hitDayBoundary = false;
+  let hitCap = false;
+
+  for (let i = 0; i < owedTicks; i++) {
+    const step = getTickGameMinutes();
+    if (minutesUsed + step > maxMinutes) {
+      hitCap = true;
+      break;
+    }
+    if (!runOneSoftCatchUpTick()) {
+      hitDayBoundary = true;
+      break;
+    }
+    minutesUsed += step;
+    processed++;
+  }
+
+  if (hitCap || hitDayBoundary) {
+    // Drop excess debt — soft catch-up must not keep draining overnight time,
+    // and day-boundary stops leave day-end to the next live tick.
+    lastWallClockMs = now;
+  } else {
+    lastWallClockMs += processed * msPerTick;
+  }
+
+  // One UI tick after silent catch-up (avoid hundreds of renderAlls).
+  if (processed > 0) emit('tick', formatMarketClock());
+  return processed;
+}
+
 export function startMarket() {
   if (tickInterval) clearInterval(tickInterval);
-  const closedStep = CONFIG.CLOSED_ADVANCE_MINUTES ?? 5;
-  const baseMs = getBaseMsPerTick();
-  const msPerTick = Math.max(50, baseMs / Math.max(1, speedMultiplier));
+  const msPerTick = getMsPerTick();
   tickInterval = setInterval(() => {
     if (!marketRunning) return;
-    const phase = getDayPhase();
-    if (isMarketOpen()) {
-      advanceMarket(1);
-      simulateMarketMinute();
-      staffTickCounter++;
-      if (staffTickCounter % 8 === 0) emit('staffTick', {});
-    } else if (phase === 'Pre-Market') {
-      // 1-minute pre-market tape with thin liquidity
-      advanceMarket(1);
-      simulateMarketMinute();
-    } else {
-      // Evening wrap — coarser clock, still a thin simulated tape
-      advanceMarket(closedStep);
-      if (getDayPhase() === 'Evening') simulateMarketMinute();
-    }
+    softCatchUp();
+    if (!marketRunning) return;
+    // Stop before a live tick that would only roll the day if catch-up already
+    // parked us at the evening edge — still allow the normal dayEnd path.
+    runOneLiveTick();
+    lastWallClockMs = Date.now();
   }, msPerTick);
 }
 
@@ -505,6 +724,8 @@ export function getMarketSpeed() {
 export function pauseMarket() {
   marketRunning = !marketRunning;
   pausedByUser = !marketRunning;
+  // Intentional pause: clear catch-up debt so resume does not dump ticks.
+  lastWallClockMs = Date.now();
   return marketRunning;
 }
 
@@ -512,11 +733,13 @@ export function resumeMarket() {
   marketRunning = true;
   pausedByUser = false;
   pausedByBackground = false;
+  lastWallClockMs = Date.now();
   return marketRunning;
 }
 
 export function stopMarketClock() {
   marketRunning = false;
+  lastWallClockMs = Date.now();
   return marketRunning;
 }
 
@@ -528,10 +751,13 @@ export function bindVisibilityAutoPause(onChange) {
         marketRunning = false;
       }
     } else if (pausedByBackground && !pausedByUser) {
+      // Minimize / tab-hide: soft catch-up before resuming the live clock.
+      softCatchUp();
       pausedByBackground = false;
       marketRunning = true;
     } else if (pausedByBackground) {
       pausedByBackground = false;
+      lastWallClockMs = Date.now();
     }
     onChange?.(marketRunning);
   });
@@ -547,12 +773,16 @@ export function isMarketRunning() {
  */
 export function forceAdvanceGameDay() {
   const summaryDay = dayCount;
+  foldCareerCandleDay(summaryDay);
   marketDate.setDate(marketDate.getDate() + 1);
   const pre = CONFIG.PREMARKET_MINUTES ?? 30;
   marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
   marketDate = new Date(marketDate.getTime() - pre * 60000);
   dayCount++;
+  tapeRegime = getTapeRegime(dayCount);
   resetSessionAnchors();
+  rollQuotesForNewDay();
+  beginCareerCandleSession();
   stepMacroTowardNeutral(0.03);
   emit('dayEnd', { day: summaryDay });
   emit('newDay', { day: dayCount });
@@ -570,16 +800,20 @@ export function resetMarketForNewRun() {
   dayRealized = 0;
   speedMultiplier = 1;
   marketBeta = 0;
+  tapeRegime = getTapeRegime(dayCount);
+  clearRiskOffOverlay();
   pausedByUser = false;
   pausedByBackground = false;
   marketRunning = true;
   resetSessionAnchors();
   resetDailyShockAccum();
   resetMacro();
+  lastWallClockMs = Date.now();
   marketDate = new Date();
   const pre = CONFIG.PREMARKET_MINUTES ?? 30;
   marketDate.setHours(CONFIG.MARKET_OPEN.hour, CONFIG.MARKET_OPEN.minute, 0, 0);
   marketDate = new Date(marketDate.getTime() - pre * 60000);
+  clearSimCandleLedger();
   return serializeMarket();
 }
 
@@ -609,9 +843,12 @@ export function serializeMarket() {
     dayRealized,
     speedMultiplier,
     marketBeta,
+    tapeRegime,
+    lastWallClockMs,
     macro: serializeMacro(),
     halts: haltList,
     sessionOpen: openList,
+    candleLedger: serializeSimCandleLedger(),
   };
 }
 
@@ -629,6 +866,15 @@ export function loadMarket(data) {
   // Migration: older saves omit marketBeta → start neutral
   const beta = Number(data?.marketBeta);
   marketBeta = Number.isFinite(beta) ? Math.max(-1, Math.min(1, beta)) : 0;
+  // Migration: older saves omit tapeRegime → derive from current day
+  tapeRegime = data?.tapeRegime === 'chop' || data?.tapeRegime === 'trend'
+    ? data.tapeRegime
+    : getTapeRegime(dayCount);
+  // Migration: older saves omit lastWallClockMs → Date.now() (no huge catch-up dump)
+  {
+    const wall = Number(data?.lastWallClockMs);
+    lastWallClockMs = Number.isFinite(wall) && wall > 0 ? wall : Date.now();
+  }
   // Migration: older saves omit macro → baseline Fed/10Y
   loadMacro(data?.macro);
 
@@ -655,4 +901,6 @@ export function loadMarket(data) {
       if (sym && px > 0) sessionOpen.set(sym, px);
     }
   }
+  // Migration: older saves omit candleLedger → empty career chart history
+  loadSimCandleLedger(data?.candleLedger);
 }

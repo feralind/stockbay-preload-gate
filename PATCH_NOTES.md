@@ -1,5 +1,76 @@
 # StockWay — Patch Notes
 
+## Update — July 15, 2026 · Patch 1.0 / Firm & Career
+
+Four days on the desk. The firm got real estate, real licenses, and charts that finally remember *your* career — not last week’s Yahoo tape.
+
+---
+
+### New
+
+- **Estates** — Buy property. Build firm net worth. Portfolio shows cash + estate allocation like a real book.
+- **Institutional licenses** — **REP is out.** Climb **Retail → Series 7 → Research → Reg D** with exams, fees, and gates that teach the desk instead of minting a score.
+- **Office & mega goals** — Soft office stages, luxury sinks, and big career targets that feel like a climb — not a checklist dump.
+- **Collection prestige** — Museum energy. Milestones, flair, desk support unlocks. Vault photos back in the Collection Log.
+- **Staff dossiers** — HR that looks like HR. Cleaner roster, dossiers, and overview that don’t thrash when the tape ticks.
+- **Credit-scaled Buying Power** — Better personal credit → more room to work. Blow up a trade and take a short **revenge cool-down** before you revenge-buy the same mistake.
+- **Career charts (every ticker)** — Long timeframes start on real market history, then **slide into your sim days** as you play. Open NVDA on day 10 and it still lines up — not Apple-only magic.
+- **1W timeframe** — Replaces **5D**. One week of tape: 7 live → peel into sim, day by day.
+
+---
+
+### Gameplay
+
+- **Licenses gate power** — Perks, vault, and late-game toys check license + cash + prereqs. No more REP ladder cosplay.
+- **Buying Power** — Scales with personal credit band. Margin still stacks; cool-downs stop tilt spam.
+- **Estates & firm NW** — Property equity counts. Firm snapshot and portfolio allocation stay honest.
+- **Finance credit lessons** — The bank side teaches utilization, APR, and aging — not same-day farm loops.
+- **House lender loyalty** — Soft preference: aged on-time cycles earn Known → Preferred → House at one bank. Modest APR/limit edge there only; other lenders stay open. Late demotes.
+- **Estate foreclosure** — Drawn property credit that misses interest for several days can foreclose the cheapest estate (distressed recovery toward the HELOC). Fair+ business credit required to buy property or draw the line.
+- **Poor open-risk dampen** — Personal credit below Fair quietly scales deployable desk cash to **0.70×** on new longs and shorts (Margin leverage already gone at Poor).
+- **Checking & savings ATM** — Park reserves at lenders (Finance → Accounts). Bank cash counts in net worth but not Available Buying Power. Savings earns a soft game-scaled APY (category + loyalty, capped); interest settles on Tax Day. Checking is float only.
+- **World Events depth** — Bigger sim catalog (~25 briefs), game-day pacing + Fed antiflip, rate-sensitive scale with Fed distance, halt-safe shocks, and a quiet “Your book” flag when a print hits what you hold. First Fed/oil teach + day-end lesson lines. Risk-off nastiness is felt on the tape only — no second HUD tell.
+
+---
+
+### Quality of Life
+
+- **Glass desk polish** — Split canvas / card depth, clearer metrics, quieter Wave underfill.
+- **Cursor tips** — Glossary / Cash / Net Worth tips match Achievements: gold sheet, instant retarget, gone on navigate.
+- **Chart calm** — Y-axis floors, less breathing on live ticks, highs stay on screen for 1W / MAX.
+- **Estates / Staff / HUD** — No more flash-remount stutter when cash ticks (structure fingerprint + live patches).
+
+---
+
+### Fixes
+
+- **Charts on every symbol** — Late-opened tickers catch up career days instead of looking frozen on pure Yahoo.
+- **1D session seed** — Thin morning stubs no longer block a real session chart on names you haven’t babysat.
+- **Vault / Collection media** — Photos and art refresh; Collection Log shows what you own.
+- **Firm equity HUD** — Stutter cleaned up when NW moves.
+- **Black Market catalog stripped** — Shop/nav/coach already gone. Unreachable cosmetics removed from the pool and Collection chase/sets. Only two legacy floor relics remain for old saves (effects still apply if owned/equipped). The Seat claims from Collection.
+
+---
+
+### Backend / Tech
+
+- Sim candle ledger: hybrid launchpad + career daily per symbol; save/load with the market.
+- Day roll folds candles for the whole quote book; chart open backfills late symbols.
+- License framework replaces REP progression plumbing.
+- Credit BP multipliers + revenge cool-down matrix under test.
+
+---
+
+### How to play this build
+
+1. Launch with `START HERE.bat` or `StockWay.exe`.
+2. Check **Live** / **Offline**. Trade the tape.
+3. Earn licenses, hire staff, buy an estate, watch **1W → 1M → 1Y** become *your* history.
+
+Welcome back to the desk.
+
+---
+
 ## Update — July 10, 2026 · Patch 0.9 / Desk Update
 
 The desk got sharper. Offline mode, a real firm roster, deeper news, and a chart that behaves like it means it.
@@ -18,8 +89,6 @@ The desk got sharper. Offline mode, a real firm roster, deeper news, and a chart
 
 ---
 
-
-
 ### Gameplay
 
 - **Time** — **30 real minutes = 1 game day.** Speeds from **1x to 10x** — grind slow or burn the clock.
@@ -27,8 +96,6 @@ The desk got sharper. Offline mode, a real firm roster, deeper news, and a chart
 - **OP perks** — Cost more. Need higher **REP**. Power isn't free.
 
 ---
-
-
 
 ### Quality of Life
 
@@ -40,8 +107,6 @@ The desk got sharper. Offline mode, a real firm roster, deeper news, and a chart
 
 ---
 
-
-
 ### Fixes
 
 - **Electron** — Equity / REP popovers no longer fight the window drag region.
@@ -50,8 +115,6 @@ The desk got sharper. Offline mode, a real firm roster, deeper news, and a chart
 - **Listing vs Trade** — Prices match between the list and the trade screen.
 
 ---
-
-
 
 ### Backend / Tech
 
@@ -62,8 +125,6 @@ The desk got sharper. Offline mode, a real firm roster, deeper news, and a chart
 - Price seed / baseline / ticker consistency pass.
 
 ---
-
-
 
 ### How to play this build
 

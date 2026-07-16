@@ -1,6 +1,7 @@
 // @ts-check
 import { closeDialog, isDialogOpen } from './notify.js';
 import { closeHelp } from './help.js';
+import { isLoanConfirmOpen } from './ui/finance.js';
 
 let lastFocus = null;
 let closers = {};
@@ -20,6 +21,7 @@ export function closeTopOverlay() {
     return true;
   }
   const stack = [
+    { id: 'loan-confirm-overlay', isOpen: () => isLoanConfirmOpen(), close: () => closers.loanConfirm?.() },
     { id: 'app-dialog-overlay', isOpen: () => isDialogOpen(), close: () => closeDialog(false) },
     { id: 'order-confirm-overlay', close: () => closers.orderConfirm?.() },
     { id: 'trade-modal', close: () => closers.tradeModal?.() },

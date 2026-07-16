@@ -1,7 +1,7 @@
 // @ts-check
 /** Clamp and validate run data on load / import — blocks save-edit god-mode exploits. */
 import { CONFIG, PERKS } from './config.js';
-import { createFinanceState, getFirmDebt } from './finance.js';
+import { createFinanceState, getFirmDebt, sanitizeBankRelationships, getTotalBankDeposits } from './finance.js';
 import { createMetaState } from './meta.js';
 import { normalizePerkCalloutsShown } from './onboarding-walkthrough.js';
 import { KNOWN_VAULT_IDS, VAULT_COST_BY_ID, getVaultBookValue } from './vault.js';
@@ -22,6 +22,7 @@ import {
   COLLECTION_MILESTONE_BY_ID,
 } from './collection-log.js';
 import { sanitizeSetClaims, getSetById } from './collection-flavor.js';
+import { sanitizeLicenses, licensesFromLegacyRep } from './licenses.js';
 
 const MAX_CASH = 1e12;
 const MAX_SHARES = 1_000_000;
@@ -71,6 +72,14 @@ function sanitizePosition(pos, { isShort = false } = {}) {
   if (pos.stopLoss != null && Number.isFinite(Number(pos.stopLoss))) out.stopLoss = Number(pos.stopLoss);
   if (pos.takeProfit != null && Number.isFinite(Number(pos.takeProfit))) out.takeProfit = Number(pos.takeProfit);
   if (pos.priceCorrectedAck) out.priceCorrectedAck = true;
+  const entryPct = Number(pos.notionalPctAtEntry);
+  if (Number.isFinite(entryPct) && entryPct >= 0 && entryPct <= 10) {
+    out.notionalPctAtEntry = entryPct;
+  }
+  const mae = Number(pos.worstUnrealizedPct);
+  if (Number.isFinite(mae) && mae <= 0 && mae >= -1) {
+    out.worstUnrealizedPct = mae;
+  }
   return out;
 }
 
@@ -124,6 +133,38 @@ function sanitizePortfolio(portfolio) {
   p.realizedPnL = Number.isFinite(Number(p.realizedPnL)) ? Number(p.realizedPnL) : 0;
   p.totalTrades = Math.max(0, Math.floor(Number(p.totalTrades) || 0));
   p.history = Array.isArray(p.history) ? p.history.slice(0, 200) : [];
+  if (Array.isArray(p.dayPatienceWins)) {
+    p.dayPatienceWins = p.dayPatienceWins
+      .filter((w) => w && typeof w === 'object' && typeof w.id === 'string' && typeof w.text === 'string')
+      .slice(0, 8)
+      .map((w) => ({ id: String(w.id).slice(0, 40), text: String(w.text).slice(0, 200) }));
+  } else {
+    delete p.dayPatienceWins;
+  }
+
+  const rawRedExitMarkers = Array.isArray(p.dayLastRedExit)
+    ? p.dayLastRedExit
+    : (p.dayLastRedExit ? [p.dayLastRedExit] : []);
+  const redExitMarkers = rawRedExitMarkers
+    .filter((m) => m && typeof m === 'object')
+    .map((m) => {
+      const sym = String(m.sym || '').trim().toUpperCase();
+      const day = Math.floor(Number(m.day));
+      if (!/^[A-Z0-9.\-]{1,16}$/.test(sym) || !Number.isFinite(day) || day < 1) return null;
+      return { sym, day };
+    })
+    .filter(Boolean)
+    .slice(-8);
+  if (redExitMarkers.length) {
+    p.dayLastRedExit = redExitMarkers;
+  } else {
+    delete p.dayLastRedExit;
+  }
+  if (p.dayChased === true) {
+    p.dayChased = true;
+  } else {
+    delete p.dayChased;
+  }
 
   if (p.marginCall && typeof p.marginCall === 'object') {
     const level = p.marginCall.level === 'call' || p.marginCall.level === 'warn' ? p.marginCall.level : null;
@@ -146,12 +187,22 @@ function sanitizePortfolio(portfolio) {
     delete p.marginCall;
   }
 
+  {
+    const until = Number(p.buySuspendUntilMs);
+    if (Number.isFinite(until) && until > Date.now()) {
+      p.buySuspendUntilMs = Math.floor(until);
+    } else {
+      delete p.buySuspendUntilMs;
+    }
+  }
+
   const ta = p.taxAccrual && typeof p.taxAccrual === 'object' ? p.taxAccrual : {};
   p.taxAccrual = {
     shortTermGain: Math.max(0, Number(ta.shortTermGain) || 0),
     longTermGain: Math.max(0, Number(ta.longTermGain) || 0),
     shortTermLoss: Math.max(0, Number(ta.shortTermLoss) || 0),
     longTermLoss: Math.max(0, Number(ta.longTermLoss) || 0),
+    interestIncome: Math.max(0, Number(ta.interestIncome) || 0),
   };
   p.taxOwed = Math.max(0, Number(p.taxOwed) || 0);
 
@@ -172,6 +223,15 @@ export function sanitizeRunData(run) {
     out.perks = [...new Set(out.perks.filter((id) => KNOWN_PERK_IDS.has(id)))];
   } else {
     out.perks = [];
+  }
+
+  // Licensing migration: pre-license saves earn licenses from their old REP total.
+  // meta.reputation stays on the save but is inert.
+  if (Array.isArray(out.licenses)) {
+    out.licenses = sanitizeLicenses(out.licenses);
+  } else {
+    const legacyRep = Math.max(0, Math.floor(Number(out.meta?.reputation) || 0));
+    out.licenses = licensesFromLegacyRep(legacyRep);
   }
 
   if (Array.isArray(out.vaultOwned)) {
@@ -274,6 +334,7 @@ export function sanitizeRunData(run) {
     estateCreditUsed: out.estateCreditUsed,
     estateCashOutCount: out.estateCashOutCount,
     estateLastCashOutDay: out.estateLastCashOutDay,
+    estateCreditMissDays: out.estateCreditMissDays,
   });
   out.estateOwned = estate.estateOwned;
   out.estateSpentTotal = estate.estateSpentTotal;
@@ -286,6 +347,7 @@ export function sanitizeRunData(run) {
   out.estateUpkeepPerDay = estate.estateUpkeepPerDay;
   out.estateCashOutCount = estate.estateCashOutCount;
   out.estateLastCashOutDay = estate.estateLastCashOutDay;
+  out.estateCreditMissDays = estate.estateCreditMissDays;
 
   const collectionOpts = {
     blackMarketPool: BLACKMARKET_ITEM_POOL,
@@ -303,8 +365,12 @@ export function sanitizeRunData(run) {
     m.marginCallCoachShown = !!m.marginCallCoachShown;
     m.circuitHaltCoachShown = !!m.circuitHaltCoachShown;
     m.simStatusCoachShown = !!m.simStatusCoachShown;
+    m.graduationCoachShown = !!m.graduationCoachShown;
     m.blackMarketLegendCoachShown = !!m.blackMarketLegendCoachShown;
-    m.vaultAuraRepToday = Math.max(0, Math.floor(Number(m.vaultAuraRepToday) || 0));
+    m.teachMomentsShown = m.teachMomentsShown && typeof m.teachMomentsShown === 'object'
+      ? Object.fromEntries(Object.entries(m.teachMomentsShown).filter(([, v]) => v === true).slice(0, 64))
+      : {};
+    delete m.vaultAuraRepToday;
     const claimedFlairs = new Set(
       out.collectionClaims
         .map((id) => COLLECTION_MILESTONE_BY_ID.get(id)?.flair)
@@ -318,6 +384,7 @@ export function sanitizeRunData(run) {
       debt,
       vaultBook: getVaultBookValue(out),
       estateEquity: out.estateEquity,
+      bankDeposits: getTotalBankDeposits(out.finance),
     });
     const megaCtx = { netWorth, ...collectionOpts };
     m.megaGoalsClaimed = sanitizeMegaGoalsClaimed(m.megaGoalsClaimed, out, megaCtx);
@@ -354,9 +421,21 @@ export function sanitizeRunData(run) {
 
   if (out.finance && typeof out.finance === 'object') {
     const f = { ...createFinanceState(), ...out.finance };
-    f.personalCredit = clamp(Math.floor(Number(f.personalCredit) || 680), 300, 850);
-    f.businessCredit = clamp(Math.floor(Number(f.businessCredit) || 700), 300, 850);
+    f.personalCredit = clamp(Math.floor(Number(f.personalCredit) || 600), 300, 850);
+    f.businessCredit = clamp(Math.floor(Number(f.businessCredit) || 630), 300, 850);
+    // Old desks defaulted to personal 680 / business 700 — Series 7 lit green on Day 1.
+    // Virgin files (never borrowed) still holding those exact scores get the thin-file retune.
+    const borrowed = Math.max(0, Number(f.totalBorrowed) || 0);
+    const loans = Array.isArray(f.loans) ? f.loans.length : 0;
+    const virgin = borrowed === 0 && loans === 0 && f.firstCreditDay == null;
+    if (virgin) {
+      if (f.personalCredit === 680) f.personalCredit = 600;
+      if (f.businessCredit === 700) f.businessCredit = 630;
+    }
+    const lastLate = Math.floor(Number(f.lastLateDay));
+    f.lastLateDay = Number.isFinite(lastLate) && lastLate >= 1 ? lastLate : null;
     if (!Array.isArray(f.loans)) f.loans = [];
+    sanitizeBankRelationships(f);
     out.finance = f;
   }
 

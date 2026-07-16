@@ -1,13 +1,36 @@
 // @ts-check
 /**
- * Desk glossary tips — 0.5s dwell, equity-popover visual language, anti-flicker across re-renders.
- * One-shot coachmarks / equity+REP rich popovers stay separate; this covers ongoing “what is this?” help.
+ * Desk glossary tips — Achievements-style cursor sheets.
+ * First open keeps a short dwell; switching between gloss targets swaps immediately.
+ * Force-hide on switchView (see .cursor/rules/stockway-cursor-tips.mdc).
  */
 import { getHaltInfo, CIRCUIT_BREAK_PCT, CIRCUIT_HALT_MINUTES } from './market.js';
+import {
+  getActiveLoans, getFirmDebt, getNextLoanPaymentDue, minPaymentForLoan,
+} from './finance.js';
 
+/** First-open dwell only — retargets while a tip is already showing are instant. */
 const HOVER_MS = 500;
-/** Grace so DOM re-renders (market ticks) don't flash the tip off. */
-const HIDE_GRACE_MS = 220;
+/** Grace so DOM re-renders (market ticks) don't flash the tip off between siblings. */
+const HIDE_GRACE_MS = 120;
+
+/**
+ * Live desk snapshot for dynamic tips (debt ledger, etc.).
+ * @type {null | (() => { finance?: object, estateCreditUsed?: number, vaultPledgedValue?: number, firmStrengthPct?: number })}
+ */
+let glossLiveContext = null;
+
+/**
+ * @param {null | (() => { finance?: object, estateCreditUsed?: number, vaultPledgedValue?: number, firmStrengthPct?: number })} fn
+ */
+export function setGlossLiveContext(fn) {
+  glossLiveContext = typeof fn === 'function' ? fn : null;
+}
+
+function fmtMoney(n) {
+  const v = Math.round(Number(n) || 0);
+  return `$${v.toLocaleString()}`;
+}
 
 /**
  * @typedef {{
@@ -23,25 +46,27 @@ const HIDE_GRACE_MS = 220;
 /** Static tip sheets keyed by data-gloss id. */
 export const GLOSS_TIPS = {
   'buying-power': {
-    title: 'Buying Power',
-    blurb: 'Cash you can still put into new trades right now.',
+    title: 'Available Buying Power',
+    blurb: 'Desk cash you can still put into new long trades — scaled by personal credit. Bank deposits do not add buying power.',
     rows: [
-      { label: 'Without Margin', value: 'Equals spendable cash' },
-      { label: 'With Margin perk', value: 'About 2× cash on longs' },
-      { label: 'Shorts', value: 'Lock margin separately — not free BP' },
+      { label: 'Without Margin + Fair+', value: 'Equals desk cash' },
+      { label: 'Margin + Good credit (670+)', value: '2× desk cash on longs' },
+      { label: 'Margin + Fair (580–669)', value: '1.5× desk cash on longs' },
+      { label: 'Poor (<580)', value: '0.70× desk cash (opens dampened)' },
+      { label: 'Options', value: 'Cash-only premiums — not this BP line' },
     ],
-    note: 'Vault book value does not add buying power. Thin cushion + shorts can trigger margin stress.',
+    note: 'Vault book and bank checking/savings count toward net worth, not Available Buying Power.',
     arcane: 'Pros size risk from buying power first — cash is oxygen; leverage is borrowed breath.',
   },
   'net-worth': {
     title: 'Net Worth vs Trading Equity',
     blurb: 'Two ledgers: the trading book vs the firm statement.',
     rows: [
-      { label: 'Trading equity', value: 'Cash + positions − debt' },
-      { label: 'Net Worth', value: 'Trading equity + Vault book' },
-      { label: 'Buying power', value: 'Spendable cash — not NW' },
+      { label: 'Trading equity', value: 'Desk cash + positions − debt' },
+      { label: 'Net Worth', value: 'Trading equity + Vault + estates + bank deposits' },
+      { label: 'Buying power', value: 'Desk cash only — not parked bank cash' },
     ],
-    note: 'Vault appraisal books into NW; it does not fund trades.',
+    note: 'Vault appraisal and bank reserves book into NW; only desk cash funds trades.',
     arcane: 'Equity trades. Net Worth states.',
   },
   'credit-score': {
@@ -55,11 +80,55 @@ export const GLOSS_TIPS = {
     note: 'Utilization = open debt ÷ available limits.',
     arcane: 'Credit is rented trust.',
   },
+  'total-debt': {
+    title: 'Total Debt',
+    blurb: 'Who you owe, how much, and what auto-pay needs at day end.',
+    rows: [
+      { label: 'Sources', value: 'Bank loans + property credit' },
+      { label: 'Minimum', value: 'Per-loan auto-pay each game day' },
+      { label: 'Next payment', value: 'Sum of tonight’s minimums' },
+    ],
+    note: 'Missed auto-pay damages credit harder than on-time pays rebuild it.',
+    arcane: 'Debt is a tool until it becomes the desk.',
+  },
+  'vault-pledged': {
+    title: 'Vault Pledged',
+    blurb: 'Collectibles marked as collateral — lenders count about 50% LTV toward borrow ceilings.',
+    rows: [
+      { label: 'LTV', value: '50% of pledged appraisal' },
+      { label: 'Effect', value: 'Raises facility room at underwriting' },
+      { label: 'Buying power', value: 'Does not fund trades' },
+    ],
+    note: 'Pledge from the Vault tab. Appraisal books into NW; cash still comes from the trading book.',
+    arcane: 'Collateral is trust you can point at.',
+  },
+  'firm-strength': {
+    title: 'Firm Strength',
+    blurb: 'Net-worth facility boost — a stronger book unlocks larger underwriting lines.',
+    rows: [
+      { label: 'Source', value: 'Firm net worth (equity + vault − debt)' },
+      { label: 'Effect', value: '+% to bank facility ceilings' },
+      { label: 'Credit', value: 'Still gates approval — strength sizes the line' },
+    ],
+    note: 'Grow NW to expand how much each lender will underwrite.',
+    arcane: 'Banks lend to the statement, not the story.',
+  },
+  'next-payment': {
+    title: 'Next Payment',
+    blurb: 'Cash auto-pulled at day end for every active loan — keep this much free or take a late hit.',
+    rows: [
+      { label: 'Cadence', value: 'Every game day (not monthly)' },
+      { label: 'Minimum', value: 'About 2× daily interest or half of balance ÷ days left' },
+      { label: 'Term', value: '30 / 60 / 90 game days — pick when you borrow' },
+    ],
+    note: 'Missed auto-pay damages credit harder than on-time pays rebuild it.',
+    arcane: 'Liquidity is the real collateral.',
+  },
   'office-progress': {
     title: 'Office Progression',
     blurb: 'Cosmetic cash ladder for firm status — no fill, margin, or APR changes.',
     rows: [
-      { label: 'Gates', value: 'Net Worth + REP + cash for next tier' },
+      { label: 'Gates', value: 'Net Worth + license + cash for next tier' },
       { label: 'Owned tier', value: 'Purchased look (ambient)' },
       { label: 'Peak', value: 'Investment Empire' },
     ],
@@ -142,8 +211,8 @@ export const GLOSS_TIPS = {
     title: 'Quote Feed',
     blurb: 'How the desk is getting prices — not a brokerage connection.',
     rows: [
-      { label: 'Live / Connected', value: 'Can fetch base quotes' },
-      { label: 'Simulation', value: 'Clock, events & halts drive the tape' },
+      { label: 'Online', value: 'Can fetch base quotes' },
+      { label: 'Simulated tape', value: 'Clock, events & halts drive prices' },
       { label: 'Offline', value: 'Cached baselines or seeds' },
     ],
     note: 'Paper money only. Nothing leaves the browser except quote lookups.',
@@ -217,7 +286,7 @@ export const GLOSS_TIPS = {
   },
   challenge: {
     title: 'Daily Challenge',
-    blurb: 'A day goal with cash and REP if you finish it before the day ends.',
+    blurb: 'A day goal with a cash reward if you finish it before the day ends.',
   },
   payroll: {
     title: 'Payroll',
@@ -331,6 +400,89 @@ export function resolveGlossTip(id, el) {
       arcane: base.arcane,
     };
   }
+
+  if (id === 'total-debt') {
+    const base = GLOSS_TIPS['total-debt'];
+    const ctx = glossLiveContext?.() || {};
+    const finance = ctx.finance || { loans: [] };
+    const estateCredit = Math.max(0, Number(ctx.estateCreditUsed) || 0);
+    const loans = getActiveLoans(finance);
+    const total = getFirmDebt(finance, estateCredit);
+    const next = getNextLoanPaymentDue(finance);
+
+    if (!loans.length && estateCredit <= 0) {
+      return {
+        title: base.title,
+        blurb: base.blurb,
+        rows: [
+          { label: 'Balance', value: '$0' },
+          { label: 'Creditors', value: 'None — no open loans' },
+          { label: 'Next payment', value: next.dueLabel },
+        ],
+        note: 'Borrow from Lenders to leverage the desk. Auto-pay runs every game day.',
+        arcane: base.arcane,
+      };
+    }
+
+    /** @type {Array<{ label: string, value: string }>} */
+    const rows = loans.slice(0, 6).map((loan) => {
+      const min = minPaymentForLoan(loan);
+      const bank = loan.bankName || loan.bankId || 'Lender';
+      const type = loan.type === 'company' ? 'company' : 'personal';
+      return {
+        label: `${bank} · ${type}`,
+        value: `${fmtMoney(loan.balance)} · min $${min.toFixed(2)}/day · ${Math.max(0, Math.floor(Number(loan.daysLeft) || 0))}d left`,
+      };
+    });
+    if (loans.length > 6) {
+      rows.push({ label: 'More loans', value: `+${loans.length - 6} not shown` });
+    }
+    if (estateCredit > 0) {
+      rows.push({ label: 'Property credit', value: fmtMoney(estateCredit) });
+    }
+    rows.push({ label: 'Total owed', value: fmtMoney(total) });
+    rows.push({
+      label: 'Next payment',
+      value: next.loanCount
+        ? `${fmtMoney(next.due)} · ${next.dueLabel}`
+        : next.dueLabel,
+    });
+
+    return {
+      title: base.title,
+      blurb: base.blurb,
+      rows,
+      note: base.note,
+      arcane: base.arcane,
+    };
+  }
+
+  if (id === 'vault-pledged') {
+    const base = GLOSS_TIPS['vault-pledged'];
+    const ctx = glossLiveContext?.() || {};
+    const pledged = Math.max(0, Number(ctx.vaultPledgedValue) || 0);
+    return {
+      ...base,
+      rows: [
+        { label: 'Pledged now', value: fmtMoney(pledged) },
+        ...(base.rows || []),
+      ],
+    };
+  }
+
+  if (id === 'firm-strength') {
+    const base = GLOSS_TIPS['firm-strength'];
+    const ctx = glossLiveContext?.() || {};
+    const pct = Math.max(0, Number(ctx.firmStrengthPct) || 0);
+    return {
+      ...base,
+      rows: [
+        { label: 'Boost now', value: `+${pct}% facility room` },
+        ...(base.rows || []),
+      ],
+    };
+  }
+
   return GLOSS_TIPS[id] || null;
 }
 
@@ -351,13 +503,11 @@ export function buildGlossTipHtml(tip) {
   const arcane = tip.arcane
     ? `<div class="gloss-tip-arcane"><span class="gloss-tip-arcane-label">Desk Lore</span><p>${escapeHtml(tip.arcane)}</p></div>`
     : '';
-  const hasBody = !!(rows || bullets || note || arcane);
   return `
-    <div class="stat-popover-title">${escapeHtml(tip.title)}</div>
-    <p class="stat-popover-blurb">${escapeHtml(tip.blurb)}</p>
+    <strong class="ach-cursor-tip-name">${escapeHtml(tip.title)}</strong>
+    <span class="ach-cursor-tip-desc">${escapeHtml(tip.blurb || '')}</span>
     ${rows}
     ${bullets}
-    ${hasBody ? '<div class="stat-popover-sep"></div>' : ''}
     ${note}
     ${arcane}`;
 }
@@ -386,21 +536,17 @@ let lastPointerY = 0;
 function ensureTipEl() {
   if (tipEl?.isConnected) return tipEl;
   tipEl = document.getElementById('gloss-tooltip-root');
-  if (tipEl) return tipEl;
-  tipEl = document.createElement('div');
-  tipEl.id = 'gloss-tooltip-root';
-  tipEl.className = 'stat-popover gloss-tip-root hidden';
+  if (!tipEl) {
+    tipEl = document.createElement('div');
+    tipEl.id = 'gloss-tooltip-root';
+    document.body.appendChild(tipEl);
+  }
+  // Same shell as Achievements cursor tip — pointer-events none so tips never trap hover.
+  tipEl.className = 'ach-cursor-tip gloss-tip-root';
   tipEl.setAttribute('role', 'tooltip');
   tipEl.setAttribute('aria-hidden', 'true');
   tipEl.hidden = true;
-  document.body.appendChild(tipEl);
-
-  tipEl.addEventListener('pointerenter', () => {
-    clearHideTimer();
-  });
-  tipEl.addEventListener('pointerleave', () => {
-    if (tipOpenId) scheduleHide(tipOpenId);
-  });
+  tipEl.classList.remove('is-on', 'is-open', 'hidden');
   return tipEl;
 }
 
@@ -439,9 +585,19 @@ function glossAtPoint(x, y) {
  * @param {string} id
  * @param {{ restart?: boolean }} [opts]
  */
+function tipIsVisible() {
+  return !!(tipOpenId && tipEl && !tipEl.hidden && tipEl.classList.contains('is-on'));
+}
+
 function armDwell(el, id, opts = {}) {
   clearHideTimer();
-  if (tipOpenId === id && tipEl && !tipEl.hidden) {
+  // Same tip already up — refresh position/content only.
+  if (tipOpenId === id && tipIsVisible()) {
+    showTip(el, id);
+    return;
+  }
+  // Tip already showing for another marker — swap immediately (Achievements handoff).
+  if (tipIsVisible() && tipOpenId !== id) {
     showTip(el, id);
     return;
   }
@@ -454,8 +610,9 @@ function armDwell(el, id, opts = {}) {
   clearShowTimer();
   tipTimer = setTimeout(() => {
     tipTimer = null;
-    const live = glossAtPoint(lastPointerX, lastPointerY)
-      || (el.isConnected ? el : document.querySelector(`[data-gloss="${cssEscape(id)}"]`));
+    // Only the live element under the cursor — never fall back to another view's
+    // matching data-gloss (that resurrected Cash tips after navigate).
+    const live = glossAtPoint(lastPointerX, lastPointerY);
     if (!(live instanceof HTMLElement)) return;
     if (live.getAttribute('data-gloss') !== id) return;
     showTip(live, id);
@@ -471,9 +628,8 @@ export function hideGlossTip() {
   pendingSince = 0;
   const el = tipEl || document.getElementById('gloss-tooltip-root');
   if (el) {
-    el.classList.add('hidden');
-    el.classList.remove('is-open');
     el.hidden = true;
+    el.classList.remove('is-on', 'is-open', 'hidden');
     el.setAttribute('aria-hidden', 'true');
     el.innerHTML = '';
     delete el.dataset.glossId;
@@ -481,24 +637,22 @@ export function hideGlossTip() {
 }
 
 /**
- * @param {HTMLElement} anchor
+ * Place like Achievements — follow cursor, flip near viewport edges.
  * @param {HTMLElement} popover
  */
-function placeTip(anchor, popover) {
-  const gap = 8;
-  const pad = 8;
+function placeTipAtCursor(popover) {
+  const pad = 14;
   popover.style.visibility = 'hidden';
   popover.hidden = false;
-  popover.classList.add('is-open');
-  popover.classList.remove('hidden');
-  const rect = anchor.getBoundingClientRect();
-  const pw = popover.offsetWidth || 280;
-  const ph = popover.offsetHeight || 160;
-  let left = rect.left;
-  let top = rect.bottom + gap;
-  if (left + pw > window.innerWidth - pad) left = window.innerWidth - pw - pad;
-  if (left < pad) left = pad;
-  if (top + ph > window.innerHeight - pad) top = Math.max(pad, rect.top - ph - gap);
+  popover.classList.add('is-on');
+  const tw = popover.offsetWidth || 220;
+  const th = popover.offsetHeight || 80;
+  let left = lastPointerX + pad;
+  let top = lastPointerY + pad;
+  if (left + tw > window.innerWidth - 8) left = lastPointerX - tw - pad;
+  if (top + th > window.innerHeight - 8) top = lastPointerY - th - pad;
+  if (left < 8) left = 8;
+  if (top < 8) top = 8;
   popover.style.left = `${Math.round(left)}px`;
   popover.style.top = `${Math.round(top)}px`;
   popover.style.visibility = '';
@@ -517,17 +671,14 @@ function showTip(el, id) {
   tipOpenId = id;
   pendingId = id;
   const root = ensureTipEl();
-  if (root.dataset.glossId !== id || root.hidden) {
-    root.innerHTML = buildGlossTipHtml(tip);
+  const html = buildGlossTipHtml(tip);
+  const dynamic = id === 'total-debt' || id === 'vault-pledged' || id === 'firm-strength' || id === 'trading-halted';
+  if (root.dataset.glossId !== id || root.hidden || dynamic) {
+    root.innerHTML = html;
     root.dataset.glossId = id;
-  } else if (id === 'trading-halted') {
-    root.innerHTML = buildGlossTipHtml(tip);
   }
   root.setAttribute('aria-hidden', 'false');
-  placeTip(el, root);
-  requestAnimationFrame(() => {
-    if (tipOpenId === id && tipAnchor) placeTip(tipAnchor, root);
-  });
+  placeTipAtCursor(root);
 }
 
 /**
@@ -535,7 +686,6 @@ function showTip(el, id) {
  */
 function scheduleHide(id) {
   clearHideTimer();
-  // Keep dwell timer — portfolio re-renders fire pointerout while the cursor never moved.
   hideTimer = setTimeout(() => {
     hideTimer = null;
     const live = glossAtPoint(lastPointerX, lastPointerY);
@@ -546,14 +696,8 @@ function scheduleHide(id) {
         return;
       }
     }
-    if (tipEl?.matches?.(':hover')) return;
     hideGlossTip();
   }, HIDE_GRACE_MS);
-}
-
-function cssEscape(id) {
-  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(id);
-  return String(id).replace(/"/g, '\\"');
 }
 
 /**
@@ -563,7 +707,8 @@ export function resyncGlossaryHover() {
   if (!initialized) return;
   const live = glossAtPoint(lastPointerX, lastPointerY);
   if (!(live instanceof HTMLElement)) {
-    if (tipOpenId && tipEl && !tipEl.hidden && tipEl.matches?.(':hover')) return;
+    // Cursor left the gloss target — do not keep a floating tip alive.
+    if (tipOpenId) hideGlossTip();
     return;
   }
   const id = live.getAttribute('data-gloss');
@@ -586,6 +731,7 @@ export function initGlossaryTooltips() {
   document.addEventListener('pointermove', (e) => {
     lastPointerX = e.clientX;
     lastPointerY = e.clientY;
+    if (tipOpenId && tipEl && !tipEl.hidden) placeTipAtCursor(tipEl);
   }, { passive: true });
 
   document.addEventListener('pointerover', (e) => {
@@ -606,12 +752,17 @@ export function initGlossaryTooltips() {
     const t = /** @type {HTMLElement} */ (e.target);
     const el = t?.closest?.('[data-gloss]');
     if (!(el instanceof HTMLElement)) return;
-    const to = /** @type {Node | null} */ (e.relatedTarget);
+    const to = /** @type {HTMLElement | null} */ (e.relatedTarget);
     if (to && el.contains(to)) return;
     const id = el.getAttribute('data-gloss');
     if (!id) return;
+    // Moving onto another gloss marker — don't hide/dwell; pointerover swaps instantly.
+    const nextGloss = to?.closest?.('[data-gloss]');
+    if (nextGloss instanceof HTMLElement && !nextGloss.classList.contains('has-stat-popover')) {
+      clearHideTimer();
+      return;
+    }
     scheduleHide(id);
-    // Node removal (re-render): immediately try to re-bind under the cursor.
     if (!to) {
       queueMicrotask(() => resyncGlossaryHover());
     }
@@ -619,15 +770,14 @@ export function initGlossaryTooltips() {
 
   document.addEventListener('pointerdown', (e) => {
     const t = /** @type {HTMLElement} */ (e.target);
-    if (t?.closest?.('#gloss-tooltip-root')) return;
     if (t?.closest?.('[data-gloss]')) {
       hideGlossTip();
     }
   });
 
-  window.addEventListener('resize', () => {
-    if (!tipOpenId || !tipAnchor || !tipEl || tipEl.hidden) return;
-    placeTip(tipAnchor, tipEl);
+  window.addEventListener('blur', () => hideGlossTip());
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hideGlossTip();
   });
 }
 

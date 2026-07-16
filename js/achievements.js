@@ -262,9 +262,9 @@ export const ACHIEVEMENTS = [
     id: 'rep_200',
     tier: 'platinum',
     name: 'Known Quantity',
-    desc: 'Reach 200 reputation',
+    desc: 'Pass the Series 7 exam',
     reward: 380,
-    check: (s) => (s.meta?.reputation || 0) >= 200,
+    check: (s) => (s.licenses || []).includes('series7'),
   },
   {
     id: 'fifty_trades',
@@ -315,9 +315,9 @@ export const ACHIEVEMENTS = [
     id: 'rep_500',
     tier: 'diamond',
     name: 'Street Cred',
-    desc: 'Reach 500 reputation',
+    desc: 'Earn the Series 86/87 Research license',
     reward: 650,
-    check: (s) => (s.meta?.reputation || 0) >= 500,
+    check: (s) => (s.licenses || []).includes('research'),
   },
 
   /* ── Master ── */

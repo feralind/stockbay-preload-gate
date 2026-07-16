@@ -61,6 +61,18 @@ test('electron main has shutdown token gate', () => {
   assert.match(main, /isBlockedStatic/);
 });
 
+test('share play link is host-loopback only', () => {
+  const main = fs.readFileSync(path.join(__dirname, '../electron/main.cjs'), 'utf8');
+  const share = fs.readFileSync(path.join(__dirname, '../electron/share-tunnel.cjs'), 'utf8');
+  assert.match(main, /isLoopbackReq/);
+  assert.match(main, /\/api\/share\/start/);
+  assert.match(main, /\/api\/share\/stop/);
+  assert.match(main, /Host only/);
+  assert.match(main, /if \(local\) cfg\.shutdownToken/);
+  assert.match(share, /trycloudflare/);
+  assert.equal(fs.existsSync(path.join(__dirname, '../js/share-play.js')), true);
+});
+
 test('serve.ps1 has shutdown token gate', () => {
   const ps1 = fs.readFileSync(path.join(__dirname, '../serve.ps1'), 'utf8');
   assert.match(ps1, /\$ShutdownToken/);

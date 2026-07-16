@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const https = require('https');
 const crypto = require('crypto');
+const shareTunnel = require('./share-tunnel.cjs');
 
 const PREFERRED_PORTS = [3847, 8080, 3848];
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0';
@@ -94,7 +95,8 @@ function toYahoo(sym) { return String(sym || '').replace('.', '-'); }
 
 const YAHOO_CANDLE_RANGES = {
   '1D': { interval: '5m', range: '1d' },
-  '5D': { interval: '15m', range: '5d' },
+  '1W': { interval: '1d', range: '1mo' },
+  '5D': { interval: '1d', range: '1mo' }, // legacy alias → 1W
   '1M': { interval: '60m', range: '1mo' },
   '6M': { interval: '1d', range: '6mo' },
   YTD: { interval: '1d', range: 'ytd' },
@@ -144,10 +146,30 @@ async function yahooCandles(sym, resolution, count) {
   const data = await fetchJson(url);
   const r = data?.chart?.result?.[0];
   if (!r?.timestamp) return null;
-  const q = r.indicators.quote[0];
-  const candles = r.timestamp.map((t, i) => ({
-    time: t, open: q.open[i], high: q.high[i], low: q.low[i], close: q.close[i], volume: q.volume[i] || 0,
-  })).filter(c => [c.open, c.high, c.low, c.close].every(Number.isFinite));
+  const q = r.indicators?.quote?.[0];
+  if (!q) return null;
+  const adj = r.indicators?.adjclose?.[0]?.adjclose;
+  const candles = r.timestamp.map((t, i) => {
+    const open = q.open?.[i];
+    const high = q.high?.[i];
+    const low = q.low?.[i];
+    const close = q.close?.[i];
+    const volume = q.volume?.[i] || 0;
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+    const adjClose = Array.isArray(adj) ? Number(adj[i]) : NaN;
+    if (Number.isFinite(adjClose) && adjClose > 0 && close > 0) {
+      const scale = adjClose / close;
+      return {
+        time: t,
+        open: open * scale,
+        high: high * scale,
+        low: low * scale,
+        close: adjClose,
+        volume,
+      };
+    }
+    return { time: t, open, high, low, close, volume };
+  }).filter(Boolean);
   return count > 0 ? candles.slice(-count) : candles;
 }
 
@@ -176,14 +198,54 @@ function isValidSymbol(sym) {
   return /^[A-Z0-9.\-]{1,16}$/.test(String(sym || '').toUpperCase());
 }
 
+function isLoopbackReq(req) {
+  const ip = String(req.socket?.remoteAddress || '');
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
 function createRequestHandler(root) {
   return async (req, res) => {
     try {
       const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
       const pathname = url.pathname;
+      const local = isLoopbackReq(req);
 
       if (pathname === '/api/config') {
-        sendJson(res, 200, { yahoo: true, finnhub: !!finnhubKey, port: PORT, app: 'StockWay', shutdownToken: SHUTDOWN_TOKEN });
+        const cfg = { yahoo: true, finnhub: !!finnhubKey, port: PORT, app: 'StockWay', shareAvailable: true };
+        if (local) cfg.shutdownToken = SHUTDOWN_TOKEN;
+        sendJson(res, 200, cfg);
+        return;
+      }
+
+      if (pathname === '/api/share/status') {
+        if (!local) { sendJson(res, 403, { error: 'Host only' }); return; }
+        sendJson(res, 200, shareTunnel.getStatus());
+        return;
+      }
+
+      if (pathname === '/api/share/start') {
+        if (!local) { sendJson(res, 403, { error: 'Host only' }); return; }
+        if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST required' }); return; }
+        try {
+          const status = await shareTunnel.startTunnel(PORT, app.getPath('userData'));
+          sendJson(res, 200, status);
+        } catch (err) {
+          sendJson(res, 502, {
+            active: false,
+            url: null,
+            status: 'error',
+            error: err?.message || 'Could not create share link',
+            provider: null,
+            detail: null,
+          });
+        }
+        return;
+      }
+
+      if (pathname === '/api/share/stop') {
+        if (!local) { sendJson(res, 403, { error: 'Host only' }); return; }
+        if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST required' }); return; }
+        sendJson(res, 200, await shareTunnel.stopTunnel());
         return;
       }
 
@@ -223,7 +285,7 @@ function createRequestHandler(root) {
         const sym = (url.searchParams.get('symbol') || 'AAPL').toUpperCase().slice(0, 16);
         if (!isValidSymbol(sym)) { sendJson(res, 400, { error: 'Invalid symbol' }); return; }
         const resolution = url.searchParams.get('range') || url.searchParams.get('resolution') || '1D';
-        const count = Math.min(500, Math.max(1, parseInt(url.searchParams.get('count') || '120', 10) || 120));
+        const count = Math.min(3600, Math.max(1, parseInt(url.searchParams.get('count') || '120', 10) || 120));
         try {
           const candles = await yahooCandles(sym, resolution, count);
           sendJson(res, candles ? 200 : 502, { candles: candles || [] });
@@ -232,6 +294,7 @@ function createRequestHandler(root) {
       }
 
       if (pathname === '/api/shutdown') {
+        if (!local) { sendJson(res, 403, { error: 'Forbidden' }); return; }
         if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST required' }); return; }
         const token = String(req.headers['x-stockway-shutdown'] || '');
         if (token !== SHUTDOWN_TOKEN) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -439,15 +502,46 @@ async function createMainWindow() {
   });
 
   let closingAfterSave = false;
+  const CLOSE_SAVE_TIMEOUT_MS = 3000;
+
+  function finishCloseAfterSave(ok) {
+    if (closingAfterSave) return;
+    closingAfterSave = true;
+    if (!ok) {
+      console.warn('[StockWay] Emergency save did not confirm; quitting anyway.');
+    }
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
+    } catch (_) { /* ignore */ }
+    mainWindow = null;
+    app.quit();
+  }
+
   mainWindow.on('close', (e) => {
     if (closingAfterSave || isQuitting) return;
     e.preventDefault();
-    mainWindow.webContents.executeJavaScript(
-      'typeof window.__stockwayFlushSave==="function"&&window.__stockwayFlushSave()',
-      true,
-    ).catch(() => null).finally(() => {
-      closingAfterSave = true;
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      finishCloseAfterSave(false);
+    }, CLOSE_SAVE_TIMEOUT_MS);
+
+    Promise.resolve(
+      mainWindow.webContents.executeJavaScript(
+        `(function(){try{var f=window.__stockwayFlushSave;return typeof f==="function"?Promise.resolve(f()):false;}catch(e){return false;}})()`,
+        true,
+      ),
+    ).then((ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finishCloseAfterSave(!!ok);
+    }).catch(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      finishCloseAfterSave(false);
     });
   });
 
@@ -458,9 +552,11 @@ if (gotLock) {
   app.whenReady().then(createMainWindow);
   app.on('before-quit', () => {
     isQuitting = true;
+    try { shareTunnel.stopTunnel(); } catch (_) {}
     closeServer();
   });
   app.on('window-all-closed', () => {
+    try { shareTunnel.stopTunnel(); } catch (_) {}
     closeServer();
     if (process.platform !== 'darwin') app.quit();
   });

@@ -19,9 +19,11 @@ export function configureChartPanelUi({ renderNews } = {}) {
 export function getChartResolution() { return chartResolution; }
 
 export function setChartResolution(res) {
-  chartResolution = res;
+  let next = String(res || '1D').toUpperCase();
+  if (next === '5D') next = '1W';
+  chartResolution = next;
   document.querySelectorAll('.tf-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.res === res);
+    btn.classList.toggle('active', btn.dataset.res === chartResolution);
   });
 }
 

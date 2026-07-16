@@ -1,5 +1,6 @@
 // @ts-check
 import { getSpendableCash } from './portfolio.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
 
 export const THE_SEAT = {
   id: 'theSeat',
@@ -12,6 +13,11 @@ export const THE_SEAT = {
   icon: 'seat-floor',
 };
 
+/** License tier that unlocks Seat listings/purchase (from legacy repRequired). */
+export function seatLicense() {
+  return requiredLicenseForRep(THE_SEAT.repRequired);
+}
+
 export const SEAT_LISTING_RATE = 1 / 150;
 
 function seededSeatRoll(day) {
@@ -20,17 +26,17 @@ function seededSeatRoll(day) {
   return x - Math.floor(x);
 }
 
-export function isSeatListingActive(seedDay, meta = {}) {
-  const rep = Number(meta?.reputation) || 0;
-  if (rep < THE_SEAT.repRequired) return false;
-  if (meta?.seatOwned) return false;
+export function isSeatListingActive(seedDay, ctx = {}) {
+  if (!hasLicense(ctx?.licenses, seatLicense().id)) return false;
+  if (ctx?.seatOwned) return false;
   return seededSeatRoll(seedDay) < SEAT_LISTING_RATE;
 }
 
-export function canPurchaseSeat({ cash = 0, reputation = 0, seatOwned = false, seatListingActive = false } = {}) {
+export function canPurchaseSeat({ cash = 0, licenses = ['retail'], seatOwned = false, seatListingActive = false } = {}) {
   if (seatOwned) return { ok: false, reason: 'Already owned', code: 'owned' };
-  if (Number(reputation) < THE_SEAT.repRequired) {
-    return { ok: false, reason: `Requires ${THE_SEAT.repRequired} REP`, code: 'rep' };
+  const licNeed = seatLicense();
+  if (!hasLicense(licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
   }
   if (!seatListingActive) return { ok: false, reason: 'Seat listing not active today', code: 'window' };
   if (Number(cash) < THE_SEAT.cost) {
@@ -41,12 +47,12 @@ export function canPurchaseSeat({ cash = 0, reputation = 0, seatOwned = false, s
 
 export function purchaseSeat(state, currentDay) {
   const listingActive = isSeatListingActive(currentDay, {
-    reputation: state.meta?.reputation || 0,
+    licenses: state.licenses,
     seatOwned: state.seatOwned,
   });
   const gate = canPurchaseSeat({
     cash: getSpendableCash(state.portfolio),
-    reputation: state.meta?.reputation || 0,
+    licenses: state.licenses,
     seatOwned: !!state.seatOwned,
     seatListingActive: listingActive,
   });

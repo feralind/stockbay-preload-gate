@@ -10,6 +10,7 @@ import {
 import { PERKS } from '../config.js';
 import { showAlert } from '../notify.js';
 import { sfxError } from '../sfx.js';
+import { isVirginDesk } from './dashboard.js';
 import { getSelectedSym, setSelectedSym } from './selection.js';
 import { fmt } from './shared.js';
 
@@ -26,20 +27,29 @@ export function configureAiAdvisor(actions = {}) {
 }
 
 /**
- * Shared locked-state card for AI Advisor (sidebar + full page).
- * Keep ~compact so empty states don't dominate the layout.
+ * Shared locked-state card for AI Advisor (full page + late desk).
+ * Sidebar Day-1 uses the compact strip instead.
  */
 export function buildAiLockedCardHtml() {
   const perk = PERKS.aiAdvisor;
   const cost = perk?.cost ?? 18500;
-  const rep = perk?.repRequired ?? 280;
-  const tier = perk?.tierLabel || 'Market Veteran';
+  const tier = perk?.tierLabel || 'Research';
   return `<div class="ai-locked-card" data-ai-locked-card>
     <div class="ai-locked-card-copy">
       <strong>AI Trading Advisor</strong>
-      <p>Signals, daily picks, and desk chat — unlock for <span class="ai-locked-price">${fmt(cost)}</span> · ${tier} · ${rep} REP.</p>
+      <p>Signals, daily picks, and desk chat — unlock for <span class="ai-locked-price">${fmt(cost)}</span> · ${tier} license tier.</p>
     </div>
     <button type="button" class="btn btn-sm btn-accent" data-goto="perks">Unlock in Perks →</button>
+  </div>`;
+}
+
+/** Compact one-line lock for right rail on virgin / early desks. */
+export function buildAiLockedStripHtml() {
+  const perk = PERKS.aiAdvisor;
+  const cost = perk?.cost ?? 18500;
+  return `<div class="ai-locked-strip" data-ai-locked-card>
+    <span class="ai-locked-strip-label">AI Advisor <span class="ai-locked-price">${fmt(cost)}</span></span>
+    <button type="button" class="btn btn-sm" data-goto="perks">Unlock in Perks</button>
   </div>`;
 }
 
@@ -106,10 +116,10 @@ export function renderAi(state) {
       bindAiLockedGoto(lockedHost);
     }
     if (liveView) liveView.classList.add('hidden');
-    // Sidebar: one compact card only (do not spam every AI panel).
+    // Sidebar: compact strip on virgin Day-1 desks; full card once they've traded.
     const side = document.getElementById('ai-chat-log-side');
     if (side) {
-      side.innerHTML = card;
+      side.innerHTML = isVirginDesk(state) ? buildAiLockedStripHtml() : card;
       bindAiLockedGoto(side);
     }
     document.getElementById('ai-summary-sidebar')?.replaceChildren();
@@ -148,7 +158,7 @@ export async function sendAiChat(question, state) {
   const hasAi = state.perks.includes('aiAdvisor');
   if (!hasAi) {
     sfxError();
-    showAlert(`Unlock <strong>AI Trading Advisor</strong> in Perks first (${fmt(PERKS.aiAdvisor?.cost ?? 18500)} · Market Veteran · ${PERKS.aiAdvisor?.repRequired ?? 280} REP).`, {
+    showAlert(`Unlock <strong>AI Trading Advisor</strong> in Perks first (${fmt(PERKS.aiAdvisor?.cost ?? 18500)} · ${PERKS.aiAdvisor?.tierLabel || 'Research'} license tier).`, {
       title: 'AI locked', label: 'PERKS',
     });
     return;

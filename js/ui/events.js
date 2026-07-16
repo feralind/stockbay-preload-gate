@@ -1,6 +1,6 @@
 // @ts-check
 import { getLastNews } from '../api.js';
-import { getActiveEvents, getPendingInsiderTips } from '../events.js';
+import { getActiveEvents, getPendingInsiderTips, eventTouchesBook } from '../events.js';
 import { escapeAttr, escapeHtml } from './shared.js';
 
 /** @type {(viewId: string) => void} */
@@ -87,7 +87,7 @@ function eventDetailHtml(e, { hasWire, isLive }) {
   return `<div class="event-detail">${parts.join('')}</div>`;
 }
 
-function eventItemHtml(e, { compact = false, hasWire = false } = {}) {
+function eventItemHtml(e, { compact = false, hasWire = false, touchesBook = false } = {}) {
   const kind = eventFeedKind(e, e._asTip);
   const label = kind === 'live' ? 'Live' : kind === 'tip' ? 'Tip' : 'Sim';
   const title = e.headline || e.title || 'Market event';
@@ -102,6 +102,9 @@ function eventItemHtml(e, { compact = false, hasWire = false } = {}) {
   const canExpand = eventHasDepth(e) || isLive;
   const lean = leanChipHtml(e.lean);
   const tipNote = kind === 'tip' ? '<span class="event-tip-flag">Early</span>' : '';
+  const bookNote = touchesBook
+    ? '<span class="event-book-flag" title="This print touches a name you hold">Your book</span>'
+    : '';
 
   // Live wire with a real article URL: title opens externally. Sim/insider stay plain text.
   const titleHtml = srcUrl
@@ -124,12 +127,12 @@ function eventItemHtml(e, { compact = false, hasWire = false } = {}) {
 
   if (compact) {
     return `
-      <div class="event-item ${kind}${expanded ? ' is-expanded' : ''}${lockedClass}" data-event-id="${eid}">
+      <div class="event-item ${kind}${expanded ? ' is-expanded' : ''}${lockedClass}${touchesBook ? ' touches-book' : ''}" data-event-id="${eid}">
         <span class="feed-dot ${kind}" title="${label}"></span>
         <div class="event-copy">
           <div class="event-meta">
             <span class="event-kind">${label}</span>
-            ${lean}${tipNote}
+            ${lean}${tipNote}${bookNote}
             ${time ? `<span class="event-time">${time}</span>` : ''}
           </div>
           <div class="event-title">${titleHtml}</div>
@@ -142,12 +145,12 @@ function eventItemHtml(e, { compact = false, hasWire = false } = {}) {
   }
 
   return `
-    <article class="event-card ${kind}${expanded ? ' is-expanded' : ''}${lockedClass}" data-event-id="${eid}">
+    <article class="event-card ${kind}${expanded ? ' is-expanded' : ''}${lockedClass}${touchesBook ? ' touches-book' : ''}" data-event-id="${eid}">
       <span class="feed-dot ${kind}" title="${label}"></span>
       <div class="event-copy">
         <div class="event-meta">
           <span class="event-kind">${label}</span>
-          ${lean}${tipNote}
+          ${lean}${tipNote}${bookNote}
           ${time ? `<span class="event-time">${time}</span>` : ''}
           ${src}
         </div>
@@ -236,6 +239,10 @@ export function renderEvents(state, containerId) {
     return;
   }
 
-  feed.innerHTML = visible.map((e) => eventItemHtml(e, { compact: !isFull, hasWire })).join('');
+  feed.innerHTML = visible.map((e) => eventItemHtml(e, {
+    compact: !isFull,
+    hasWire,
+    touchesBook: eventTouchesBook(e, state.portfolio),
+  })).join('');
   bindEventFeed(feed, state);
 }

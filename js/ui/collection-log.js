@@ -14,7 +14,9 @@ import {
 import { getActiveFlair } from '../meta.js';
 import { BLACKMARKET_ITEM_POOL } from '../blackmarket.js';
 import { PRIVATE_SALON_POOL } from '../private-salon.js';
-import { THE_SEAT } from '../the-seat.js';
+import { THE_SEAT, isSeatListingActive, canPurchaseSeat } from '../the-seat.js';
+import { getDayCount } from '../market.js';
+import { getSpendableCash } from '../portfolio.js';
 import { VAULT_ITEMS, getCategoryDisplayLabel, getVaultItem } from '../vault.js';
 import { escapeAttr, escapeHtml, fmt } from './shared.js';
 import { renderVaultFoilArt } from './vault.js';
@@ -47,7 +49,7 @@ const RARITY_LABEL = {
 const SOURCE_LABEL = {
   vault: 'Trophy Vault',
   salon: 'Private Salon',
-  blackmarket: 'Black Market',
+  blackmarket: 'Floor Relic',
   seat: 'The Seat',
 };
 
@@ -92,7 +94,6 @@ function artForEntry(entry) {
 
 function rewardBlurb(milestone) {
   const bits = [];
-  if (milestone.rep) bits.push(`+${milestone.rep} REP`);
   if (milestone.cash) bits.push(fmt(milestone.cash));
   if (milestone.flair) bits.push(`Title “${milestone.flair}”`);
   return bits.length ? bits.join(' · ') : 'Prestige mark';
@@ -141,7 +142,7 @@ const RARITY_RANK = { crown: 5, masterwork: 4, legendary: 3, rare: 2, common: 1 
 
 function renderMuseumGallery(ownedEntries, completion) {
   if (!ownedEntries.length) {
-    return `<p class="museum-empty">No pieces owned yet. Acquire vault, salon, or Black Market works — then return here to read their lore.</p>`;
+    return `<p class="museum-empty">No pieces owned yet. Acquire vault or salon works — then return here to read their lore.</p>`;
   }
   const sorted = ownedEntries.slice().sort((a, b) => {
     const ra = RARITY_RANK[a.rarity] || 0;
@@ -184,6 +185,33 @@ function renderMuseumGallery(ownedEntries, completion) {
   `;
 }
 
+function renderSeatOfferCard(state) {
+  if (state.seatOwned) return '';
+  const listingActive = isSeatListingActive(getDayCount(), {
+    licenses: state.licenses,
+    seatOwned: state.seatOwned,
+  });
+  if (!listingActive) return '';
+  const gate = canPurchaseSeat({
+    cash: getSpendableCash(state.portfolio),
+    licenses: state.licenses,
+    seatOwned: !!state.seatOwned,
+    seatListingActive: true,
+  });
+  return `
+    <section class="collection-seat-offer">
+      <div class="collection-seat-offer-copy">
+        <p class="collection-eyebrow">Rare window · The Seat</p>
+        <strong>${escapeHtml(THE_SEAT.name)}</strong>
+        <span>${escapeHtml(fmt(THE_SEAT.cost))} · prestige only · expands relic slots</span>
+      </div>
+      <button type="button" class="btn btn-accent collection-seat-buy" data-seat-buy ${gate.ok ? '' : 'disabled'}>
+        ${gate.ok ? 'Claim the Seat' : escapeHtml(gate.reason || 'Locked')}
+      </button>
+    </section>
+  `;
+}
+
 function renderLogBody(state, entries, milestones, hunt) {
   const categories = [...new Set(entries.map((entry) => entry.category).filter(Boolean))].sort();
   const filtered = entries.filter((entry) => {
@@ -194,6 +222,7 @@ function renderLogBody(state, entries, milestones, hunt) {
   });
 
   return `
+    ${renderSeatOfferCard(state)}
     <section class="collection-hunt">
       <div class="collection-hunt-head">
         <strong>Next chase</strong>
@@ -293,6 +322,10 @@ export function renderCollectionLog(state) {
     .filter((row) => canClaimSet(state, row.set.id).ok)
     .map((row) => row.set.id)
     .join(',');
+  const seatOfferActive = !state.seatOwned && isSeatListingActive(getDayCount(), {
+    licenses: state.licenses,
+    seatOwned: state.seatOwned,
+  });
   const key = [
     collectionViewMode,
     collectionCategoryFilter,
@@ -306,6 +339,7 @@ export function renderCollectionLog(state) {
     setSummary.claimable,
     flair,
     prestige,
+    seatOfferActive ? 'seat1' : 'seat0',
   ].join('|');
 
   ensureCollectionInteractions(root);
@@ -331,8 +365,8 @@ export function renderCollectionLog(state) {
           <p class="collection-eyebrow">${isMuseum ? 'Private museum' : 'Completion track'}</p>
           <h2>Collection Log</h2>
           <p class="collection-sub">${isMuseum
-            ? 'Owned plates with short lore. Finish Vault, Black Market, Salon, or immersion sets for cosmetic flair only.'
-            : 'Chase missing pieces, clear milestones, claim REP and cash. Owned plates keep their foil art and dossier.'}</p>
+            ? 'Owned plates with short lore. Finish Vault, Salon, or immersion sets for cosmetic flair only.'
+            : 'Chase missing pieces, clear milestones, claim cash rewards. Owned plates keep their foil art and dossier.'}</p>
           ${modeToggleHtml()}
         </div>
         <div class="collection-progress-pill">
@@ -398,6 +432,11 @@ function ensureCollectionInteractions(root) {
     if (setBtn && root.contains(setBtn)) {
       const id = setBtn.getAttribute('data-set-claim');
       if (id) collectionUiState?.onClaimCollectionSet?.(id);
+      return;
+    }
+    const seatBtn = t.closest?.('[data-seat-buy]');
+    if (seatBtn && root.contains(seatBtn)) {
+      collectionUiState?.onBuySeat?.();
     }
   });
 }

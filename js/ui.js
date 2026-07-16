@@ -4,6 +4,7 @@ import { logoMarkHtml, installLogoErrorHandler } from './logos.js';
 import {
   getCachedQuote, isApiConfigured, getLastNews,
   fillMissingQuotes, isNetworkOnline, getLastFetchAt, getConnectionLabel,
+  isLiveAnchoredQuote,
 } from './api.js';
 import { formatMarketClock } from './market.js';
 import { getMacroState } from './macro.js';
@@ -32,12 +33,11 @@ export {
 } from './ui/listings.js';
 export { showStaffHistory };
 import { renderAchievements } from './ui/achievements.js';
-import { renderFinance, setLoanDraftAmount } from './ui/finance.js';
+import { renderFinance, setLoanDraftAmount, closeLoanConfirmOverlay } from './ui/finance.js';
 import { renderPerks } from './ui/perks.js';
 import { renderVault } from './ui/vault.js';
 import { renderEstates } from './ui/estates.js';
 import { renderCollectionLog } from './ui/collection-log.js';
-import { renderBlackMarket } from './ui/blackmarket.js';
 import {
   bindAiChat, configureAiAdvisor, getAiChatHistory, loadAiChatHistory,
   refreshAiAnalysis, renderAi, renderAiChatLog, sendAiChat,
@@ -69,13 +69,14 @@ import {
   escapeAttr, escapeHtml, fmt, fmtPnL, fmtSignedMoney, quoteForDisplay, setText,
 } from './ui/shared.js';
 export { fmt, fmtPnL } from './ui/shared.js';
-import { getFirmDebt } from './finance.js';
+import { getFirmDebt, getTotalBankDeposits } from './finance.js';
 import { getVaultItem, getVaultBookValue } from './vault.js';
 import { syncEstateDerived, getHighestOwnedEstate } from './estates.js';
 import { getPlayerStanding } from './meta.js';
 import { toast, showAlert } from './notify.js';
 import { sfxError } from './sfx.js';
-import { CONFIG, REP_RANKS, getRepRank, getNextRepRank } from './config.js';
+import { CONFIG } from './config.js';
+import { LICENSES, LICENSE_ORDER, hasLicense, getHighestLicense, getNextLicense } from './licenses.js';
 import { trapFocus } from './overlays.js';
 import {
   loadProfile, getProfile, saveProfile, clearAvatar, profileInitials, fileToAvatarDataUrl,
@@ -85,7 +86,8 @@ import { PRIVATE_SALON_POOL } from './private-salon.js';
 import { THE_SEAT } from './the-seat.js';
 import { getEffectiveOfficeTier } from './office.js';
 import { getHighestOwnedLuxury } from './luxury.js';
-import { resyncGlossaryHover } from './glossary-tooltips.js';
+import { hideGlossTip, resyncGlossaryHover } from './glossary-tooltips.js';
+import { hideAchievementCursorTip } from './ui/achievements.js';
 
 installLogoErrorHandler();
 configurePortfolioUi({ switchView, openOrderConfirm });
@@ -136,11 +138,11 @@ export function renderAll(state) {
       debt,
       vaultBook: getVaultBookValue(state),
       estateEquity: state.estateEquity,
+      bankDeposits: getTotalBankDeposits(state.finance),
     });
     renderEstates(state, { netWorth });
   }
   renderCollectionLog(state);
-  renderBlackMarket(state);
   renderTradePanel(state);
   renderTicker(state);
   renderLog(state);
@@ -220,13 +222,31 @@ function scheduleHideStatPopover() {
   }, STAT_POPOVER_HIDE_MS);
 }
 
+/** Force-hide equity / license popovers on view change. */
+export function hideStatPopovers() {
+  clearTimeout(statPopoverHideTimer);
+  for (const id of ['equity-popover', 'rep-popover']) {
+    const el = document.getElementById(id);
+    if (el) {
+      el.classList.remove('is-open');
+      el.hidden = true;
+    }
+  }
+  activeStatPopover = null;
+}
+
 function fillEquityPopover(el, state) {
   syncEstateDerived(state);
   const debt = state.finance ? getFirmDebt(state.finance, state.estateCreditUsed) : Math.max(0, Number(state.estateCreditUsed) || 0);
   const b = getEquityBreakdown(state.portfolio, debt);
   const vaultBook = getVaultBookValue(state);
   const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
-  const displayTotal = getFirmNetWorth(state.portfolio, { debt, vaultBook, estateEquity });
+  const displayTotal = getFirmNetWorth(state.portfolio, {
+    debt,
+    vaultBook,
+    estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
+  });
   const debtCls = b.debt ? 'down' : '';
   const shortCls = b.shortUnrealized >= 0 ? 'up' : 'down';
   const uCls = b.unrealized >= 0 ? 'up' : 'down';
@@ -248,25 +268,26 @@ function fillEquityPopover(el, state) {
 }
 
 function fillRepPopover(el, state) {
-  const rep = state.meta?.reputation ?? 0;
-  const current = getRepRank(rep);
-  const next = getNextRepRank(rep);
-  const ranks = REP_RANKS.map((rank) => {
-    const unlocked = rep >= rank.minRep;
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
+  const current = getHighestLicense(licenses);
+  const next = getNextLicense(licenses);
+  const rows = LICENSE_ORDER.map((id) => {
+    const lic = LICENSES[id];
+    const unlocked = hasLicense(licenses, id);
     return `<div class="stat-popover-rank ${unlocked ? 'unlocked' : 'locked'}">
       <span class="stat-popover-rank-mark">${unlocked ? '✓' : ''}</span>
-      <span class="stat-popover-rank-name">${rank.name}</span>
-      <span class="stat-popover-rank-meta">${rank.minRep}+ · ${unlocked ? 'Unlocked' : 'Locked'}</span>
+      <span class="stat-popover-rank-name">${lic.short}</span>
+      <span class="stat-popover-rank-meta">${lic.fee > 0 ? `$${lic.fee.toLocaleString()} exam` : 'Default'} · ${unlocked ? 'Held' : 'Locked'}</span>
     </div>`;
   }).join('');
   const progress = next
-    ? `${rep} / ${next.minRep} to ${next.name}`
-    : 'Max rank';
+    ? `Next: ${next.name} — qualify on the Perks page`
+    : 'Top accreditation held';
   el.innerHTML = `
-    <div class="stat-popover-title">Reputation</div>
-    <p class="stat-popover-blurb">Earned from trades, day performance, achievements, challenges, hiring/training, and on-time credit. Lost on losses, late debt, and firings. Ranks gate desk perk tiers.</p>
-    <div class="stat-popover-current">${current.name} · ${rep} REP</div>
-    <div class="stat-popover-ranks">${ranks}</div>
+    <div class="stat-popover-title">Licenses</div>
+    <p class="stat-popover-blurb">Real-career progression: qualify with your track record and credit, pay the exam fee, and each license opens its tier of desk perks.</p>
+    <div class="stat-popover-current">${current.name}</div>
+    <div class="stat-popover-ranks">${rows}</div>
     <div class="stat-popover-sep"></div>
     <div class="stat-popover-footer">${progress}</div>
   `;
@@ -285,10 +306,11 @@ function updateStatPopovers(state) {
     debt,
     vaultBook: getVaultBookValue(state),
     estateEquity: state.estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
   });
-  const rep = state.meta?.reputation ?? 0;
-  const rank = getRepRank(rep);
-  const next = getNextRepRank(rep);
+  const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
+  const rank = getHighestLicense(licenses);
+  const next = getNextLicense(licenses);
   const equityCell = document.getElementById('equity-stat-cell');
   const repCell = document.getElementById('rep-stat-cell');
   if (equityCell) {
@@ -296,8 +318,8 @@ function updateStatPopovers(state) {
   }
   if (repCell) {
     const tip = next
-      ? `${rank.name} · ${rep} REP · ${next.minRep - rep} to ${next.name}`
-      : `${rank.name} · ${rep} REP · Max rank`;
+      ? `${rank.name} · next: ${next.short} (see Perks)`
+      : `${rank.name} · top accreditation`;
     repCell.title = tip;
   }
   if (activeStatPopover?.id === 'equity-popover') {
@@ -345,15 +367,27 @@ function renderHeader(state) {
   const vaultBook = getVaultBookValue(state);
   const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
   const cash = Number(portfolio.cash) || 0;
-  const firm = getFirmNetWorth(portfolio, { debt, vaultBook, estateEquity });
+  const firm = getFirmNetWorth(portfolio, {
+    debt,
+    vaultBook,
+    estateEquity,
+    bankDeposits: getTotalBankDeposits(finance),
+  });
   setText('cash', fmt(cash));
   setText('equity', fmt(firm));
   setText('pnl', fmtPnL(getUnrealizedPnL(portfolio)));
-  setText('buying-power', fmt(getBuyingPower(portfolio, perks)));
-  const rep = meta?.reputation ?? 0;
-  setText('reputation', String(rep));
+  setText('buying-power', fmt(getBuyingPower(portfolio, perks, finance?.personalCredit)));
+  const heldLicense = getHighestLicense(state.licenses);
+  setText('reputation', heldLicense.short);
+  const repEl = document.getElementById('reputation');
+  if (repEl) {
+    const tier = ['retail', 'series7', 'research', 'regd'].includes(heldLicense.id)
+      ? heldLicense.id
+      : 'retail';
+    repEl.className = `stat-num license-badge-chip tier-${tier}`;
+  }
   const rankEl = document.getElementById('rep-rank');
-  if (rankEl) rankEl.textContent = getRepRank(rep).name;
+  if (rankEl) rankEl.textContent = heldLicense.name;
   updateStatPopovers(state);
   renderFeedStatus(apiStatus);
   const marginBanner = document.getElementById('margin-stress-banner');
@@ -399,12 +433,12 @@ function renderFeedStatus(apiStatus) {
   const detail = document.getElementById('feed-status-detail');
   const wrap = document.getElementById('feed-status');
 
-  // Pill reflects real connectivity (not transient toast-style apiStatus messages)
+  // Pill reflects connectivity for baseline fetches — never "Live" (that reads as streaming tape)
   const connected = isNetworkOnline();
   let pillMode = 'offline';
   let pillText = 'Offline';
   if (mode === 'loading') { pillMode = 'loading'; pillText = 'Sync'; }
-  else if (connected) { pillMode = 'online'; pillText = 'Live'; }
+  else if (connected) { pillMode = 'online'; pillText = 'Online'; }
 
   if (pill) pill.className = `feed-live-pill ${pillMode}`;
   if (liveLbl) liveLbl.textContent = pillText;
@@ -556,7 +590,9 @@ function renderStats(state) {
     { lbl: 'Prev Close', val: `$${(q.prevClose || q.price).toFixed(2)}` },
     { lbl: 'Change', val: `${q.changePct >= 0 ? '+' : ''}${(q.changePct || 0).toFixed(2)}%` },
     { lbl: 'Sector', val: getSymbolSector(selectedSym) },
-    { lbl: 'Data', val: q.simulated ? 'Simulated' : 'Live' },
+    { lbl: 'Data', val: q.simulated
+      ? (isLiveAnchoredQuote(q) ? 'Sim · live-seeded' : 'Simulated')
+      : (isLiveAnchoredQuote(q) ? 'Baseline (live-seeded)' : 'Baseline') },
     { lbl: 'Trades', val: state.portfolio.totalTrades },
     { lbl: 'Realized P&L', val: fmtPnL(state.portfolio.realizedPnL) },
   ];
@@ -698,7 +734,7 @@ function updatePlayerTier(state, profile = getProfile()) {
     seatItem: THE_SEAT,
     salonPool: PRIVATE_SALON_POOL,
   });
-  const main = `${standing.rankName} · REP ${standing.rep}`;
+  const main = standing.licenseName || standing.rankName;
   const secondary = [];
   secondary.push(`Collection ${standing.collectionScore}`);
   if (standing.deskLabel) secondary.push(standing.deskLabel);
@@ -832,11 +868,19 @@ export function showDaySummary(stats) {
     if (stats.challengeDone) {
       chips.push(`<span class="eod-chip challenge">Challenge cleared · +$${stats.challengeReward?.toLocaleString() || 0}</span>`);
     }
-    if (stats.repDelta) {
-      chips.push(`<span class="eod-chip rep">${stats.repDelta > 0 ? '+' : ''}${stats.repDelta} REP</span>`);
+    if (stats.lessonLine) {
+      chips.push(`<span class="eod-chip rep">${stats.lessonLine}</span>`);
+    }
+    if (stats.recoveryHint) {
+      chips.push(`<span class="eod-chip warn">${stats.recoveryHint}</span>`);
     }
     if (stats.optionsExpired) {
       chips.push(`<span class="eod-chip warn">${stats.optionsExpired} option(s) expired</span>`);
+    }
+    const processWins = Array.isArray(stats.processWins) ? stats.processWins : [];
+    for (const win of processWins) {
+      if (!win?.text) continue;
+      chips.push(`<span class="eod-chip process">${escapeHtml(win.text)}</span>`);
     }
     extra.innerHTML = chips.length ? `<div class="eod-chips">${chips.join('')}</div>` : '';
   }
@@ -884,7 +928,8 @@ export function renderCheckpointList(slots = []) {
 }
 
 export function switchView(viewId) {
-  const next = viewId || 'dashboard';
+  // Retired blackmarket view id — bounce leftover links to Collection.
+  const next = (viewId === 'blackmarket') ? 'collection' : (viewId || 'dashboard');
   const prev = activeViewId;
   activeViewId = next;
   document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));
@@ -913,14 +958,20 @@ export function switchView(viewId) {
       if (root) root.dataset.collectionForce = '1';
     } catch (_) { /* ignore */ }
   }
+  if (next === 'vault' && prev !== 'vault') {
+    try {
+      const root = document.getElementById('vault-root');
+      if (root) root.dataset.vaultForce = '1';
+    } catch (_) { /* ignore */ }
+  }
   if (prev === 'achievements' && next !== 'achievements') {
-    const tip = document.getElementById('ach-cursor-tip');
-    if (tip) {
-      tip.hidden = true;
-      tip.classList.remove('is-on');
-    }
+    hideAchievementCursorTip();
   }
   if (prev !== next) {
+    hideGlossTip();
+    hideStatPopovers();
+    hideAchievementCursorTip();
+    closeLoanConfirmOverlay();
     viewChangeListeners.forEach((fn) => {
       try { fn(next, prev); } catch { /* ignore listener errors */ }
     });

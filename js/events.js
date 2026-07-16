@@ -1,9 +1,12 @@
 // @ts-check
 import { ALL_SYMBOLS, getSymbolSector } from './symbols.js';
-import { applyPriceShock } from './market.js';
+import {
+  applyPriceShock, isSymbolHalted, getDayCount, getDayPhase, isMarketOpen,
+  installRiskOffOverlay,
+} from './market.js';
 import { getQuoteCache, fetchMarketNews, isNetworkOnline, pickNewsArticleUrl } from './api.js';
 import { CONFIG } from './config.js';
-import { applyFedPolicy, fedShockMultiplier } from './macro.js';
+import { applyFedPolicy, macroEventScale } from './macro.js';
 
 /** Simulated desk briefs — headline/teaser always visible; body gated by News Wire. */
 const EVENT_TEMPLATES = [
@@ -177,12 +180,141 @@ const EVENT_TEMPLATES = [
     deskTake: 'Add industrial/materials exposure on dips; don’t overpay the first green candle.',
     sectors: { industrial: 0.035, materials: 0.03 },
   },
+  {
+    id: 'housing_rates',
+    headline: 'Mortgage rates jump — housing and REITs take the hit',
+    teaser: 'Higher financing costs pressure homebuilders, big-box housing, and property names.',
+    body: 'A sharp move in mortgage quotes forced the desk to reprice the housing complex. Home-improvement and builder-adjacent names sold first as rate locks looked less friendly; listed REITs followed on duration and cap-rate chatter. Banks were mixed — net interest hopes versus credit-quality worry. The tape treated it as a rates story, not a broad risk-off event.',
+    whyItMatters: 'REITs and consumer housing proxies (HD, LOW) are first-order. Magnitude scales with how far Fed funds sit from normal.',
+    lean: 'bearish',
+    deskTake: 'Cut rate-sensitive property and housing beta; wait for the rate path to stabilize before re-adding.',
+    sectors: { reit: -0.045, consumer: -0.02 },
+    symbols: { HD: -0.035, LOW: -0.03, DHI: -0.04 },
+    macroScale: true,
+  },
+  {
+    id: 'megacap_miss',
+    headline: 'Megacap guidance cut shakes the growth complex',
+    teaser: 'A flagship tech miss spills into peers; the AI trade wobbles for a session.',
+    body: 'A large-cap technology name cut forward guidance after the bell narrative leaked into the cash session, sending the stock sharply lower and dragging peer multiples. Traders debated company-specific execution versus a broader demand soft-patch. Semis and software marked down together into the afternoon, then partially bounced as dip-buyers stepped in.',
+    whyItMatters: 'AAPL/MSFT-style names can move the whole tech tape. Soft spillover — not every peer deserves the same haircut.',
+    lean: 'bearish',
+    deskTake: 'Fade the first panic in quality peers; respect gap risk in the headline name itself.',
+    sectors: { tech: -0.03 },
+    symbols: { AAPL: -0.055, MSFT: -0.04, GOOGL: -0.025 },
+  },
+  {
+    id: 'cyber_outage',
+    headline: 'Major cloud outage knocks a tech leader offline',
+    teaser: 'Single-name cyber/ops shock; peers mixed as traders sort contagion from noise.',
+    body: 'A high-profile outage at a major platform company hit customer traffic and ad-monetization chatter within minutes. The name sold hard while peers split — some as sympathy shorts, others as relative beneficiaries of diverted spend. The desk framed it as an ops event first, a sector thesis second.',
+    whyItMatters: 'Direct hit on the outage name; broader tech only if the story spreads. Keep size small until uptime updates.',
+    lean: 'bearish',
+    deskTake: 'Avoid catching the knife in the headline name; peer weakness is often overdone.',
+    symbols: { META: -0.06, AMZN: -0.02, MSFT: -0.015 },
+  },
+  {
+    id: 'ma_rumor',
+    headline: 'M&A chatter lifts a rumored target — acquirer soft',
+    teaser: 'Classic deal tape: target bids, potential buyer marks down on dilution talk.',
+    body: 'Unconfirmed deal talk around a mid-cap name sent the stock ripping on volume while a larger peer flagged as a possible acquirer slipped on leverage and dilution chatter. Options desks marked call-heavy in the target. Compliance notes reminded the floor that rumor ≠ deal — but the tape still printed the classic pair.',
+    whyItMatters: 'Long the rumored target / respectful of acquirer weakness is the textbook expression until filings appear.',
+    lean: 'mixed',
+    deskTake: 'Trade the target with a tight stop; fade the acquirer only if the story firms.',
+    symbols: { CRM: 0.05, ORCL: -0.025, ADBE: 0.02 },
+  },
+  {
+    id: 'labor_strike',
+    headline: 'Labor strike threat hits transports and heavy industry',
+    teaser: 'Walkout risk pressures airlines, rails, and select industrials.',
+    body: 'Union negotiations broke down overnight, raising the odds of a near-term walkout across a transport corridor. Airlines and rails sold on volume; equipment and logistics names followed. Broader industrials were softer but not in freefall — the desk treated it as a sector hit with timeline risk more than a macro regime shift.',
+    whyItMatters: 'DAL/UAL/UNP-style transports are the cleanest shorts until talks resume.',
+    lean: 'bearish',
+    deskTake: 'Reduce transport beta; look for resolution headlines before covering.',
+    sectors: { industrial: -0.035 },
+    symbols: { DAL: -0.05, UAL: -0.045, UNP: -0.03, CAT: -0.02 },
+  },
+  {
+    id: 'drought_ag',
+    headline: 'Severe drought lifts food-cost worries — staples mixed',
+    teaser: 'Ag input stress; packaged food and restaurant names reprice margins.',
+    body: 'Crop-condition reports pointed to a deeper drought across key growing regions, lifting grain futures and forcing the desk to revisit margin assumptions for packaged foods and restaurant chains. Some staples caught a defensive bid; others sold on cost-pass-through risk. It read as an input-cost story more than a risk-off event.',
+    whyItMatters: 'Food / consumer staples (KO, MDLZ, CMG) feel the margin squeeze; watch which names can raise prices.',
+    lean: 'mixed',
+    deskTake: 'Prefer pricing-power staples; fade high-input restaurant names until weather stabilizes.',
+    sectors: { food: -0.025, consumer: -0.015 },
+    symbols: { KO: -0.015, MDLZ: -0.025, CMG: -0.03, HSY: -0.02 },
+  },
+  {
+    id: 'recession_scare',
+    headline: 'Recession scare hits cyclicals — flight to quality',
+    teaser: 'Soft data spike sends risk-off through finance and discretionary.',
+    body: 'A cluster of soft activity prints reignited recession chatter, sending cyclicals and financials lower while a handful of defensive names held up. Credit spreads whispered wider and the desk cut gross into strength. Breadth deteriorated into the close — classic scare-tape behavior that often fades if the next print stabilizes.',
+    whyItMatters: 'Finance and consumer cyclicals lead the downside. Risk-off can make the tape feel nastier for a few hours even on a trend day.',
+    lean: 'bearish',
+    deskTake: 'Reduce cyclical beta; keep powder for a washout bounce if the scare looks overdone.',
+    sectors: { finance: -0.035, consumer: -0.03 },
+    global: -0.008,
+    riskOffOverlay: true,
+  },
+  {
+    id: 'dollar_spike',
+    headline: 'Dollar spike pressures international and materials',
+    teaser: 'Strong greenback hits overseas earners and commodity-linked names.',
+    body: 'A sharp dollar rally forced multilinationals and materials lower as traders repriced overseas revenue and commodity demand. Domestic defensives held up better. The move tracked the rate differential story — stronger when policy is already far from normal.',
+    whyItMatters: 'International ADRs and materials are first-order. Shock size scales with Fed distance from baseline.',
+    lean: 'bearish',
+    deskTake: 'Cut dollar-sensitive internationals; wait for FX to stabilize before re-adding materials.',
+    sectors: { international: -0.04, materials: -0.03 },
+    symbols: { BABA: -0.035, RIO: -0.03, VALE: -0.03 },
+    macroScale: true,
+  },
+  {
+    id: 'guidance_raise',
+    headline: 'Mid-session guidance raise lights up a liquid leader',
+    teaser: 'Company lifts outlook into the cash session — peers catch a sympathy bid.',
+    body: 'A widely held growth name raised full-year guidance during market hours, sending the stock through resistance on heavy volume. Peer names participated on sympathy, then faded as traders sorted company-specific strength from sector beta. Options flow flipped call-heavy into the close.',
+    whyItMatters: 'Clean single-name catalyst with mild sector spillover. Don’t confuse one print with a regime change.',
+    lean: 'bullish',
+    deskTake: 'Ride the headline name with a trailing stop; fade peer chase that lacks a catalyst.',
+    sectors: { tech: 0.015 },
+    symbols: { NVDA: 0.045, AMD: 0.025 },
+  },
+  {
+    id: 'sec_probe',
+    headline: 'SEC probe chatter hits a finance name',
+    teaser: 'Regulatory overhang; the complex softens but the direct hit is single-name.',
+    body: 'Reports of a preliminary regulatory inquiry into a large financial institution weighed on the stock and nudged the broader finance tape lower. Compliance desks flagged headline risk into the next filing window. Megabank peers held up relatively better than the named name.',
+    whyItMatters: 'Direct hit on the probed ticker; sector spillover is usually limited unless the story widens.',
+    lean: 'bearish',
+    deskTake: 'Cut the headline name; keep quality megabank exposure unless contagion shows up in credit.',
+    sectors: { finance: -0.015 },
+    symbols: { BAC: -0.05, JPM: -0.015, GS: -0.02 },
+  },
 ];
+
+/** @typedef {{ id: string, headline: string, teaser?: string, body?: string, whyItMatters?: string, lean?: string, deskTake?: string, sectors?: Record<string, number>, symbols?: Record<string, number>, global?: number, macroScale?: boolean, riskOffOverlay?: boolean }} EventTemplate */
+
+export const FED_ANTIFLIP_DAYS = 3;
+export const MAX_EVENTS_PER_GAME_DAY = 4;
+/** Single-event shock cap — stacks across templates share MAX_DAILY_SHOCK_PCT via countDaily. */
+export const MAX_EVENT_SHOCK_PCT = 0.05;
 
 let activeEvents = [];
 let pendingInsiderTips = [];
 let eventInterval = null;
 const listeners = new Set();
+
+/** Template id -> last game day fired (for cooldown / prefer-fresh). */
+const lastFiredDayByTemplate = new Map();
+/** Antiflip: after fed_hike, block fed_cut until this game day (exclusive), and vice versa. */
+let fedBlockUntil = { hike: 0, cut: 0 };
+let eventsFiredThisGameDay = 0;
+let eventsDayStamp = 1;
+/** Major template ids that printed today (for day-end lesson line). */
+let majorEventsToday = [];
+/** Symbols skipped because halted during the last applyEvent (tests — never queued). */
+let lastSkippedHalted = [];
 
 export function onEvent(fn) {
   listeners.add(fn);
@@ -193,22 +325,152 @@ function emit(event) {
   listeners.forEach(fn => fn(event));
 }
 
-function pickRandomEvent() {
-  return EVENT_TEMPLATES[Math.floor(Math.random() * EVENT_TEMPLATES.length)];
+export function getEventTemplates() {
+  return EVENT_TEMPLATES;
 }
 
-function applyEvent(evt) {
-  const templateId = evt.templateId || '';
+export function getMajorEventsToday() {
+  return [...majorEventsToday];
+}
+
+export function getLastSkippedHaltedSymbols() {
+  return [...lastSkippedHalted];
+}
+
+/** Call on game-day roll so pacing counters reset. */
+export function resetDayEventCounters(gameDay = 1) {
+  const day = Math.max(1, Math.floor(Number(gameDay) || 1));
+  eventsDayStamp = day;
+  eventsFiredThisGameDay = 0;
+  majorEventsToday = [];
+  lastSkippedHalted = [];
+}
+
+function ensureEventDay(gameDay) {
+  const day = Math.max(1, Math.floor(Number(gameDay) || 1));
+  if (eventsDayStamp !== day) resetDayEventCounters(day);
+}
+
+/**
+ * Phase-weighted chance to roll a world event this tick (game clock).
+ * Soft-caps at MAX_EVENTS_PER_GAME_DAY.
+ */
+export function eventRollChance(phase, gameDay = 1) {
+  ensureEventDay(gameDay);
+  if (eventsFiredThisGameDay >= MAX_EVENTS_PER_GAME_DAY) return 0;
+  const p = String(phase || '');
+  if (p === 'Morning') return 0.22;
+  if (p === 'Afternoon') return 0.16;
+  if (p === 'Pre-Market' || p === 'Evening') return 0.08;
+  return 0.05;
+}
+
+function isFedBlocked(templateId, gameDay) {
+  if (templateId === 'fed_cut' && gameDay < fedBlockUntil.cut) return true;
+  if (templateId === 'fed_hike' && gameDay < fedBlockUntil.hike) return true;
+  return false;
+}
+
+/**
+ * Weighted pick: prefer templates not fired recently; respect Fed antiflip.
+ * @param {number} gameDay
+ * @param {() => number} [rng]
+ */
+export function pickWeightedEvent(gameDay = 1, rng = Math.random) {
+  const day = Math.max(1, Math.floor(Number(gameDay) || 1));
+  const roll = typeof rng === 'function' ? rng : Math.random;
+  const pool = EVENT_TEMPLATES.filter((t) => !isFedBlocked(t.id, day));
+  const list = pool.length ? pool : EVENT_TEMPLATES;
+  const weights = list.map((t) => {
+    const last = lastFiredDayByTemplate.get(t.id);
+    if (last == null) return 3;
+    const age = day - last;
+    if (age <= 0) return 0.15;
+    if (age === 1) return 0.45;
+    if (age <= 3) return 1;
+    return 2.2;
+  });
+  const total = weights.reduce((a, b) => a + b, 0) || 1;
+  let r = roll() * total;
+  for (let i = 0; i < list.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return list[i];
+  }
+  return list[list.length - 1];
+}
+
+function pickRandomEvent() {
+  return pickWeightedEvent(1, Math.random);
+}
+
+/** Symbols an event would try to shock (before halt skip). */
+export function eventAffectedSymbols(evt) {
+  const out = new Set();
+  if (evt?.symbols) {
+    Object.keys(evt.symbols).forEach((s) => out.add(String(s).toUpperCase()));
+  }
+  if (evt?.sectors) {
+    Object.keys(evt.sectors).forEach((sector) => {
+      ALL_SYMBOLS.filter((s) => getSymbolSector(s) === sector).forEach((sym) => out.add(sym));
+    });
+  }
+  if (evt?.global) {
+    getQuoteCache().forEach((_, sym) => out.add(String(sym).toUpperCase()));
+  }
+  return [...out];
+}
+
+/**
+ * Pure-ish book check for UI “touches your book” chip.
+ * @param {object} evt
+ * @param {object} portfolio
+ */
+export function eventTouchesBook(evt, portfolio = {}) {
+  const held = new Set();
+  Object.keys(portfolio.longs || {}).forEach((s) => {
+    if (portfolio.longs[s]?.shares > 0) held.add(String(s).toUpperCase());
+  });
+  Object.keys(portfolio.shorts || {}).forEach((s) => {
+    if (portfolio.shorts[s]?.shares > 0) held.add(String(s).toUpperCase());
+  });
+  (portfolio.options || []).forEach((o) => {
+    if (o?.sym) held.add(String(o.sym).toUpperCase());
+  });
+  if (!held.size) return false;
+  return eventAffectedSymbols(evt).some((s) => held.has(s));
+}
+
+function noteTemplateFired(templateId, gameDay) {
+  const day = Math.max(1, Math.floor(Number(gameDay) || 1));
+  lastFiredDayByTemplate.set(templateId, day);
+  if (templateId === 'fed_hike') fedBlockUntil.cut = day + FED_ANTIFLIP_DAYS;
+  if (templateId === 'fed_cut') fedBlockUntil.hike = day + FED_ANTIFLIP_DAYS;
+  const major = new Set([
+    'fed_hike', 'fed_cut', 'oil_spike', 'oil_crash', 'recession_scare',
+    'housing_rates', 'dollar_spike', 'bank_stress', 'inflation_hot',
+  ]);
+  if (major.has(templateId) && !majorEventsToday.includes(templateId)) {
+    majorEventsToday.push(templateId);
+  }
+}
+
+/**
+ * Apply shocks. Halts are skipped (never queued). Multi-template stack shares daily ±10% budget.
+ * @returns {{ applied: string[], skippedHalted: string[] }}
+ */
+export function applyEvent(evt) {
+  const templateId = evt.templateId || evt.id || '';
   let scale = 1;
   if (templateId === 'fed_hike') {
     applyFedPolicy('hike');
-    scale = fedShockMultiplier('fed_hike');
+    scale = macroEventScale('fed_hike');
   } else if (templateId === 'fed_cut') {
     applyFedPolicy('cut');
-    scale = fedShockMultiplier('fed_cut');
+    scale = macroEventScale('fed_cut');
+  } else {
+    scale = macroEventScale(templateId, !!evt.macroScale);
   }
 
-  // Accumulate additive shocks per symbol, then apply once (no multiplicative stacking).
   const shocks = new Map();
   const add = (sym, pct) => {
     const key = String(sym || '').toUpperCase();
@@ -230,11 +492,28 @@ function applyEvent(evt) {
     Object.entries(evt.symbols).forEach(([sym, pct]) => add(sym, pct * scale));
   }
 
-  const MAX_EVENT_TOTAL = 0.05; // 5% max move from a single world event
+  const applied = [];
+  const skippedHalted = [];
   for (const [sym, pct] of shocks) {
-    const capped = Math.max(-MAX_EVENT_TOTAL, Math.min(MAX_EVENT_TOTAL, pct));
-    applyPriceShock(sym, capped, { maxPct: MAX_EVENT_TOTAL, countDaily: true });
+    // Skip halted — do NOT queue a deferred shock (would front-run the lift).
+    if (isSymbolHalted(sym)) {
+      skippedHalted.push(sym);
+      continue;
+    }
+    const capped = Math.max(-MAX_EVENT_SHOCK_PCT, Math.min(MAX_EVENT_SHOCK_PCT, pct));
+    applyPriceShock(sym, capped, { maxPct: MAX_EVENT_SHOCK_PCT, countDaily: true });
+    applied.push(sym);
   }
+  lastSkippedHalted = skippedHalted;
+
+  // Silent risk-off overlay — never flips day's tapeRegime; no UI disclosure.
+  if (templateId === 'recession_scare') {
+    installRiskOffOverlay({ gameMinutes: 150, betaNudge: -0.28, noisePad: 0.00018 });
+  } else if (evt.riskOffOverlay || (evt.lean === 'bearish' && (evt.global || 0) <= -0.006)) {
+    installRiskOffOverlay({ gameMinutes: 120, betaNudge: -0.22, noisePad: 0.00015 });
+  }
+
+  return { applied, skippedHalted };
 }
 
 function enrichSimEvent(template) {
@@ -252,7 +531,9 @@ function enrichSimEvent(template) {
   };
 }
 
-export function triggerEvent(template, insiderEarly = false) {
+export function triggerEvent(template, insiderEarly = false, gameDay = null) {
+  const day = Math.max(1, Math.floor(Number(gameDay) || getDayCount() || 1));
+  ensureEventDay(day);
   const base = enrichSimEvent(template);
   const evt = {
     ...base,
@@ -265,41 +546,61 @@ export function triggerEvent(template, insiderEarly = false) {
     simulated: true,
   };
   if (insiderEarly) {
-    pendingInsiderTips.push({ ...evt, revealAt: Date.now() + 60000 });
+    pendingInsiderTips.push({ ...evt, revealAt: Date.now() + 60000, _gameDay: day });
     emit({ type: 'insider_tip', event: evt });
   } else {
     activeEvents.unshift(evt);
     if (activeEvents.length > 15) activeEvents.pop();
     applyEvent(evt);
     evt.applied = true;
+    noteTemplateFired(template.id, day);
+    eventsFiredThisGameDay += 1;
     emit({ type: 'world_event', event: evt });
   }
   return evt;
 }
 
 export function tickEvents(hasInsider, hasNewsWire) {
-  // Reveal insider tips
+  const day = getDayCount();
+  ensureEventDay(day);
+  const phase = getDayPhase();
+
   const now = Date.now();
-  pendingInsiderTips = pendingInsiderTips.filter(tip => {
+  pendingInsiderTips = pendingInsiderTips.filter((tip) => {
     if (now >= tip.revealAt) {
       activeEvents.unshift(tip);
       applyEvent(tip);
       tip.applied = true;
+      if (tip.templateId) {
+        noteTemplateFired(tip.templateId, tip._gameDay || day);
+        eventsFiredThisGameDay += 1;
+      }
       emit({ type: 'world_event', event: tip });
       return false;
     }
     return true;
   });
 
-  // Random world events during market hours
-  // Insider: early tip ~60% of the time. News Wire alone: early tip ~45% (sim briefs).
-  if (Math.random() < 0.15) {
-    const tmpl = pickRandomEvent();
-    let early = false;
-    if (hasInsider && Math.random() < 0.6) early = true;
-    else if (hasNewsWire && Math.random() < 0.45) early = true;
-    triggerEvent(tmpl, early);
-  }
+  // Game-clock pacing (not raw wall-clock spam). Soft-capped per game day.
+  if (!isMarketOpen() && phase !== 'Pre-Market' && phase !== 'Evening') return;
+  const chance = eventRollChance(phase, day);
+  if (chance <= 0 || Math.random() >= chance) return;
+
+  const tmpl = pickWeightedEvent(day);
+  let early = false;
+  if (hasInsider && Math.random() < 0.6) early = true;
+  else if (hasNewsWire && Math.random() < 0.45) early = true;
+  triggerEvent(tmpl, early, day);
+}
+
+/** Test helper — reset antiflip / cooldown maps. */
+export function resetEventEngineStateForTests() {
+  lastFiredDayByTemplate.clear();
+  fedBlockUntil = { hike: 0, cut: 0 };
+  resetDayEventCounters(1);
+  activeEvents = [];
+  pendingInsiderTips = [];
+  lastSkippedHalted = [];
 }
 
 export async function pollRealNews(hasNewsWire) {

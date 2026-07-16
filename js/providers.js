@@ -19,7 +19,8 @@ export function isLocalServer() {
 
 const YAHOO_CANDLE_RANGES = {
   '1D': { interval: '5m', range: '1d' },
-  '5D': { interval: '15m', range: '5d' },
+  '1W': { interval: '1d', range: '1mo' },
+  '5D': { interval: '1d', range: '1mo' }, // legacy alias → 1W
   '1M': { interval: '60m', range: '1mo' },
   '6M': { interval: '1d', range: '6mo' },
   YTD: { interval: '1d', range: 'ytd' },
@@ -35,7 +36,8 @@ const YAHOO_CANDLE_RANGES = {
 
 const FINNHUB_CANDLE_RANGES = {
   '1D': { resolution: '5', seconds: 86400 },
-  '5D': { resolution: '15', seconds: 5 * 86400 },
+  '1W': { resolution: 'D', seconds: 12 * 86400 },
+  '5D': { resolution: 'D', seconds: 12 * 86400 },
   '1M': { resolution: '60', seconds: 32 * 86400 },
   '6M': { resolution: 'D', seconds: 190 * 86400 },
   YTD: { resolution: 'D', ytd: true },
@@ -86,7 +88,8 @@ export function candlesLookPlausibleForRange(candles, range) {
   /** Minimum acceptable span (seconds) per UI range key. */
   const minSpan = {
     '1D': 30 * 60,
-    '5D': 1.5 * 86400,
+    '1W': 4 * 86400,
+    '5D': 4 * 86400,
     '1M': 10 * 86400,
     '6M': 60 * 86400,
     YTD: 14 * 86400,
@@ -103,6 +106,40 @@ export function candlesLookPlausibleForRange(candles, range) {
   return true;
 }
 
+function isValidCandle(c) {
+  return [c.open, c.high, c.low, c.close].every(Number.isFinite);
+}
+
+/** Daily/weekly/monthly history: use Yahoo adjclose so splits don't zig-zag the MAX/1Y pane. */
+function mapYahooChartCandles(result, count = 0) {
+  const q = result?.indicators?.quote?.[0];
+  const ts = result?.timestamp;
+  if (!Array.isArray(ts) || !q) return null;
+  const adj = result?.indicators?.adjclose?.[0]?.adjclose;
+  const candles = ts.map((t, i) => {
+    const open = q.open?.[i];
+    const high = q.high?.[i];
+    const low = q.low?.[i];
+    const close = q.close?.[i];
+    const volume = q.volume?.[i] || 0;
+    const adjClose = Array.isArray(adj) ? Number(adj[i]) : NaN;
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+    if (Number.isFinite(adjClose) && adjClose > 0 && close > 0) {
+      const scale = adjClose / close;
+      return {
+        time: t,
+        open: open * scale,
+        high: high * scale,
+        low: low * scale,
+        close: adjClose,
+        volume,
+      };
+    }
+    return { time: t, open, high, low, close, volume };
+  }).filter(Boolean);
+  return count > 0 ? candles.slice(-count) : candles;
+}
+
 async function fetchYahooCandlesDirect(sym, range = '1D', count = 120) {
   const cfg = YAHOO_CANDLE_RANGES[String(range || '1D').toUpperCase()] || YAHOO_CANDLE_RANGES['1D'];
   const ysym = toYahooSymbol(sym);
@@ -112,22 +149,9 @@ async function fetchYahooCandlesDirect(sym, range = '1D', count = 120) {
     if (!res.ok) return null;
     const data = await res.json();
     const r = data?.chart?.result?.[0];
-    const q = r?.indicators?.quote?.[0];
-    if (!r?.timestamp?.length || !q) return null;
-    const candles = r.timestamp.map((t, i) => ({
-      time: t,
-      open: q.open?.[i],
-      high: q.high?.[i],
-      low: q.low?.[i],
-      close: q.close?.[i],
-      volume: q.volume?.[i] || 0,
-    })).filter(isValidCandle);
-    return count > 0 ? candles.slice(-count) : candles;
+    const candles = mapYahooChartCandles(r, count);
+    return candles?.length ? candles : null;
   } catch { return null; }
-}
-
-function isValidCandle(c) {
-  return [c.open, c.high, c.low, c.close].every(Number.isFinite);
 }
 
 export async function fetchYahooDirect(sym) {

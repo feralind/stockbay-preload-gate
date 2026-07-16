@@ -6,8 +6,31 @@ import { blackScholesPremium, defaultVol, optionGreeks } from './options-math.js
 import { earningsVolMultiplier } from './corporate-actions.js';
 import { accrueTaxablePnL, consumeLotsFifo, ensureTaxState } from './tax.js';
 import { applySlippage } from './slippage.js';
+import { maybeRecordPatienceWin, normalizeExitReason } from './process-wins.js';
+import { marginBuyingPowerMultiplier, personalCreditOpenScale } from './desk-rules.js';
 
 export { optionGreeks, defaultVol };
+
+/** Wall-clock cool-down after a blowup close (not scaled by game speed). */
+export const BUY_SUSPEND_MS = 30_000;
+/** Single-close loss vs firm NW that arms the cool-down. */
+export const BUY_SUSPEND_LOSS_PCT = 0.15;
+/** Absolute floor so micro scalps do not trip the desk lock. */
+export const BUY_SUSPEND_MIN_LOSS = 40;
+
+/**
+ * Pure gate: voluntary blowup close should arm the open-side cool-down?
+ * @param {number} pnl
+ * @param {number} netWorth firm NW at close
+ */
+export function shouldArmRevengeCooloff(pnl, netWorth) {
+  if (!(pnl < 0)) return false;
+  const loss = Math.abs(Number(pnl) || 0);
+  if (loss < BUY_SUSPEND_MIN_LOSS) return false;
+  const nw = Number(netWorth);
+  if (!(nw > 0)) return false;
+  return loss / nw >= BUY_SUSPEND_LOSS_PCT;
+}
 
 const MAX_SHARES = 1_000_000;
 const MAX_PRICE = 1_000_000;
@@ -45,17 +68,22 @@ export function getPendingOrderCommitment(portfolio) {
   return { cash, margin };
 }
 
-/** Spendable cash for new longs (margin perk = 2× buying power). */
-export function getAvailableForLong(portfolio, perks = []) {
+/** Deployable capital for new longs (margin + Poor open-risk scale). */
+export function getAvailableForLong(portfolio, perks = [], personalCredit) {
   const pending = getPendingOrderCommitment(portfolio);
-  const base = perks.includes('margin') ? getBuyingPower(portfolio, perks) : getSpendableCash(portfolio);
-  return Math.max(0, base - pending.cash);
+  return Math.max(0, getBuyingPower(portfolio, perks, personalCredit) - pending.cash);
 }
 
-/** Spendable cash for new shorts after pending margin. */
-export function getAvailableForShort(portfolio) {
+/**
+ * Deployable capital for new shorts after pending margin.
+ * Poor personal credit quietly scales open size (same 0.70 as longs).
+ * @param {object} portfolio
+ * @param {number} [personalCredit]
+ */
+export function getAvailableForShort(portfolio, personalCredit) {
   const pending = getPendingOrderCommitment(portfolio);
-  return Math.max(0, getSpendableCash(portfolio) - pending.margin);
+  const desk = getSpendableCash(portfolio) * personalCreditOpenScale(personalCredit);
+  return Math.max(0, desk - pending.margin);
 }
 
 export function createPortfolio(cash = CONFIG.STARTING_CASH) {
@@ -69,7 +97,7 @@ export function createPortfolio(cash = CONFIG.STARTING_CASH) {
     history: [],
     totalTrades: 0,
     realizedPnL: 0,
-    taxAccrual: { shortTermGain: 0, longTermGain: 0, shortTermLoss: 0, longTermLoss: 0 },
+    taxAccrual: { shortTermGain: 0, longTermGain: 0, shortTermLoss: 0, longTermLoss: 0, interestIncome: 0 },
     taxOwed: 0,
   };
 }
@@ -79,10 +107,46 @@ export function getSpendableCash(portfolio) {
   return Math.max(0, portfolio.cash || 0);
 }
 
-export function getBuyingPower(portfolio, perks) {
-  let bp = getSpendableCash(portfolio);
-  if (perks.includes('margin')) bp += bp; // 2× free cash
-  return bp;
+/**
+ * Available buying power for new long risk.
+ * With margin perk: spendable cash × credit-scaled multiplier (Good 2× / Fair 1.5× / Poor 1×).
+ * Always × personalCreditOpenScale (Poor 0.70) so ruined files cannot deploy full desk cash.
+ * @param {object} portfolio
+ * @param {string[]} [perks]
+ * @param {number} [personalCredit]
+ */
+export function getBuyingPower(portfolio, perks = [], personalCredit) {
+  const cash = getSpendableCash(portfolio);
+  const marginMult = perks?.includes('margin') ? marginBuyingPowerMultiplier(personalCredit) : 1;
+  return cash * marginMult * personalCreditOpenScale(personalCredit);
+}
+
+/** @param {object} portfolio @param {number} [now] */
+export function isBuySuspended(portfolio, now = Date.now()) {
+  const until = Number(portfolio?.buySuspendUntilMs);
+  return Number.isFinite(until) && until > now;
+}
+
+/** Arm a wall-clock open-side cool-down. @returns {number} until ms */
+export function armBuySuspend(portfolio, now = Date.now()) {
+  const until = now + BUY_SUSPEND_MS;
+  if (portfolio) portfolio.buySuspendUntilMs = until;
+  return until;
+}
+
+/** Drop expired suspend markers. @returns {boolean} true if clear (not suspended) */
+export function clearExpiredBuySuspend(portfolio, now = Date.now()) {
+  if (!portfolio) return true;
+  if (isBuySuspended(portfolio, now)) return false;
+  if (portfolio.buySuspendUntilMs != null) delete portfolio.buySuspendUntilMs;
+  return true;
+}
+
+function denyIfBuySuspended(portfolio) {
+  if (isBuySuspended(portfolio)) {
+    return { ok: false, msg: 'Trading desk suspended — cool-down from risk management' };
+  }
+  return null;
 }
 
 export function getLongMarketValue(portfolio) {
@@ -142,17 +206,17 @@ export function getNetEquity(portfolio, debt = 0) {
 
 /**
  * Firm Total Equity / net worth used by HUD, Portfolio, mega-goals, and estate gates.
- * Trading book (cash + positions MTM) − loans/estate credit + vault book + estate equity.
- * Estate equity is syncEstateDerived's base (owned prices) minus cash-outs; credit drawn
- * is subtracted via `debt` (getFirmDebt), not by shrinking estateEquity.
+ * Trading book (cash + positions MTM) − loans/estate credit + vault book + estate equity
+ * + bank deposits (checking/savings). Bank cash is wealth, not Available Buying Power.
  * @param {object} portfolio
- * @param {{ debt?: number, vaultBook?: number, estateEquity?: number }} [extras]
+ * @param {{ debt?: number, vaultBook?: number, estateEquity?: number, bankDeposits?: number }} [extras]
  */
 export function getFirmNetWorth(portfolio, extras = {}) {
   const debt = Number(extras.debt) || 0;
   const vaultBook = Math.max(0, Number(extras.vaultBook) || 0);
   const estateEquity = Math.max(0, Number(extras.estateEquity) || 0);
-  return getNetEquity(portfolio, debt) + vaultBook + estateEquity;
+  const bankDeposits = Math.max(0, Number(extras.bankDeposits) || 0);
+  return getNetEquity(portfolio, debt) + vaultBook + estateEquity + bankDeposits;
 }
 
 export function getUnrealizedPnL(portfolio) {
@@ -245,19 +309,49 @@ function logTrade(portfolio, entry) {
   portfolio.totalTrades++;
 }
 
-export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
+function getDayRedExitMarkers(portfolio) {
+  if (!portfolio) return [];
+  return Array.isArray(portfolio.dayLastRedExit)
+    ? portfolio.dayLastRedExit
+    : (portfolio.dayLastRedExit ? [portfolio.dayLastRedExit] : []);
+}
+
+function maybeMarkChased(portfolio, sym, day) {
+  if (!portfolio?.dayLastRedExit || portfolio.dayChased) return;
+  const chased = getDayRedExitMarkers(portfolio).some((m) => (
+    m?.sym === sym && m?.day === day
+  ));
+  if (chased) portfolio.dayChased = true;
+}
+
+function recordVoluntaryRedExit(portfolio, sym, day, exitReason, pnl) {
+  if (!portfolio || exitReason !== 'voluntary' || !(Number(pnl) < 0)) return;
+  const markers = getDayRedExitMarkers(portfolio)
+    .filter((m) => m?.sym && m?.day === day);
+  if (!markers.some((m) => m.sym === sym && m.day === day)) {
+    markers.push({ sym, day });
+  }
+  portfolio.dayLastRedExit = markers.slice(-8);
+}
+
+export function buyLong(portfolio, sym, shares, price, risk = {}, perks = [], personalCredit) {
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
   const symbol = normalizeSymbol(sym);
   if (!qty || !px || !symbol) return { ok: false, msg: 'Invalid trade size or price' };
+  const suspended = denyIfBuySuspended(portfolio);
+  if (suspended) return suspended;
   if (isSymbolHalted(symbol)) return { ok: false, msg: 'TRADING HALTED' };
   if (portfolio?.marginCall?.level === 'call' && perks.includes('margin')) {
     return { ok: false, msg: 'MARGIN CALL — close risk before new margin buys' };
   }
   const cost = qty * px + CONFIG.COMMISSION;
-  if (getAvailableForLong(portfolio, perks) < cost) return { ok: false, msg: 'Insufficient cash' };
+  if (getAvailableForLong(portfolio, perks, personalCredit) < cost) return { ok: false, msg: 'Insufficient cash' };
+  const wasNew = !portfolio.longs[symbol];
+  const equityBefore = wasNew ? Math.max(0, getEquity(portfolio)) : 0;
   portfolio.cash -= cost;
   const day = getDayCount();
+  maybeMarkChased(portfolio, symbol, day);
   const p = portfolio.longs[symbol] || { shares: 0, avgPrice: 0, lots: [] };
   if (!Array.isArray(p.lots)) p.lots = [];
   // Migrate legacy position into a single lot before adding
@@ -267,6 +361,10 @@ export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
   p.avgPrice = (p.avgPrice * p.shares + px * qty) / (p.shares + qty);
   p.shares += qty;
   p.lots.push({ shares: qty, avgPrice: px, openedDay: day });
+  // Snapshot once at first open — never invent for legacy/add-on fills
+  if (wasNew && equityBefore > 0 && p.notionalPctAtEntry == null) {
+    p.notionalPctAtEntry = (qty * px) / equityBefore;
+  }
   // Adding shares re-averages cost — "avg kept" badge is no longer accurate
   if (p.priceCorrectedAck) delete p.priceCorrectedAck;
   if (risk.stopLoss) p.stopLoss = risk.stopLoss;
@@ -276,7 +374,7 @@ export function buyLong(portfolio, sym, shares, price, risk = {}, perks = []) {
   return { ok: true };
 }
 
-export function sellLong(portfolio, sym, shares, price) {
+export function sellLong(portfolio, sym, shares, price, opts = {}) {
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
   const symbol = normalizeSymbol(sym);
@@ -284,6 +382,8 @@ export function sellLong(portfolio, sym, shares, price) {
   // Exits allowed during circuit halt (risk reduction / stop-loss / margin raise)
   const p = portfolio.longs[symbol];
   if (!p || p.shares < qty) return { ok: false, msg: 'Not enough shares' };
+  const exitReason = normalizeExitReason(opts?.exitReason);
+  const worstUnrealizedPct = p.worstUnrealizedPct;
   const day = getDayCount();
   ensureTaxState(portfolio);
   if (!Array.isArray(p.lots) || p.lots.length === 0) {
@@ -306,28 +406,43 @@ export function sellLong(portfolio, sym, shares, price) {
   portfolio.realizedPnL += pnl;
   p.shares -= qty;
   if (p.shares <= 0) delete portfolio.longs[symbol];
-  logTrade(portfolio, { action: 'SELL', sym: symbol, shares: qty, price: px, side: 'long', pnl });
-  return { ok: true, pnl };
+  logTrade(portfolio, {
+    action: 'SELL',
+    sym: symbol,
+    shares: qty,
+    price: px,
+    side: 'long',
+    pnl,
+    exitReason,
+  });
+  recordVoluntaryRedExit(portfolio, symbol, day, exitReason, pnl);
+  maybeRecordPatienceWin(portfolio, { exitReason, pnl, worstUnrealizedPct, sym: symbol });
+  return { ok: true, pnl, exitReason };
 }
 
 /**
  * Shorts lock margin only — short proceeds are NOT spendable cash.
  * Equity stays ~flat at open via marginHeld + unrealized in getPositionValue.
  */
-export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {}) {
+export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {}, personalCredit) {
   if (!hasMarginPerk) return { ok: false, msg: 'Unlock Margin Account perk to short' };
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
   const symbol = normalizeSymbol(sym);
   if (!qty || !px || !symbol) return { ok: false, msg: 'Invalid trade size or price' };
+  const suspended = denyIfBuySuspended(portfolio);
+  if (suspended) return suspended;
   if (isSymbolHalted(symbol)) return { ok: false, msg: 'TRADING HALTED' };
   if (portfolio?.marginCall?.level === 'call') {
     return { ok: false, msg: 'MARGIN CALL — cover before opening new shorts' };
   }
   const margin = qty * px * CONFIG.MARGIN_REQUIREMENT;
-  if (getAvailableForShort(portfolio) < margin) return { ok: false, msg: 'Insufficient margin' };
+  if (getAvailableForShort(portfolio, personalCredit) < margin) return { ok: false, msg: 'Insufficient margin' };
+  const wasNew = !portfolio.shorts[symbol];
+  const equityBefore = wasNew ? Math.max(0, getEquity(portfolio)) : 0;
   portfolio.cash -= margin;
   const day = getDayCount();
+  maybeMarkChased(portfolio, symbol, day);
   const p = portfolio.shorts[symbol] || { shares: 0, avgPrice: 0, marginHeld: 0, openedDay: day };
   // Weighted open day for adds
   if (p.shares > 0 && p.openedDay != null) {
@@ -338,6 +453,10 @@ export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {
   p.avgPrice = (p.avgPrice * p.shares + px * qty) / (p.shares + qty);
   p.shares += qty;
   p.marginHeld += margin;
+  // Snapshot once at first open — leave undefined on adds / legacy shorts
+  if (wasNew && equityBefore > 0 && p.notionalPctAtEntry == null) {
+    p.notionalPctAtEntry = (qty * px) / equityBefore;
+  }
   // Adding to a short re-averages — clear the "avg kept" badge
   if (p.priceCorrectedAck) delete p.priceCorrectedAck;
   if (risk.stopLoss) p.stopLoss = risk.stopLoss;
@@ -351,7 +470,7 @@ export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {
  * Cover settles PnL + releases margin (no full repurchase debit —
  * proceeds were never credited to cash).
  */
-export function coverShort(portfolio, sym, shares, price) {
+export function coverShort(portfolio, sym, shares, price, opts = {}) {
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
   const symbol = normalizeSymbol(sym);
@@ -359,6 +478,8 @@ export function coverShort(portfolio, sym, shares, price) {
   // Covers allowed during circuit halt (risk reduction)
   const p = portfolio.shorts[symbol];
   if (!p || p.shares < qty) return { ok: false, msg: 'No short position' };
+  const exitReason = normalizeExitReason(opts?.exitReason);
+  const worstUnrealizedPct = p.worstUnrealizedPct;
   const pnl = (p.avgPrice - px) * qty;
   const commission = CONFIG.COMMISSION;
   const marginHeld = Number(p.marginHeld) || 0;
@@ -369,13 +490,25 @@ export function coverShort(portfolio, sym, shares, price) {
   }
   portfolio.cash += cashDelta;
   portfolio.realizedPnL += pnl - commission;
-  const openedDay = p.openedDay ?? getDayCount();
-  accrueTaxablePnL(portfolio, pnl - commission, { openedDay, sellDay: getDayCount() });
+  const day = getDayCount();
+  const openedDay = p.openedDay ?? day;
+  const netPnl = pnl - commission;
+  accrueTaxablePnL(portfolio, netPnl, { openedDay, sellDay: day });
   p.shares -= qty;
   p.marginHeld -= marginRelease;
   if (p.shares <= 0) delete portfolio.shorts[symbol];
-  logTrade(portfolio, { action: 'COVER', sym: symbol, shares: qty, price: px, side: 'short', pnl: pnl - commission });
-  return { ok: true, pnl: pnl - commission };
+  logTrade(portfolio, {
+    action: 'COVER',
+    sym: symbol,
+    shares: qty,
+    price: px,
+    side: 'short',
+    pnl: netPnl,
+    exitReason,
+  });
+  recordVoluntaryRedExit(portfolio, symbol, day, exitReason, netPnl);
+  maybeRecordPatienceWin(portfolio, { exitReason, pnl: netPnl, worstUnrealizedPct, sym: symbol });
+  return { ok: true, pnl: netPnl, exitReason };
 }
 
 export function buyOption(portfolio, opt, hasOptionsPerk) {
@@ -386,6 +519,8 @@ export function buyOption(portfolio, opt, hasOptionsPerk) {
   const premium = normalizeTradePrice(opt.premium);
   const strike = normalizeTradePrice(opt.strike);
   if (!symbol || !qty || !premium || !strike) return { ok: false, msg: 'Invalid option contract' };
+  const suspended = denyIfBuySuspended(portfolio);
+  if (suspended) return suspended;
   if (isSymbolHalted(symbol)) return { ok: false, msg: 'TRADING HALTED' };
   if (!['call', 'put'].includes(String(opt.type || '').toLowerCase())) {
     return { ok: false, msg: 'Invalid option type' };
@@ -406,8 +541,10 @@ export function buyOption(portfolio, opt, hasOptionsPerk) {
   entry.openedDay = day;
   entry.expiryDay = day + (entry.expiryDays || 30);
   if (!entry.vol) {
+    // Snapshot entry IV for dossier / IV-crush teach; marks use live vol below.
     entry.vol = defaultVol(symbol, getCachedQuote(symbol)?.price ?? strike, 0, earningsVolMultiplier(symbol, day));
   }
+  entry.entryVol = entry.vol;
   portfolio.options.push(entry);
   logTrade(portfolio, { action: 'BUY_OPT', sym: symbol, type: entry.type, strike, qty, price: premium });
   return { ok: true };
@@ -443,12 +580,22 @@ export function estimateOptionValue(opt) {
       : Math.max(0, opt.strike - spot);
     return intrinsic * (opt.qty || 0) * 100;
   }
-  const vol = opt.vol ?? defaultVol(opt.sym, spot, q?.changePct, earningsVolMultiplier(opt.sym, gameDay));
+  // Live mark: recompute IV from today's move + earnings calendar so IV crush is visible.
+  // Keep opt.vol / entryVol as the purchase-time snapshot for teach moments.
+  const liveVol = defaultVol(opt.sym, spot, q?.changePct, earningsVolMultiplier(opt.sym, gameDay));
   const prem = blackScholesPremium({
     spot, strike: opt.strike, daysToExpiry: daysLeft,
-    vol, type: opt.type,
+    vol: liveVol, type: opt.type,
   });
   return prem * opt.qty * 100;
+}
+
+/** Live implied vol for a held contract (same inputs as estimateOptionValue). */
+export function liveOptionVol(opt) {
+  const q = getCachedQuote(opt?.sym);
+  const spot = q?.price ?? opt?.strike ?? 0;
+  if (!(spot > 0)) return 0.28;
+  return defaultVol(opt.sym, spot, q?.changePct, earningsVolMultiplier(opt.sym, getDayCount()));
 }
 
 /** Shared intrinsic helper (tests + settle path). */
@@ -561,7 +708,7 @@ export function markOrderTicketCancelled(portfolio, orderId) {
   return ticket;
 }
 
-export function placeLimitOrder(portfolio, order, { perks = [] } = {}) {
+export function placeLimitOrder(portfolio, order, { perks = [], personalCredit } = {}) {
   ensurePendingOrders(portfolio);
   ensureOrderTickets(portfolio);
   const limitPrice = normalizeTradePrice(order.limitPrice ?? order.price);
@@ -574,17 +721,21 @@ export function placeLimitOrder(portfolio, order, { perks = [] } = {}) {
   if (!['long', 'short', 'sell', 'cover'].includes(side)) {
     return { ok: false, msg: 'Invalid order side' };
   }
+  if ((side === 'long' || side === 'short')) {
+    const suspended = denyIfBuySuspended(portfolio);
+    if (suspended) return suspended;
+  }
   if (isSymbolHalted(symbol) && (side === 'long' || side === 'short')) {
     return { ok: false, msg: 'TRADING HALTED' };
   }
   if (side === 'long') {
     const cost = shares * limitPrice + CONFIG.COMMISSION;
-    if (getAvailableForLong(portfolio, perks) < cost) return { ok: false, msg: 'Insufficient cash for limit buy' };
+    if (getAvailableForLong(portfolio, perks, personalCredit) < cost) return { ok: false, msg: 'Insufficient cash for limit buy' };
   }
   if (side === 'short') {
     if (!perks.includes('margin')) return { ok: false, msg: 'Unlock Margin Account perk to short' };
     const margin = shares * limitPrice * CONFIG.MARGIN_REQUIREMENT;
-    if (getAvailableForShort(portfolio) < margin) return { ok: false, msg: 'Insufficient margin for limit short' };
+    if (getAvailableForShort(portfolio, personalCredit) < margin) return { ok: false, msg: 'Insufficient margin for limit short' };
   }
   if (side === 'sell') {
     const p = portfolio.longs[symbol];
@@ -677,10 +828,26 @@ export function tryFillPendingOrder(portfolio, order, fillFns) {
   const risk = { stopLoss: order.stopLoss, takeProfit: order.takeProfit };
   let result;
   if (order.side === 'long') {
-    result = fillFns.buyLong(portfolio, order.sym, order.shares, fillPx, risk, fillFns.perks || []);
+    result = fillFns.buyLong(
+      portfolio,
+      order.sym,
+      order.shares,
+      fillPx,
+      risk,
+      fillFns.perks || [],
+      fillFns.personalCredit,
+    );
   }
   else if (order.side === 'short') {
-    result = fillFns.openShort(portfolio, order.sym, order.shares, fillPx, fillFns.hasMargin, risk);
+    result = fillFns.openShort(
+      portfolio,
+      order.sym,
+      order.shares,
+      fillPx,
+      fillFns.hasMargin,
+      risk,
+      fillFns.personalCredit,
+    );
   } else if (order.side === 'sell') {
     result = fillFns.sellLong(portfolio, order.sym, order.shares, fillPx);
   } else if (order.side === 'cover') {

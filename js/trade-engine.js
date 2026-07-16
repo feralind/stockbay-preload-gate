@@ -15,6 +15,7 @@ import {
   markOrderTicketCancelled,
   generateOptionChain,
 } from './portfolio.js';
+import { updateOpenPositionMae, normalizeExitReason } from './process-wins.js';
 
 function fallbackSlippage({ quotePrice }) {
   return { fillPrice: quotePrice };
@@ -89,7 +90,7 @@ export function confirmOrder(state, draft, deps = {}) {
       limitPrice,
       stopLoss: risk.stopLoss,
       takeProfit: risk.takeProfit,
-    }, { perks: state.perks });
+    }, { perks: state.perks, personalCredit: state.finance?.personalCredit });
     if (!placed.ok) {
       return {
         ...alertResult(placed.msg, 'Limit order'),
@@ -116,7 +117,8 @@ export function confirmOrder(state, draft, deps = {}) {
     if (!p) return alertResult(`No long position in ${sym}.`, 'No position');
     const shares = Math.min(orderShares, p.shares);
     const fillPx = slippedFillPrice(sym, 'sell', shares, price, deps);
-    const result = sellLong(state.portfolio, sym, shares, fillPx);
+    const exitReason = normalizeExitReason(order.exitReason);
+    const result = sellLong(state.portfolio, sym, shares, fillPx, { exitReason });
     return result.ok
       ? {
         ok: true,
@@ -144,7 +146,8 @@ export function confirmOrder(state, draft, deps = {}) {
     if (!p) return alertResult(`No short position in ${sym}.`, 'No position');
     const shares = Math.min(orderShares, p.shares);
     const fillPx = slippedFillPrice(sym, 'cover', shares, price, deps);
-    const result = coverShort(state.portfolio, sym, shares, fillPx);
+    const exitReason = normalizeExitReason(order.exitReason);
+    const result = coverShort(state.portfolio, sym, shares, fillPx, { exitReason });
     return result.ok
       ? {
         ok: true,
@@ -175,8 +178,16 @@ export function confirmOrder(state, draft, deps = {}) {
     deps,
   );
   const result = side === 'long'
-    ? buyLong(state.portfolio, listing.sym, orderShares, fillPx, risk, state.perks)
-    : openShort(state.portfolio, listing.sym, orderShares, fillPx, state.perks.includes('margin'), risk);
+    ? buyLong(state.portfolio, listing.sym, orderShares, fillPx, risk, state.perks, state.finance?.personalCredit)
+    : openShort(
+      state.portfolio,
+      listing.sym,
+      orderShares,
+      fillPx,
+      state.perks.includes('margin'),
+      risk,
+      state.finance?.personalCredit,
+    );
   if (!result.ok) {
     return {
       ...alertResult(result.msg, 'Trade failed', { force: true }),
@@ -192,8 +203,6 @@ export function confirmOrder(state, draft, deps = {}) {
     result,
     isDeal: !!listing.isDeal,
     incrementShortsOpened: side === 'short',
-    reputationDelta: side === 'long' ? 1 : 2,
-    reputationReason: 'trade',
     updateChallengeProgress: true,
     regenerateListings: true,
     closeModal: true,
@@ -247,6 +256,7 @@ export function processPendingOrders(state, deps = {}) {
     coverShort,
     hasMargin: state.perks.includes('margin'),
     perks: state.perks,
+    personalCredit: state.finance?.personalCredit,
     applySlippage: deps.applySlippage,
   };
 
@@ -270,7 +280,6 @@ export function processPendingOrders(state, deps = {}) {
       if (side === 'short') state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
       deps.noteBuy?.(false);
       deps.recordDayTrade?.();
-      deps.adjustReputation?.(state.meta, side === 'long' ? 2 : 3, 'limit_fill');
     } else {
       const pnl = attempt.result?.pnl || 0;
       deps.noteSell?.(pnl);
@@ -313,6 +322,8 @@ export function evaluateRiskFlow(state, deps = {}) {
   const pending = processPendingOrders(state, deps);
   let trigger = null;
 
+  updateOpenPositionMae(state.portfolio, (sym) => deps.getCachedQuote?.(sym)?.price);
+
   for (const [sym, p] of Object.entries(state.portfolio.longs || {})) {
     const q = deps.getCachedQuote?.(sym);
     if (!q) continue;
@@ -320,6 +331,7 @@ export function evaluateRiskFlow(state, deps = {}) {
       trigger = {
         action: 'closeLong',
         sym,
+        exitReason: 'stop_loss',
         msg: `${sym} stop loss hit at $${q.price.toFixed(2)}`,
         type: 'warn',
       };
@@ -329,6 +341,7 @@ export function evaluateRiskFlow(state, deps = {}) {
       trigger = {
         action: 'closeLong',
         sym,
+        exitReason: 'take_profit',
         msg: `${sym} take profit hit at $${q.price.toFixed(2)}`,
         type: 'success',
       };
@@ -344,6 +357,7 @@ export function evaluateRiskFlow(state, deps = {}) {
         trigger = {
           action: 'coverShort',
           sym,
+          exitReason: 'stop_loss',
           msg: `${sym} short stop hit at $${q.price.toFixed(2)}`,
           type: 'warn',
         };
@@ -353,6 +367,7 @@ export function evaluateRiskFlow(state, deps = {}) {
         trigger = {
           action: 'coverShort',
           sym,
+          exitReason: 'take_profit',
           msg: `${sym} short target hit at $${q.price.toFixed(2)}`,
           type: 'success',
         };
@@ -402,6 +417,7 @@ export function closeLongFlow(state, sym, deps = {}) {
   const price = quote?.price || position.avgPrice;
   const notional = position.shares * price;
   const confirmNotional = Number(deps.confirmNotional) || 0;
+  const exitReason = normalizeExitReason(deps.exitReason);
 
   if (notional >= confirmNotional) {
     return {
@@ -412,12 +428,13 @@ export function closeLongFlow(state, sym, deps = {}) {
         shares: position.shares,
         price,
         orderType: 'market',
+        exitReason,
       },
     };
   }
 
   const fillPx = slippedFillPrice(sym, 'sell', position.shares, price, deps);
-  const result = sellLong(state.portfolio, sym, position.shares, fillPx);
+  const result = sellLong(state.portfolio, sym, position.shares, fillPx, { exitReason });
   if (!result.ok) return null;
 
   return {
@@ -445,6 +462,7 @@ export function coverShortFlow(state, sym, deps = {}) {
   const price = quote?.price || position.avgPrice;
   const notional = position.shares * price;
   const confirmNotional = Number(deps.confirmNotional) || 0;
+  const exitReason = normalizeExitReason(deps.exitReason);
 
   if (notional >= confirmNotional) {
     return {
@@ -455,12 +473,13 @@ export function coverShortFlow(state, sym, deps = {}) {
         shares: position.shares,
         price,
         orderType: 'market',
+        exitReason,
       },
     };
   }
 
   const fillPx = slippedFillPrice(sym, 'cover', position.shares, price, deps);
-  const result = coverShort(state.portfolio, sym, position.shares, fillPx);
+  const result = coverShort(state.portfolio, sym, position.shares, fillPx, { exitReason });
   if (!result.ok) return null;
 
   return {

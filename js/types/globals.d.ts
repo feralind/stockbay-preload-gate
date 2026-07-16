@@ -4,7 +4,7 @@ declare const LightweightCharts: any;
 
 interface Window {
   __stockwayDisableSave?: boolean;
-  __stockwayFlushSave?: () => unknown;
+  __stockwayFlushSave?: () => boolean | Promise<boolean>;
   __STOCKWAY_INIT?: boolean;
   __stockwayTest?: any;
   __stockwayLogoOk?: (img: HTMLImageElement) => void;

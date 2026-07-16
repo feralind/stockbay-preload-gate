@@ -8,7 +8,7 @@ Start with **$500**. Trade live-anchored prices on a sped-up market clock. Snipe
 
 ## About This Game
 
-StockWay is a single-player trading desk RPG. Build a firm from a bare desk into a legend operation: long/short equities, options, off-market deals, world events, staff automation, credit lines, and a collectibles chase across Vault, Black Market, and The Seat.
+StockWay is a single-player trading desk RPG. Build a firm from a bare desk into a legend operation: long/short equities, options, off-market deals, world events, staff automation, credit lines, and a collectibles chase across Vault, Private Salon, and The Seat.
 
 **30 real minutes = 1 game day** at 1×. Grind slow or burn the clock at 10×.
 
@@ -48,7 +48,7 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 
 ### Charts
 - Candlesticks + volume (Lightweight Charts)
-- Timeframes: 1D · 5D · 1M · 6M · YTD · 1Y · 5Y · MAX
+- Timeframes: 1D · 1W · 1M · 6M · YTD · 1Y · 5Y · MAX
 - Zoom in / out / reset (sticky)
 - Fit to view
 - Live last-candle updates
@@ -69,11 +69,17 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Symbol logos (PNG → favicon → letter)
 
 ### World Events
-- Simulated desk briefs (Fed, oil, AI boom, bank stress, tariffs…)
-- Live wire headlines with real article links
+- ~25 simulated desk briefs (Fed, oil, housing/rates, cyber, M&A, strikes, recession scare, dollar, SEC…)
+- Game-day pacing + soft daily cap — events track the desk clock, not wall-clock spam
+- Cooldown / Fed antiflip — no hike→cut whiplash the same afternoon
+- Rate-sensitive prints (housing, dollar, Fed) scale with distance from baseline Fed funds
+- Per-print 5% cap and shared ±10% daily shock budget; halted names are skipped (never deferred)
+- Silent risk-off tape overlay on scare prints — beta/noise only; day’s trend/chop identity stays
+- “Your book” cue when a print hits a held stock or option
+- First Fed / first oil teach moments; day-end lesson line when a major template fired
+- Live wire headlines with real article links (Finnhub) — separate from sim teaching copy
 - News Wire perk — full stories + early headlines
 - Event cards with bull / bear / mixed lean
-- Sector & symbol price shocks
 - Compact events feed in the right rail
 
 ### Firm Progression
@@ -104,24 +110,28 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Floor activity log
 
 ### Financing
-- 6 banks with live APR quotes
+- 18 banks with live APR quotes (national / online / credit unions)
+- Soft house-lender loyalty — Known → Preferred → House from aged on-time cycles
+- House bank: modest APR + limit edge at that lender only (others stay open)
+- Checking & savings ATM (Finance → Accounts) — parked cash leaves Available Buying Power; savings earns game-scaled APY by bank category + loyalty (capped); interest taxed on Tax Day
 - Personal & company loans
 - Credit scores (personal + business, 300–850)
 - Interest-hold rule (no same-day credit farm)
 - Loan confirm modal & payoff calculator
 - Partial / full payoff with payment history
 - Vault collateral at 50% LTV
-- Late payment REP hit & repossession
+- Late payment credit hit, loyalty demote & vault repossession
+- Property HELOC: Fair+ business credit to buy or draw; interest settles before rental net; unpaid interest → foreclosure after a short miss streak (distressed recovery toward the line)
+- Poor personal credit open-risk scale (0.70× deployable desk cash on longs/shorts)
 
 ### Collectibles
 - Trophy Vault (~21 cosmetics) — dashboard, background, trophy, title slots
 - Foil SVG art & masterworks tier
-- Black Market — 3-day rotating rares & legendaries
-- Relics: Mage of the Desk · Liquidity Crown
-- The Seat — $500K once-in-a-career listing
-- Private Salon — ultra-rare crown jewels ($2.5M–$5M)
-- Collection Log with completion % & 9 milestones
-- Museum mode — owned gallery with short lore + 5 immersion sets
+- Private Salon — ultra-rare crown jewels ($2.5M–$5M) in scarce windows
+- The Seat — $500K once-in-a-career prestige listing (rare window; claim from Collection when active)
+- Legacy floor relics (Mage of the Desk · Liquidity Crown) — effects if owned from older saves; shop removed
+- Collection Log with completion % & 8 milestones
+- Museum mode — owned gallery with short lore + immersion sets
 - Set completion claims cosmetic flair only (no REP / cash / Desk Prestige)
 - Standing flair cascade: mega → luxury → set → collection
 - Profile cosmetics applied across the desk
@@ -159,7 +169,6 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Perk unlock callouts
 - Margin call & circuit halt coaches
 - Live vs Offline status coach
-- Black Market legendary coach
 - In-game Help guide (10 sections)
 - Glossary (40+ terms) + hover tooltips
 
@@ -243,7 +252,6 @@ Use for playtesting — mark **Works** · **Broken** · **Polish** · **Untested
 - [ ] Perks
 - [ ] Staff
 - [ ] Financing
-- [ ] Black Market
 - [ ] Achievements
 - [ ] Trophy Vault
 - [ ] Collection Log
@@ -311,9 +319,9 @@ Use for playtesting — mark **Works** · **Broken** · **Polish** · **Untested
 
 ### Collectibles
 - [ ] Vault equip slots
-- [ ] Black Market rotation
-- [ ] Relics
-- [ ] The Seat
+- [ ] Private Salon windows
+- [ ] The Seat listing (Collection claim when active)
+- [ ] Legacy relics (owned saves)
 - [ ] Private Salon
 - [ ] Collection Log milestones
 

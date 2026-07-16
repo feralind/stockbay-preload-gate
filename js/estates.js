@@ -6,6 +6,26 @@
  */
 
 import { getSpendableCash } from './portfolio.js';
+import { requiredLicenseForRep, hasLicense } from './licenses.js';
+
+/** Closing costs on cash estate buys — soft friction, does not inflate estate equity book. */
+export const ESTATE_CLOSING_COST_PCT = 0.02;
+
+/**
+ * Business credit required to draw property HELOC-style credit **and** to
+ * underwrite a new cash estate purchase when finance is present.
+ * Matches Fair band floor in finance APR_CREDIT_TIERS.
+ */
+export const ESTATE_CREDIT_MIN_BUSINESS = 580;
+
+/** Consecutive unpaid property-credit interest days before foreclosure. */
+export const ESTATE_FORECLOSE_MISS_DAYS = 3;
+
+/** Distressed sale recovery applied to the HELOC balance (rest is loss). */
+export const ESTATE_FORECLOSE_RECOVERY = 0.72;
+
+/** Business credit hit on foreclosure. */
+export const ESTATE_FORECLOSE_BUSINESS_HIT = 18;
 
 /**
  * @typedef {'residences' | 'penthouses' | 'cars' | 'yachts' | 'islands'} EstateCategoryId
@@ -805,30 +825,21 @@ export function getEstateLiquidationScale(state = {}) {
 }
 
 /**
- * Passive Desk Prestige from yacht / island ownership.
+ * Passive Desk Prestige from yacht / island ownership — cosmetic display only
+ * since the licensing framework (no REP, no mechanical effect).
  * @param {object} [state]
  */
 export function getEstatePrestigeAura(state = {}) {
-  let repPerClose = 0;
-  let dailyCap = 0;
-  /** @type {Array<{ id: string, name: string, repPerClose: number, dailyCap: number }>} */
+  /** @type {Array<{ id: string, name: string }>} */
   const items = [];
   for (const asset of getOwnedEstates(state)) {
-    const bonus = asset.vaultPrestige;
-    if (!bonus) continue;
-    const rpc = Math.max(0, Math.floor(Number(bonus.repPerClose) || 0));
-    const cap = Math.max(0, Math.floor(Number(bonus.dailyCap) || 0));
-    if (!rpc && !cap) continue;
-    repPerClose += rpc;
-    dailyCap += cap;
-    items.push({ id: asset.id, name: asset.name, repPerClose: rpc, dailyCap: cap });
+    if (!asset.vaultPrestige) continue;
+    items.push({ id: asset.id, name: asset.name });
   }
   return {
-    repPerClose: Math.min(5, repPerClose),
-    dailyCap: Math.min(6, dailyCap),
     items,
     summary: items.length
-      ? `Estate prestige +${Math.min(5, repPerClose)} REP/close (cap ${Math.min(6, dailyCap)}/day)`
+      ? `Estate prestige — ${items.length} flagship holding${items.length === 1 ? '' : 's'}`
       : 'No estate prestige',
   };
 }
@@ -882,16 +893,39 @@ export function canPurchaseEstate(state, assetId, ctx = {}) {
     };
   }
   const nw = Math.max(0, Number(ctx.netWorth) || 0);
-  const rep = Math.max(0, Math.floor(Number(state.meta?.reputation) || 0));
   if (nw < asset.minNet) {
     return { ok: false, reason: `Need ${asset.minNet.toLocaleString()} Net Worth`, code: 'net' };
   }
-  if (rep < asset.minRep) {
-    return { ok: false, reason: `Requires ${asset.minRep} REP`, code: 'rep' };
+  const licNeed = requiredLicenseForRep(asset.minRep);
+  if (!hasLicense(state.licenses, licNeed.id)) {
+    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
+  }
+  // Fair+ business credit to underwrite new property when finance exists.
+  // Owned estates are never stripped by this gate — only new purchases.
+  if (state?.finance && typeof state.finance === 'object') {
+    const businessCredit = Number(state.finance.businessCredit);
+    const score = Number.isFinite(businessCredit) ? businessCredit : 0;
+    if (score < ESTATE_CREDIT_MIN_BUSINESS) {
+      return {
+        ok: false,
+        reason: `Need ${ESTATE_CREDIT_MIN_BUSINESS}+ business credit to underwrite a property purchase (you have ${Math.round(score)})`,
+        code: 'credit',
+      };
+    }
   }
   const cash = getSpendableCash(state.portfolio || { cash: 0 });
-  if (cash < asset.price) return { ok: false, reason: 'Insufficient cash', code: 'cash' };
-  return { ok: true, asset };
+  const closingFee = Math.max(0, Math.round(asset.price * ESTATE_CLOSING_COST_PCT));
+  const totalDebit = asset.price + closingFee;
+  if (cash < totalDebit) {
+    return {
+      ok: false,
+      reason: closingFee > 0
+        ? `Need $${totalDebit.toLocaleString()} (includes $${closingFee.toLocaleString()} closing)`
+        : 'Insufficient cash',
+      code: 'cash',
+    };
+  }
+  return { ok: true, asset, closingFee, totalDebit };
 }
 
 /**
@@ -903,7 +937,19 @@ export function purchaseEstate(state, assetId, ctx = {}) {
   const gate = canPurchaseEstate(state, assetId, ctx);
   if (!gate.ok) return { ok: false, msg: gate.reason, code: gate.code };
   const asset = gate.asset;
-  state.portfolio.cash -= asset.price;
+  const closingFee = Math.max(0, Math.round(asset.price * ESTATE_CLOSING_COST_PCT));
+  const totalDebit = asset.price + closingFee;
+  const cash = getSpendableCash(state.portfolio || { cash: 0 });
+  if (cash < totalDebit) {
+    return {
+      ok: false,
+      msg: closingFee > 0
+        ? `Need $${totalDebit.toLocaleString()} (includes $${closingFee.toLocaleString()} closing)`
+        : 'Insufficient cash',
+      code: 'cash',
+    };
+  }
+  state.portfolio.cash -= totalDebit;
   if (!Array.isArray(state.estateOwned)) state.estateOwned = [];
   state.estateOwned.push(asset.id);
   state.estateSpentTotal = Math.max(0, Number(state.estateSpentTotal) || 0) + asset.price;
@@ -912,7 +958,13 @@ export function purchaseEstate(state, assetId, ctx = {}) {
     state.meta.estateFlair = String(asset.flair).slice(0, 40);
   }
   syncEstateDerived(state);
-  return { ok: true, asset, spent: asset.price };
+  return {
+    ok: true,
+    asset,
+    spent: asset.price,
+    closingFee,
+    totalDebit,
+  };
 }
 
 /**
@@ -921,6 +973,19 @@ export function purchaseEstate(state, assetId, ctx = {}) {
  */
 export function drawEstateCredit(state, amount) {
   syncEstateDerived(state);
+  // When finance is present, require Fair+ business credit (HELOC realism).
+  // Legacy/test states without finance stay allowed.
+  if (state?.finance && typeof state.finance === 'object') {
+    const businessCredit = Number(state.finance.businessCredit);
+    const score = Number.isFinite(businessCredit) ? businessCredit : 0;
+    if (score < ESTATE_CREDIT_MIN_BUSINESS) {
+      return {
+        ok: false,
+        msg: `Need ${ESTATE_CREDIT_MIN_BUSINESS}+ business credit to draw property credit (you have ${Math.round(score)})`,
+        code: 'credit',
+      };
+    }
+  }
   const want = Math.floor(Number(amount) || 0);
   if (!(want > 0)) return { ok: false, msg: 'Enter a positive amount', code: 'amount' };
   const available = getEstateCreditAvailable(state);
@@ -973,12 +1038,147 @@ export function cashOutEstateEquity(state, currentDay) {
 }
 
 /**
+ * Pick the cheapest owned estate for distressed foreclosure.
+ * @param {object} state
+ */
+export function pickForeclosureEstate(state) {
+  const owned = getOwnedEstates(state);
+  if (!owned.length) return null;
+  let best = owned[0];
+  for (let i = 1; i < owned.length; i++) {
+    if (owned[i].price < best.price) best = owned[i];
+  }
+  return best;
+}
+
+/**
+ * Distressed sale of one estate applied to property credit. Quiet, rare, real.
+ * @param {object} state
+ * @returns {{ ok: boolean, asset?: object, recovered?: number, creditLeft?: number, creditHit?: number, msg?: string }}
+ */
+export function forecloseEstate(state) {
+  syncEstateDerived(state);
+  const used = Math.max(0, Number(state.estateCreditUsed) || 0);
+  if (!(used > 0)) return { ok: false, msg: 'No property credit to foreclose against' };
+  const asset = pickForeclosureEstate(state);
+  if (!asset) return { ok: false, msg: 'No estate to foreclose' };
+
+  const owned = Array.isArray(state.estateOwned) ? state.estateOwned : [];
+  state.estateOwned = owned.filter((id) => id !== asset.id);
+  state.estateSpentTotal = Math.max(
+    0,
+    Math.max(0, Number(state.estateSpentTotal) || 0) - asset.price,
+  );
+
+  const recovered = Math.floor(asset.price * ESTATE_FORECLOSE_RECOVERY);
+  const applied = Math.min(used, recovered);
+  state.estateCreditUsed = Math.round((used - applied) * 100) / 100;
+  const scrap = recovered - applied;
+  if (scrap > 0) {
+    state.portfolio.cash = (Number(state.portfolio.cash) || 0) + scrap;
+  }
+
+  let creditHit = 0;
+  if (state.finance && typeof state.finance === 'object') {
+    const before = Number(state.finance.businessCredit);
+    if (Number.isFinite(before)) {
+      state.finance.businessCredit = Math.max(300, before - ESTATE_FORECLOSE_BUSINESS_HIT);
+      creditHit = before - state.finance.businessCredit;
+    }
+  }
+
+  state.estateCreditMissDays = 0;
+  if (state.meta?.estateFlair && asset.flair && state.meta.estateFlair === asset.flair) {
+    state.meta.estateFlair = null;
+  }
+
+  syncEstateDerived(state);
+  // If credit remains above new max after losing an asset, clamp.
+  const max = Math.max(0, Number(state.estateCreditMax) || 0);
+  if ((state.estateCreditUsed || 0) > max) {
+    state.estateCreditUsed = max;
+  }
+
+  return {
+    ok: true,
+    asset,
+    /** Distressed sale proceeds (price × recovery rate). */
+    saleProceeds: recovered,
+    /** Amount applied to property credit (≤ used). */
+    recovered: applied,
+    scrap,
+    creditLeft: state.estateCreditUsed,
+    creditHit,
+  };
+}
+
+/**
  * @param {object} state
  * @returns {{ netIncome: number, creditInterest: number, events: object[] }}
  */
 export function processDailyEstates(state) {
   syncEstateDerived(state);
   const events = [];
+
+  // Property credit interest settles before rental net — the note is due even if
+  // the house "produces" later in the day. Prevents income from masking HELOC default.
+  let creditInterest = 0;
+  const used = Math.max(0, Number(state.estateCreditUsed) || 0);
+  if (used > 0) {
+    creditInterest = Math.round(used * ESTATE_CREDIT_DAILY_RATE * 100) / 100;
+    if (creditInterest > 0) {
+      const cash = getSpendableCash(state.portfolio || { cash: 0 });
+      if (cash >= creditInterest) {
+        state.portfolio.cash -= creditInterest;
+        state.estateCreditMissDays = 0;
+        events.push({
+          type: 'estate_credit_interest',
+          msg: `Property credit interest $${creditInterest.toFixed(2)}`,
+          amount: creditInterest,
+        });
+      } else {
+        const rolled = Math.round((used + creditInterest) * 100) / 100;
+        const max = Math.max(0, Number(state.estateCreditMax) || 0);
+        if (rolled <= max + 0.001) {
+          state.estateCreditUsed = rolled;
+        } else {
+          state.portfolio.cash = (Number(state.portfolio.cash) || 0) - creditInterest;
+        }
+        const misses = Math.max(0, Math.floor(Number(state.estateCreditMissDays) || 0)) + 1;
+        state.estateCreditMissDays = misses;
+        events.push({
+          type: 'estate_credit_miss',
+          msg: `Missed property credit interest $${creditInterest.toFixed(2)} (${misses}/${ESTATE_FORECLOSE_MISS_DAYS})`,
+          amount: -creditInterest,
+          misses,
+        });
+        if (misses >= ESTATE_FORECLOSE_MISS_DAYS - 1 && misses < ESTATE_FORECLOSE_MISS_DAYS) {
+          events.push({
+            type: 'estate_foreclosure_warning',
+            msg: 'Property credit in default — another missed interest day may trigger foreclosure',
+          });
+        }
+        if (misses >= ESTATE_FORECLOSE_MISS_DAYS) {
+          const fc = forecloseEstate(state);
+          if (fc.ok) {
+            events.push({
+              type: 'estate_foreclosure',
+              msg: `Foreclosed: ${fc.asset.name} — recovered $${Math.round(fc.recovered).toLocaleString()} toward property credit`,
+              assetId: fc.asset.id,
+              assetName: fc.asset.name,
+              recovered: fc.recovered,
+              creditLeft: fc.creditLeft,
+              creditHit: fc.creditHit,
+              amount: -(fc.asset.price),
+            });
+          }
+        }
+      }
+    }
+  } else {
+    state.estateCreditMissDays = 0;
+  }
+
   const netIncome = getEstateNetIncomePerDay(state);
   if (netIncome !== 0 && (state.estateOwned || []).length) {
     state.portfolio.cash = (Number(state.portfolio.cash) || 0) + netIncome;
@@ -989,33 +1189,6 @@ export function processDailyEstates(state) {
         : `Estate upkeep net −$${Math.abs(netIncome).toFixed(2)}`,
       amount: netIncome,
     });
-  }
-
-  let creditInterest = 0;
-  const used = Math.max(0, Number(state.estateCreditUsed) || 0);
-  if (used > 0) {
-    creditInterest = Math.round(used * ESTATE_CREDIT_DAILY_RATE * 100) / 100;
-    if (creditInterest > 0) {
-      const cash = getSpendableCash(state.portfolio || { cash: 0 });
-      if (cash >= creditInterest) {
-        state.portfolio.cash -= creditInterest;
-      } else {
-        // Roll unpaid interest into the credit line when under the LTV cap;
-        // at the cap, still charge cash (may go negative) so interest is never free.
-        const rolled = Math.round((used + creditInterest) * 100) / 100;
-        const max = Math.max(0, Number(state.estateCreditMax) || 0);
-        if (rolled <= max + 0.001) {
-          state.estateCreditUsed = rolled;
-        } else {
-          state.portfolio.cash = (Number(state.portfolio.cash) || 0) - creditInterest;
-        }
-      }
-      events.push({
-        type: 'estate_credit_interest',
-        msg: `Property credit interest $${creditInterest.toFixed(2)}`,
-        amount: creditInterest,
-      });
-    }
   }
 
   syncEstateDerived(state);
@@ -1087,6 +1260,10 @@ export function sanitizeEstateProgress(raw = {}) {
     lastCashOut = null;
   }
 
+  let missDays = Math.floor(Number(raw.estateCreditMissDays) || 0);
+  if (!Number.isFinite(missDays) || missDays < 0) missDays = 0;
+  missDays = Math.min(30, missDays);
+
   const tmp = {
     estateOwned: ordered,
     estateSpentTotal: spent,
@@ -1108,6 +1285,7 @@ export function sanitizeEstateProgress(raw = {}) {
     estateUpkeepPerDay: tmp.estateUpkeepPerDay,
     estateCashOutCount: cashOutCount,
     estateLastCashOutDay: lastCashOut,
+    estateCreditMissDays: creditUsed > 0 ? missDays : 0,
   };
 }
 

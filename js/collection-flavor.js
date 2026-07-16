@@ -52,7 +52,7 @@ export const LORE_BY_ID = {
   dragonLedgerBadge: 'Badge with a dragon that never filed a 13F. Flex without force.',
   stormGlassBackdrop: 'Storm-glass wash behind the chart. Weather for the eyes, not the beta.',
   midnightBloomDesk: 'Desk bloom that only opens after hours. Pretty — not predictive.',
-  vermeerAttribution: 'Dutch interior with a name too clean to trust. Crown provenance is the sport.',
+  vermeerAttribution: 'A violet-moon nocturne with one patient cat. Crown provenance is the sport.',
   fabergeImperial: 'Imperial workshop egg, papers included. The rarest salon window — blink and it is gone.',
   theSeat: 'A seat on the trading floor that marks the desk as untouchable. Prestige ownership, not a better fill.',
 };
@@ -82,9 +82,9 @@ export const COLLECTION_SETS = [
   {
     id: 'floorRelics',
     name: 'Floor Relics',
-    blurb: 'Black Market legendaries that still hum after close.',
+    blurb: 'Legacy desk relics that still hum after close (ownership from older runs).',
     flair: 'Relic Floor',
-    memberIds: ['mageOfTheDesk', 'liquidityCrown', 'orbitalFloorBackdrop', 'obsidianMonolithDesk'],
+    memberIds: ['mageOfTheDesk', 'liquidityCrown'],
   },
   {
     id: 'crownWing',
@@ -111,17 +111,6 @@ export const COLLECTION_SETS = [
       'crashDayTape', 'apexBadge', 'halcyonPin', 'floorLegendTitle', 'volatilityWhisperer', 'closingBellRoyalty',
       'bronzeBullBust', 'glassTickerWall', 'auroraDeck', 'deskSovereign', 'imperialTriptych', 'augustusLaurel',
       'gutenbergFolio', 'rothkoField', 'diademProvenance',
-    ],
-  },
-  {
-    id: 'sourceBlackMarket',
-    name: 'Black Market Set',
-    blurb: 'Every Black Market listing owned — floor legends and quiet cosmetics alike.',
-    flair: 'Night Floor',
-    memberIds: [
-      'afterHoursMonogram', 'nightWatchTitle', 'tickerVaultBackdrop', 'clockworkDeskSkin', 'pitPassLanyard',
-      'amberTapeBackdrop', 'ledgerLineTitle', 'floorMythTitle', 'dragonLedgerBadge', 'stormGlassBackdrop',
-      'midnightBloomDesk', 'mageOfTheDesk', 'liquidityCrown', 'orbitalFloorBackdrop', 'obsidianMonolithDesk',
     ],
   },
   {

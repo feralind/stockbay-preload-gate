@@ -96,16 +96,33 @@ function Fetch-YahooCandles($sym, $resolution, $count) {
     $ts = $result.timestamp
     $q = $result.indicators.quote[0]
     if (-not $ts) { return $null }
+    $adjArr = $null
+    try { $adjArr = $result.indicators.adjclose[0].adjclose } catch { $adjArr = $null }
     $candles = @()
     for ($i = 0; $i -lt $ts.Count; $i++) {
       if ($null -eq $q.close[$i]) { continue }
+      $open = $q.open[$i]
+      $high = $q.high[$i]
+      $low = $q.low[$i]
+      $close = $q.close[$i]
+      $volume = $q.volume[$i]
+      if ($null -ne $adjArr -and $i -lt $adjArr.Count -and $null -ne $adjArr[$i] -and $close -gt 0) {
+        $adjClose = [double]$adjArr[$i]
+        if ($adjClose -gt 0) {
+          $scale = $adjClose / $close
+          $open = $open * $scale
+          $high = $high * $scale
+          $low = $low * $scale
+          $close = $adjClose
+        }
+      }
       $candles += @{
         time = $ts[$i]
-        open = $q.open[$i]
-        high = $q.high[$i]
-        low = $q.low[$i]
-        close = $q.close[$i]
-        volume = $q.volume[$i]
+        open = $open
+        high = $high
+        low = $low
+        close = $close
+        volume = $volume
       }
     }
     if ($count -gt 0 -and $candles.Count -gt $count) {

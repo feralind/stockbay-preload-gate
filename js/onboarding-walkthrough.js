@@ -15,6 +15,7 @@ import {
   clearCoachFlags,
 } from './coach-flags.js';
 import { isSymbolHalted } from './market.js';
+import { resolveCoachTarget } from './teach-moments.js';
 
 /** Perks that get a one-time affordability callout (all desk perks). */
 export const CALLOUT_PERK_IDS = [
@@ -70,7 +71,7 @@ export const PERK_CALLOUT_HOOKS = {
     helpSec: 'perks',
   },
   auraAmp: {
-    why: 'Equipped Vault cosmetics already grant Desk Prestige reputation on profitable closes. This raises the per-close bonus and the daily cap.',
+    why: 'Equipped Vault cosmetics give your desk a Prestige display. This perk raises that display flair — pure collector bragging rights.',
     helpSec: 'perks',
   },
   hedgeFund: {
@@ -177,22 +178,22 @@ export function getWalkthroughSuggestMeta() {
 }
 
 /** True when perk is not owned, not yet callout-shown, and canPurchasePerk just became ok. */
-export function shouldShowPerkCallout(perkId, { cash, perks, reputation, perkCalloutsShown } = {}) {
+export function shouldShowPerkCallout(perkId, { cash, perks, licenses, perkCalloutsShown } = {}) {
   if (!CALLOUT_PERK_IDS.includes(perkId)) return false;
   if ((perks || []).includes(perkId)) return false;
   if (perkCalloutsShown?.[perkId]) return false;
   const perk = PERKS[perkId];
   if (!perk) return false;
-  return canPurchasePerk(perk, { cash, perks, reputation }).ok;
+  return canPurchasePerk(perk, { cash, perks, licenses }).ok;
 }
 
 export function listPendingPerkCallouts(state) {
   const cash = state?.portfolio?.cash ?? 0;
   const perks = state?.perks || [];
-  const reputation = state?.meta?.reputation ?? 0;
+  const licenses = Array.isArray(state?.licenses) ? state.licenses : ['retail'];
   const perkCalloutsShown = state?.meta?.perkCalloutsShown || {};
   return CALLOUT_PERK_IDS.filter((id) => shouldShowPerkCallout(id, {
-    cash, perks, reputation, perkCalloutsShown,
+    cash, perks, licenses, perkCalloutsShown,
   }));
 }
 
@@ -258,10 +259,22 @@ export function markSimStatusCoachShown(meta) {
   return meta;
 }
 
+/** Pure: first graduation coachmark for this save — fires once Series 7 is earned. */
+export function shouldShowGraduationCoach(meta, licenses = []) {
+  if (!meta || meta.graduationCoachShown) return false;
+  return Array.isArray(licenses) && licenses.includes('series7');
+}
+
+export function markGraduationCoachShown(meta) {
+  if (!meta) return meta;
+  meta.graduationCoachShown = true;
+  return meta;
+}
+
 const MARGIN_CALL_COACH_TEXT =
   'Margin call: your equity cushion fell below what brokers require to keep leveraged bets open. '
   + 'Cover shorts or sell longs to raise the cushion — or the desk will liquidate for you. '
-  'Real brokers do the same so one bad short cannot owe more than the account holds.';
+  + 'Real brokers do the same so one bad short cannot owe more than the account holds.';
 
 const CIRCUIT_HALT_COACH_TEXT =
   'Trading halt: this symbol moved so fast from the session open that the “exchange” paused new buys/shorts. '
@@ -269,9 +282,22 @@ const CIRCUIT_HALT_COACH_TEXT =
   + 'The halt lifts after a few game minutes.';
 
 const SIM_STATUS_COACH_TEXT =
-  'Honesty check: Live/Connected means StockWay can fetch base quotes — not a brokerage and not tick-by-tick streaming. '
-  + 'Once the accelerated clock runs, drift, events, and circuit breakers drive the tape (Simulation) — not the real market. '
+  'Honesty check: Online means StockWay can fetch base quotes — not a brokerage and not tick-by-tick streaming. '
+  + 'Once baselines load, the desk clock runs a Simulated tape (live-seeded or seed/cached). '
   + 'Offline uses cached baselines or seeds; paper money never leaves the browser except quote lookups.';
+
+const GRADUATION_COACH_TEXT =
+  'Series 7 earned: you are past the tutorial desk now. '
+  + 'From here, judgment and firm identity matter more than prompts — what you buy, what you pass on, and how you size risk become the story of this shop. '
+  + 'No more hand-holding: run the desk like your name is on the door.';
+
+/** Exported for quality tests — keep all three sentences concatenated. */
+export {
+  MARGIN_CALL_COACH_TEXT,
+  CIRCUIT_HALT_COACH_TEXT,
+  SIM_STATUS_COACH_TEXT,
+  GRADUATION_COACH_TEXT,
+};
 
 function canShowDomCoachmark() {
   return typeof document !== 'undefined'
@@ -296,7 +322,7 @@ export function maybeShowMarginCallCoach(state, { saveGame, level } = {}) {
   saveGame?.({ immediate: true });
   const target = document.getElementById('margin-stress-banner') || document.getElementById('buying-power');
   showCoachmark({
-    target: target || 'body',
+    target: target || undefined,
     text: MARGIN_CALL_COACH_TEXT,
     showNext: true,
     onNext: () => hideCoachmark(),
@@ -323,7 +349,7 @@ export function maybeShowCircuitHaltCoach(state, { saveGame, sym } = {}) {
     || document.getElementById('market-status')
     || document.getElementById('buying-power');
   showCoachmark({
-    target: target || 'body',
+    target: target || undefined,
     text: `${name} just halted. ${CIRCUIT_HALT_COACH_TEXT}`,
     showNext: true,
     onNext: () => hideCoachmark(),
@@ -351,8 +377,39 @@ export function maybeShowSimStatusCoach(state, { saveGame } = {}) {
   saveGame?.({ immediate: true });
   const target = document.getElementById('feed-status') || document.getElementById('feed-live-pill');
   showCoachmark({
-    target: target || 'body',
+    target: target || undefined,
     text: SIM_STATUS_COACH_TEXT,
+    showNext: true,
+    onNext: () => hideCoachmark(),
+    onSkip: () => hideCoachmark(),
+  });
+  return true;
+}
+
+/**
+ * One-shot coachmark when the Series 7 license is first earned.
+ * Quiet walkthrough/tour modes never mark it shown, so it can fire later.
+ */
+export function maybeShowGraduationCoach(state, { saveGame } = {}) {
+  if (!state?.meta || !shouldShowGraduationCoach(state.meta, state.licenses)) return false;
+  if (isCoachQuiet()) return false;
+  if (!canShowDomCoachmark()) {
+    markGraduationCoachShown(state.meta);
+    saveGame?.({ immediate: true });
+    return true;
+  }
+  if (document.getElementById('onboard-overlay')
+    && !document.getElementById('onboard-overlay').classList.contains('hidden')) {
+    return false;
+  }
+  markGraduationCoachShown(state.meta);
+  saveGame?.({ immediate: true });
+  const target = document.getElementById('rep-stat-cell')
+    || document.getElementById('reputation')
+    || document.getElementById('dash-standing');
+  showCoachmark({
+    target: target || undefined,
+    text: GRADUATION_COACH_TEXT,
     showNext: true,
     onNext: () => hideCoachmark(),
     onSkip: () => hideCoachmark(),
@@ -427,9 +484,6 @@ export function showCoachmark(opts = {}) {
   const root = ensureCoachRoot();
   // `anchor` accepted as alias — older call sites used the wrong key and got stuck tips.
   const targetSpec = opts.target ?? opts.anchor;
-  const target = typeof targetSpec === 'string'
-    ? document.querySelector(targetSpec)
-    : targetSpec;
   const textEl = document.getElementById('coachmark-text');
   const nextBtn = document.getElementById('coachmark-next');
   const skipBtn = document.getElementById('coachmark-skip');
@@ -438,12 +492,7 @@ export function showCoachmark(opts = {}) {
   if (nextBtn) nextBtn.textContent = opts.nextLabel || 'Next';
   root.classList.remove('hidden');
 
-  const resolveTarget = () => {
-    const el = typeof targetSpec === 'string'
-      ? document.querySelector(targetSpec)
-      : targetSpec;
-    return el instanceof Element ? el : null;
-  };
+  const resolveTarget = () => resolveCoachTarget(targetSpec);
 
   const reposition = () => {
     const el = resolveTarget();
@@ -468,25 +517,26 @@ export function showCoachmark(opts = {}) {
   if (skipBtn) skipBtn.onclick = dismissSafely;
   if (nextBtn) nextBtn.onclick = onNext;
 
-  activeCoach = { target, reposition, onSkip: dismissSafely };
+  activeCoach = { target: resolveTarget(), reposition, onSkip: dismissSafely };
   requestAnimationFrame(reposition);
   setTimeout(reposition, 50);
   return activeCoach;
 }
 
-/** When the spotlight target is missing, keep the tip readable (not stuck at 0,0). */
+/** When the spotlight target is missing, keep the tip readable (centered, not stuck at 0,0). */
 function placeFallbackTip() {
   const tip = document.getElementById('coachmark-tip');
   const spot = document.getElementById('coachmark-spotlight');
   if (!tip) return;
   if (spot) {
-    spot.style.top = '12px';
-    spot.style.left = '12px';
+    spot.style.top = '0px';
+    spot.style.left = '0px';
     spot.style.width = '0px';
     spot.style.height = '0px';
   }
-  tip.style.top = '72px';
-  tip.style.left = '24px';
+  const tipW = tip.offsetWidth || 320;
+  tip.style.top = '88px';
+  tip.style.left = `${Math.max(24, Math.round((window.innerWidth - tipW) / 2))}px`;
 }
 
 export function hideCoachmark() {

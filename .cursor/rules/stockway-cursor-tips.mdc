@@ -1,0 +1,34 @@
+---
+description: Cursor tips / glossary hover — Achievements shell, fast retarget, clear on nav
+alwaysApply: true
+---
+
+# StockWay — cursor tips (glossary + achievements)
+
+Desk “what is this?” tips must feel like **Achievements** cards: gold-border cursor sheet, smooth follow, instant handoff between targets, never stuck after navigate.
+
+## Canonical implementations
+
+- Achievements: `js/ui/achievements.js` — `#ach-cursor-tip` / `.ach-cursor-tip`
+- Glossary (Cash, Net Worth, BP, Dashboard cards, …): `js/glossary-tooltips.js` — `#gloss-tooltip-root` also uses `.ach-cursor-tip`
+- Rich header popovers (Equity / Licenses): `js/ui.js` `bindStatPopovers` — match gold-border language in CSS
+- Hide on view change: `switchView` must call `hideGlossTip()`, `hideAchievementCursorTip()`, `hideStatPopovers()`
+
+## Required behavior
+
+1. **Shell** — use `.ach-cursor-tip` (+ `ach-cursor-tip-name` / `ach-cursor-tip-desc`). Prefer `pointer-events: none` so tips never trap hover.
+2. **First open** — short dwell OK (~500ms) so scrubbing past stats doesn’t spam tips.
+3. **Retarget** — if a tip is already showing and the cursor moves to another `data-gloss` / tip target, **swap content immediately** (no second dwell). Sibling `pointerout` must not hide-then-reshow.
+4. **Follow cursor** — place with pointer coords + edge flip (same as Achievements).
+5. **Clear on navigate** — every `switchView` / blur / visibility hidden must force-hide all tip layers. Never leave a floating tip on another page.
+6. **No resurrect after nav** — do not `querySelector('[data-gloss="cash"]')` fallbacks that re-open a tip from a different view’s matching id.
+
+## Do not
+
+- Reintroduce tip `pointerenter` that cancels hide while the tip itself is hoverable
+- Keep tips open because `tipEl.matches(':hover')` after leave
+- Put live cash/NW into panel remount fingerprints (see tick-thrash rule) — remounts also break tip dwell
+
+## CSS
+
+`.ach-cursor-tip` in `css/styles.css`. Gloss root: `.gloss-tip-root` shares that shell.

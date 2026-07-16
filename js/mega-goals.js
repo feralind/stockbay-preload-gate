@@ -11,7 +11,7 @@ import { getOfficeTierIndex } from './office.js';
  * @typedef {{
  *   id: string,
  *   label: string,
- *   kind: 'netWorth' | 'office' | 'reputation' | 'collectionPct' | 'legendaryOwned' | 'estateOwned' | 'estateId',
+ *   kind: 'netWorth' | 'office' | 'licenses' | 'collectionPct' | 'legendaryOwned' | 'estateOwned' | 'estateId',
  *   target: number,
  *   blurb: string,
  *   flair: string | null,
@@ -20,11 +20,11 @@ import { getOfficeTierIndex } from './office.js';
  * }} MegaGoal
  */
 
-/** Kind priority: NW → Office → REP → Collection → Estates (per Section 4 approval). */
+/** Kind priority: NW → Office → Licenses → Collection → Estates (per Section 4 approval). */
 const KIND_PRIORITY = {
   netWorth: 0,
   office: 1,
-  reputation: 2,
+  licenses: 2,
   collectionPct: 3,
   legendaryOwned: 4,
   estateOwned: 5,
@@ -53,11 +53,11 @@ export const MEGA_GOALS = [
   },
   {
     id: 'legendDesk',
-    label: 'Legend Trader',
-    kind: 'reputation',
-    target: 2000,
-    blurb: 'Earn 2,000 REP the hard way — trades, days, challenges.',
-    flair: 'Legend Trader',
+    label: 'Fully Accredited',
+    kind: 'licenses',
+    target: 4,
+    blurb: 'Hold every license — Retail through Reg D Institutional.',
+    flair: 'Fully Accredited',
   },
   {
     id: 'collectionHalf',
@@ -125,7 +125,6 @@ export function getMegaGoal(id) {
  */
 export function getMegaGoalProgress(goal, state = {}, ctx = {}) {
   const nw = Math.max(0, Number(ctx.netWorth) || 0);
-  const rep = Math.max(0, Math.floor(Number(state.meta?.reputation) || 0));
   const collectionOpts = {
     blackMarketPool: ctx.blackMarketPool || [],
     seatItem: ctx.seatItem || null,
@@ -149,12 +148,13 @@ export function getMegaGoalProgress(goal, state = {}, ctx = {}) {
     return { current: have, target: need, pct, complete, unit: 'office' };
   }
 
-  if (goal.kind === 'reputation') {
-    const current = rep;
+  if (goal.kind === 'licenses') {
+    const held = new Set(['retail', ...(Array.isArray(state.licenses) ? state.licenses : [])]);
+    const current = held.size;
     const target = goal.target;
     const complete = current >= target;
     const pct = target > 0 ? Math.min(100, Math.max(0, Math.round((current / target) * 100))) : 100;
-    return { current, target, pct, complete, unit: 'rep' };
+    return { current, target, pct, complete, unit: 'licenses' };
   }
 
   if (goal.kind === 'collectionPct') {

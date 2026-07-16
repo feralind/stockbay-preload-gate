@@ -11,7 +11,7 @@ import {
   ACHIEVEMENTS, ACHIEVEMENT_TIERS, getAchievementProgress, getUnclaimedTotal,
   achievementBadgeSvg, achievementCategory,
 } from '../achievements.js';
-import { getRepRank } from '../config.js';
+import { getHighestLicense } from '../licenses.js';
 import { escapeAttr, escapeHtml } from './shared.js';
 
 const RING_R = 52;
@@ -51,7 +51,7 @@ function setText(id, value) {
  */
 function updateProgressPanel(state, prog, unclaimed) {
   const pct = prog.total > 0 ? Math.round((prog.unlocked / prog.total) * 100) : 0;
-  const rank = getRepRank(state.meta?.reputation || 0);
+  const rank = getHighestLicense(state.licenses);
   const nextClaim = ACHIEVEMENTS.find((a) => {
     const ach = state.achievements || { unlocked: {}, claimed: {} };
     return ach.unlocked?.[a.id] && !ach.claimed?.[a.id];
@@ -102,12 +102,21 @@ function ensureAchTip() {
 
 function hideAchTip() {
   tipVisible = false;
+  if (tipRaf) {
+    cancelAnimationFrame(tipRaf);
+    tipRaf = 0;
+  }
   const tip = document.getElementById('ach-cursor-tip');
   if (tip) {
     tip.hidden = true;
     tip.classList.remove('is-on');
     delete tip.dataset.forId;
   }
+}
+
+/** Force-hide for view navigation (export). */
+export function hideAchievementCursorTip() {
+  hideAchTip();
 }
 
 function scheduleTipMove() {

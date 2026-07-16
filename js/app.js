@@ -10,7 +10,7 @@ import {
   getHeldSymbols, seedQuotesForPositions, onQuoteTransition, ensureLiveQuoteForDisplay,
   isLiveAnchoredQuote, seedQuote, applyLiveAnchor, markCloudProxyConfigured,
   parsePreloadProgress, countLiveAnchoredQuotes, loadPersistedBaselines,
-  startBackgroundQuotePreload,
+  startBackgroundQuotePreload, setSimLedgerClockProviders,
 } from './api.js';
 import {
   startMarket, onMarketTick, pauseMarket, resumeMarket, stopMarketClock, serializeMarket, loadMarket, isMarketOpen,
@@ -24,6 +24,8 @@ import {
   getNetEquity, getFirmNetWorth,
   ensurePendingOrders, ensureOrderTickets,
   markPriceCorrectedNotices,
+  armBuySuspend, shouldArmRevengeCooloff, isBuySuspended,
+  estimateOptionValue, liveOptionVol,
 } from './portfolio.js';
 import {
   confirmOrderFlow,
@@ -40,7 +42,7 @@ import { processMarginCallTick, MARGIN_CALL_GRACE_MINUTES } from './margin-call.
 import { applyRelicAwareSlippage, getDeskMarginGraceMinutes } from './desk-rules.js';
 import { getMacroState } from './macro.js';
 import { isTaxDay, settleTaxDay } from './tax.js';
-import { startEventEngine, onEvent } from './events.js';
+import { startEventEngine, onEvent, resetDayEventCounters } from './events.js';
 import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote, setChartStyle, getChartStyle, scheduleFitChart } from './chart.js';
 import { initThemePanel } from './theme.js';
 import {
@@ -56,20 +58,28 @@ import {
 import {
   startFirstTradeWalkthrough, completeWalkthroughReset, checkAndShowPerkCallouts,
   maybeStartPortfolioTour, maybeShowMarginCallCoach, maybeShowCircuitHaltCoach,
-  maybeShowSimStatusCoach, showCoachmark, hideCoachmark,
+  maybeShowSimStatusCoach, maybeShowGraduationCoach, showCoachmark, hideCoachmark,
 } from './onboarding-walkthrough.js';
 import {
   createFinanceState, takeLoan, makeLoanPayment, quoteLoan, getFirmDebt,
-  BANKS, bankDebt, otherBanksDebt, typeDebt,
+  normalizeLoanTermDays, firmStrengthBoostPct, getTotalBankDeposits,
+  depositToBank, withdrawFromBank, transferBankInternal,
 } from './finance.js';
 import {
-  createMetaState, adjustReputation, recordEquityPoint, rollDailyChallenge,
-  updateChallengeProgress, claimChallenge, resetDayCounters, recordClosedTrade, repTitle, repFromPnL,
+  createMetaState, recordEquityPoint, rollDailyChallenge,
+  updateChallengeProgress, claimChallenge, resetDayCounters, recordClosedTrade,
 } from './meta.js';
-import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
 import {
-  getBlackMarketItem, getTodaysBlackMarketListing, maybeShowBlackMarketLegendaryCoach, purchaseBlackMarketItem,
-  recordExpiredBlackMarketSeen, BLACKMARKET_ITEM_POOL,
+  LICENSES, sanitizeLicenses, licenseSnapshot, canTakeLicenseExam, purchaseLicense, getHighestLicense,
+} from './licenses.js';
+import {
+  TEACH_MOMENTS, teachIdForLicense, markTeachMoment, pendingLoanTeachMoments,
+  pendingEstateTeachMoments,
+  teachMomentShown, detectIvCrush, heldThroughEarnings, resolveCoachTarget,
+} from './teach-moments.js';
+import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
+import {
+  getBlackMarketItem, BLACKMARKET_ITEM_POOL,
 } from './blackmarket.js';
 import {
   sanitizeEquippedRelics,
@@ -81,7 +91,7 @@ import { purchaseOfficeUpgrade, sanitizeOfficeProgress } from './office.js';
 import { purchaseLuxury, sanitizeLuxuryProgress } from './luxury.js';
 import {
   purchaseEstate, sanitizeEstateProgress, syncEstateDerived, drawEstateCredit, repayEstateCredit,
-  cashOutEstateEquity, getEstateLiquidationScale, getEstatePrestigeAura,
+  cashOutEstateEquity, getEstateLiquidationScale,
 } from './estates.js';
 import { claimMegaGoal } from './mega-goals.js';
 import {
@@ -106,10 +116,22 @@ import {
   getHotListingPool, reseedHotListingRotation, advanceHotListingRotation, getHotRotationOffset,
   pauseHotListingRotation, scheduleHotListingResume, isHotListingRotationPaused,
 } from './ui.js';
-import { initGlossaryTooltips } from './glossary-tooltips.js';
+import { patchBuySuspendControls } from './ui/trade.js';
+import { initGlossaryTooltips, setGlossLiveContext } from './glossary-tooltips.js';
 import { archiveRun } from './leaderboard.js';
 import { toast, clearToasts, showAlert, showConfirm, bindDialogUI, deferDaySummary, isCoachQuiet, clearDeferredNotifications } from './notify.js';
 import { bindSaveIO } from './save-io.js';
+import { bindSharePlay } from './share-play.js';
+import { showLoanConfirm, closeLoanConfirmOverlay, isLoanConfirmOpen } from './ui/finance.js';
+import {
+  DESK_WIPE_FLAG_KEY,
+  markDeskWipe,
+  clearDeskWipeFlags,
+  consumeDeskWipeOnBoot,
+  shouldBlockSaveAfterForeignWipe,
+  wipeRunSaveKeys,
+  isDeskWipePending,
+} from './save-wipe.js';
 import { sanitizeRunData } from './save-sanitize.js';
 import { bindOverlayStack, registerOverlayClosers } from './overlays.js';
 import { bindHotkeys } from './hotkeys.js';
@@ -128,6 +150,7 @@ import {
 const state = {
   portfolio: createPortfolio(),
   perks: [],
+  licenses: ['retail'],
   staff: [],
   staffLog: [],
   listings: [],
@@ -138,6 +161,7 @@ const state = {
   stats: {
     hires: 0, fires: 0, shortsOpened: 0, greenDays: 0, greenStreak: 0,
     profitableShorts: 0, loansPaidEarly: 0, alertsSet: 0, staffMistakes: 0,
+    tradesClosed: 0,
   },
   finance: createFinanceState(),
   meta: createMetaState(),
@@ -163,6 +187,7 @@ const state = {
   estateEquityExtracted: 0,
   estateCreditUsed: 0,
   estateCreditMax: 0,
+  estateCreditMissDays: 0,
   resilienceRating: 0,
   estateIncomePerDay: 0,
   estateUpkeepPerDay: 0,
@@ -178,13 +203,14 @@ function firmDebt() {
   return getFirmDebt(state.finance, state.estateCreditUsed);
 }
 
-/** Trading equity − firm debt + vault book + estate equity. */
+/** Trading equity − firm debt + vault book + estate equity + bank deposits. */
 function firmNetWorth() {
   syncEstateDerived(state);
   return getFirmNetWorth(state.portfolio, {
     debt: firmDebt(),
     vaultBook: getVaultBookValue(state),
     estateEquity: state.estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
   });
 }
 
@@ -355,6 +381,7 @@ function buildSaveData() {
     savedAt: Date.now(),
     portfolio: state.portfolio,
     perks: state.perks,
+    licenses: state.licenses,
     staff: state.staff,
     staffLog: state.staffLog,
     market: serializeMarket(),
@@ -392,6 +419,7 @@ function buildSaveData() {
     estateUpkeepPerDay: state.estateUpkeepPerDay,
     estateCashOutCount: state.estateCashOutCount,
     estateLastCashOutDay: state.estateLastCashOutDay,
+    estateCreditMissDays: state.estateCreditMissDays || 0,
     collectionClaims: state.collectionClaims,
     collectionRewardCashTotal: state.collectionRewardCashTotal,
     aiChat: getAiChatHistory(),
@@ -405,13 +433,19 @@ let shutdownToken = '';
 
 function writeSaveToDisk() {
   if (window.__stockwayDisableSave) return false;
+  // Another tab archived & reset — never push this tab's stale run back.
+  if (shouldBlockSaveAfterForeignWipe()) return false;
+  const key = CONFIG.SAVE_KEY;
+  const tmpKey = `${key}__tmp`;
+  let stagedTmp = false;
   try {
     const data = buildSaveData();
     const payload = JSON.stringify(data);
-    const key = CONFIG.SAVE_KEY;
-    localStorage.setItem(`${key}__tmp`, payload);
+    // Stage first so a crash mid-primary write leaves __tmp recoverable.
+    localStorage.setItem(tmpKey, payload);
+    stagedTmp = true;
     localStorage.setItem(key, payload);
-    localStorage.removeItem(`${key}__tmp`);
+    localStorage.removeItem(tmpKey);
 
     try {
       const day = data?.market?.dayCount ?? data?.meta?.dayCount ?? 0;
@@ -423,9 +457,17 @@ function writeSaveToDisk() {
     } catch (_) { /* slots are best-effort */ }
 
     saveDirty = false;
+    // Fresh boot after reset: first successful write clears the wipe sentinel.
+    try {
+      if (isDeskWipePending()) clearDeskWipeFlags();
+    } catch (_) { /* ignore */ }
     return true;
   } catch (e) {
     console.warn('Save failed', e);
+    // Leave __tmp in place if primary never landed — loadGame can recover it.
+    if (!stagedTmp) {
+      try { localStorage.removeItem(tmpKey); } catch (_) { /* ignore */ }
+    }
     return false;
   }
 }
@@ -437,29 +479,26 @@ function clearAllSaveData({ archive = true, keepQuoteBaseline = false } = {}) {
       archiveRun({
         equity: getNetEquity(state.portfolio, firmDebt()),
         day: getDayCount(),
-        rep: state.meta?.reputation || 0,
         label: 'Reset desk',
       });
     } catch (_) { /* best-effort */ }
   }
+  // Flag first so boot + other tabs honor the wipe even if reload is slow.
+  try { markDeskWipe(); } catch (_) { /* ignore */ }
   window.__stockwayDisableSave = true;
   saveDirty = false;
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  const key = CONFIG.SAVE_KEY;
-  const wipeKeys = [
-    key,
-    `${key}__tmp`,
-    `${key}_slot`,
-    'stockway_onboarded_v1',
-    'stockway_alert_history_v1',
-  ];
-  if (!keepQuoteBaseline) wipeKeys.push(CONFIG.QUOTE_BASELINE_KEY);
-  wipeKeys.forEach((k) => {
-    try { localStorage.removeItem(k); } catch (_) {}
-  });
+  if (autosaveInterval) {
+    clearInterval(autosaveInterval);
+    autosaveInterval = null;
+  }
+  try { stopMarketClock(); } catch (_) { /* ignore */ }
+  const extra = ['stockway_onboarded_v1', 'stockway_alert_history_v1'];
+  if (!keepQuoteBaseline) extra.push(CONFIG.QUOTE_BASELINE_KEY);
+  wipeRunSaveKeys({ also: extra });
   // Profile name/photo persist; vault equip slots must not survive a wiped inventory.
   try { clearProfileCosmetics(); } catch (_) { /* ignore */ }
   // Reset in-memory market + Fed before reload (Day 1, Pre-Market, Fed 4.50%)
@@ -671,8 +710,13 @@ function bindListingsViewportRefresh() {
 }
 
 function bindSaveLifecycle() {
+  // Electron close awaits this (sync flush wrapped for executeJavaScript Promise).
   window.__stockwayFlushSave = () => {
-    try { return flushSave(); } catch { return false; }
+    try {
+      return Promise.resolve(flushSave());
+    } catch {
+      return Promise.resolve(false);
+    }
   };
 
   const onLeave = () => { flushSave(); };
@@ -681,20 +725,52 @@ function bindSaveLifecycle() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushSave();
   });
+  // Another tab hit Archive & reset — drop stale in-memory run; don't rewrite it.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== DESK_WIPE_FLAG_KEY || !e.newValue) return;
+    window.__stockwayDisableSave = true;
+    saveDirty = false;
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (autosaveInterval) {
+      clearInterval(autosaveInterval);
+      autosaveInterval = null;
+    }
+    try { stopMarketClock(); } catch (_) { /* ignore */ }
+    try { location.reload(); } catch (_) { /* ignore */ }
+  });
 }
 
 function loadGame() {
   try {
-    let raw = localStorage.getItem(CONFIG.SAVE_KEY);
-    if (!raw) {
-      // Recover from rotating slot if main key missing
+    // Intentional reset: re-wipe run keys and skip slot recovery so an old
+    // checkpoint cannot undo Archive & reset across a slow reload.
+    if (consumeDeskWipeOnBoot()) return false;
+
+    const key = CONFIG.SAVE_KEY;
+    /** @returns {object|null} */
+    function tryParseSave(raw) {
+      if (!raw) return null;
       try {
-        const slots = JSON.parse(localStorage.getItem(`${CONFIG.SAVE_KEY}_slot`) || '[]');
-        if (slots[0]?.data) raw = JSON.stringify(slots[0].data);
-      } catch (_) {}
+        return sanitizeRunData(JSON.parse(raw));
+      } catch {
+        return null;
+      }
     }
-    if (!raw) return false;
-    const data = sanitizeRunData(JSON.parse(raw));
+
+    // Ordered recovery: primary → staged __tmp → rotating _slot checkpoint
+    let data = tryParseSave(localStorage.getItem(key));
+    if (!data) {
+      data = tryParseSave(localStorage.getItem(`${key}__tmp`));
+    }
+    if (!data) {
+      try {
+        const slots = JSON.parse(localStorage.getItem(`${key}_slot`) || '[]');
+        if (slots[0]?.data) data = sanitizeRunData(slots[0].data);
+      } catch (_) { /* ignore */ }
+    }
     if (!data) return false;
     if (data.portfolio) {
       state.portfolio = data.portfolio;
@@ -710,6 +786,7 @@ function loadGame() {
       }
     }
     if (data.perks) state.perks = data.perks;
+    state.licenses = sanitizeLicenses(data.licenses);
     if (data.staff) {
       state.staff = data.staff.map(s => ({
         tier: 'newbie', profitGenerated: 0, mistakes: 0, status: 'Ready', progress: 0, history: [],
@@ -773,6 +850,7 @@ function loadGame() {
         estateCreditUsed: data.estateCreditUsed,
         estateCashOutCount: data.estateCashOutCount,
         estateLastCashOutDay: data.estateLastCashOutDay,
+        estateCreditMissDays: data.estateCreditMissDays,
       });
       Object.assign(state, estate);
     }
@@ -799,32 +877,128 @@ function noteBuy(isDeal = false) {
 
 function noteSell(pnl = 0) {
   state.meta.daySells = (state.meta.daySells || 0) + 1;
+  state.stats.tradesClosed = (state.stats.tradesClosed || 0) + 1;
   recordClosedTrade(state.meta, pnl);
-}
-
-function maybeApplyVaultDeskAura(pnl = 0) {
-  const profile = getProfile();
-  const aura = getVaultDeskAura({
-    cosmetics: profile?.cosmetics || {},
-    vaultOwned: state.vaultOwned,
-    perks: state.perks,
-  });
-  const estateAura = getEstatePrestigeAura(state);
-  const merged = {
-    ...aura,
-    repPerClose: (Number(aura.repPerClose) || 0) + (Number(estateAura.repPerClose) || 0),
-    dailyCap: (Number(aura.dailyCap) || 0) + (Number(estateAura.dailyCap) || 0),
-  };
-  const result = applyVaultDeskAuraOnClose(state.meta, pnl, merged);
-  if (result.applied > 0) {
-    adjustReputation(state.meta, result.applied, 'vault_aura');
-    toast(`Desk Prestige +${result.applied} REP`, { type: 'info' });
-  }
-  return result;
 }
 
 function noteProfitableShort(pnl) {
   if (pnl > 0) state.stats.profitableShorts = (state.stats.profitableShorts || 0) + 1;
+}
+
+/**
+ * One-shot teach moment: mark + show as a quiet coachmark.
+ * Quiet walkthrough/tour modes never mark it, so it can fire later.
+ * @param {string} id
+ * @param {string} text
+ * @param {string|null} [targetOverride] CSS selector or element id
+ */
+function fireTeachMoment(id, text, targetOverride = null) {
+  if (!text || isCoachQuiet()) return false;
+  const overlay = document.getElementById('onboard-overlay');
+  if (overlay && !overlay.classList.contains('hidden')) return false;
+  if (!markTeachMoment(state.meta, id)) return false;
+  saveGame({ immediate: true });
+
+  const moment = TEACH_MOMENTS[id];
+  const preferView = moment?.preferView;
+  if (preferView) {
+    try { switchView(preferView); } catch (_) { /* ignore */ }
+    try { renderAll(state); } catch (_) { /* ignore */ }
+  }
+
+  const sel = targetOverride || moment?.target || null;
+  const target = resolveCoachTarget(sel);
+
+  showCoachmark({
+    target: target || undefined,
+    text,
+    showNext: true,
+    onNext: () => hideCoachmark(),
+    onSkip: () => hideCoachmark(),
+  });
+  return true;
+}
+
+/** First realized losing close — losses are tuition, keep them small. */
+function maybeShowFirstLossTeach(pnl) {
+  if (!(pnl < 0)) return;
+  fireTeachMoment('firstLoss', TEACH_MOMENTS.firstLoss.text);
+}
+
+/**
+ * Blowup close → wall-clock open-side cool-down.
+ * First time: teach moment. Later: muted toast only.
+ */
+function maybeArmRevengeCooloff(pnl) {
+  const debt = state.finance
+    ? getFirmDebt(state.finance, state.estateCreditUsed)
+    : Math.max(0, Number(state.estateCreditUsed) || 0);
+  const nw = getFirmNetWorth(state.portfolio, {
+    debt,
+    vaultBook: getVaultBookValue(state),
+    estateEquity: Math.max(0, Number(state.estateEquity) || 0),
+    bankDeposits: getTotalBankDeposits(state.finance),
+  });
+  if (!shouldArmRevengeCooloff(pnl, nw)) return;
+
+  armBuySuspend(state.portfolio);
+  const first = !teachMomentShown(state.meta, 'firstRevengeCooloff');
+  if (first) {
+    fireTeachMoment('firstRevengeCooloff', TEACH_MOMENTS.firstRevengeCooloff.text);
+  } else {
+    toast('Desk cool-down: new opens locked 30s after a heavy loss', { type: 'warn' });
+  }
+  try { patchBuySuspendControls(state); } catch (_) { /* ignore */ }
+}
+
+/** First position over half of equity in one name — sizing lesson. */
+function maybeShowOversizedTeach() {
+  if (state.meta?.teachMomentsShown?.firstOversized) return;
+  const equity = getNetEquity(state.portfolio, firmDebt());
+  if (equity <= 0) return;
+  const positions = [
+    ...Object.values(state.portfolio?.longs || {}),
+    ...Object.values(state.portfolio?.shorts || {}),
+  ];
+  const oversized = positions.some((p) => (Number(p?.shares) || 0) * (Number(p?.avgPrice) || 0) > equity * 0.5);
+  if (oversized) fireTeachMoment('firstOversized', TEACH_MOMENTS.firstOversized.text);
+}
+
+/** One-shot: long option mark fell while the underlying moved in your favor (IV crush). */
+function maybeShowIvCrushTeach() {
+  if (teachMomentShown(state.meta, 'firstIvCrush')) return;
+  const opts = state.portfolio?.options || [];
+  if (!opts.length) return;
+  for (const opt of opts) {
+    const q = getCachedQuote(opt.sym);
+    const marked = estimateOptionValue(opt);
+    const liveVol = liveOptionVol(opt);
+    if (detectIvCrush(opt, {
+      changePct: q?.changePct,
+      markedValue: marked,
+      liveVol,
+    })) {
+      fireTeachMoment('firstIvCrush', TEACH_MOMENTS.firstIvCrush.text);
+      return;
+    }
+  }
+}
+
+/** One-shot: held stock/options through an overnight earnings gap. */
+function maybeShowEarningsHoldTeach(earningsResults) {
+  if (!heldThroughEarnings(earningsResults, state.portfolio)) return;
+  fireTeachMoment('firstEarningsHold', TEACH_MOMENTS.firstEarningsHold.text);
+}
+
+/** One-shot: first Fed or first oil world-event lesson. */
+function maybeShowWorldEventTeach(evt) {
+  if (!evt || evt.real) return;
+  const id = evt.templateId || '';
+  if ((id === 'fed_hike' || id === 'fed_cut') && TEACH_MOMENTS.firstFedEvent) {
+    fireTeachMoment('firstFedEvent', TEACH_MOMENTS.firstFedEvent.text);
+  } else if ((id === 'oil_spike' || id === 'oil_crash') && TEACH_MOMENTS.firstOilEvent) {
+    fireTeachMoment('firstOilEvent', TEACH_MOMENTS.firstOilEvent.text);
+  }
 }
 
 function applyConfirmOrderResult(result) {
@@ -834,19 +1008,21 @@ function applyConfirmOrderResult(result) {
     return;
   }
 
+  let graduationShown = false;
   if (result.toast) toast(result.toast.msg, { type: result.toast.type });
 
   if (result.kind === 'close') {
     noteSell(result.pnl || 0);
     if (result.action === 'cover') noteProfitableShort(result.pnl || 0);
     recordDayTrade(result.pnl || 0);
-    adjustReputation(state.meta, repFromPnL(result.pnl || 0), result.action === 'cover' ? 'cover' : 'close');
-    maybeApplyVaultDeskAura(result.pnl || 0);
+    maybeShowFirstLossTeach(result.pnl || 0);
+    maybeArmRevengeCooloff(result.pnl || 0);
+    graduationShown = maybeShowGraduationCoach(state, { saveGame });
   } else if (result.kind === 'open') {
     if (result.incrementShortsOpened) state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
     noteBuy(!!result.isDeal);
     recordDayTrade();
-    adjustReputation(state.meta, result.reputationDelta, result.reputationReason);
+    maybeShowOversizedTeach();
     if (result.updateChallengeProgress) {
       updateChallengeProgress(state.meta, {
         trades: (state.meta.dayBuys || 0) + (state.meta.daySells || 0),
@@ -865,14 +1041,15 @@ function applyConfirmOrderResult(result) {
   if (result.checkAchievements) checkAchievements();
   if (result.save) saveGame(result.save);
   if (result.render) renderAll(state);
-  if (result.checkPerkCallouts) checkAndShowPerkCallouts(state, { saveGame });
+  if (result.checkPerkCallouts && !graduationShown) checkAndShowPerkCallouts(state, { saveGame });
 }
 
 function applyCloseOptionResult(result) {
   if (!result?.ok) return;
   if (result.noteSell) {
     noteSell(result.pnl || 0);
-    maybeApplyVaultDeskAura(result.pnl || 0);
+    maybeShowFirstLossTeach(result.pnl || 0);
+    maybeShowGraduationCoach(state, { saveGame });
   }
   if (result.recordDayTrade) recordDayTrade();
   if (result.checkAchievements) checkAchievements();
@@ -881,14 +1058,7 @@ function applyCloseOptionResult(result) {
 }
 
 function syncBlackMarketForCurrentDay() {
-  recordExpiredBlackMarketSeen(state, getDayCount());
-  const listing = getTodaysBlackMarketListing(getDayCount(), { ownedIds: state.blackMarketOwned });
-  maybeShowBlackMarketLegendaryCoach(state, listing, {
-    showCoachmark,
-    hideCoachmark,
-    saveGame,
-    switchView,
-  });
+  // Floor relic shop retired — no listings / coach.
 }
 
 function bindState() {
@@ -941,11 +1111,12 @@ function bindState() {
     renderAll(state);
   };
 
-  state.onCloseLong = (sym) => {
+  state.onCloseLong = (sym, opts = {}) => {
     const result = closeLongFlow(state, sym, {
       getCachedQuote,
       applySlippage: (args) => applyRelicAwareSlippage(state, args),
       confirmNotional: CONFIG.CONFIRM_NOTIONAL_USD,
+      exitReason: opts.exitReason,
     });
     if (result?.needsConfirm) {
       openOrderConfirm(result.confirmDraft, state);
@@ -954,11 +1125,12 @@ function bindState() {
     applyConfirmOrderResult(result);
   };
 
-  state.onCoverShort = (sym) => {
+  state.onCoverShort = (sym, opts = {}) => {
     const result = coverShortFlow(state, sym, {
       getCachedQuote,
       applySlippage: (args) => applyRelicAwareSlippage(state, args),
       confirmNotional: CONFIG.CONFIRM_NOTIONAL_USD,
+      exitReason: opts.exitReason,
     });
     if (result?.needsConfirm) {
       openOrderConfirm(result.confirmDraft, state);
@@ -998,22 +1170,22 @@ function bindState() {
     const gate = canPurchasePerk(perk, {
       cash: state.portfolio.cash,
       perks: state.perks,
-      reputation: state.meta?.reputation ?? 0,
+      licenses: state.licenses,
     });
     if (!gate.ok) {
       sfxError();
       showAlert(gate.reason, {
-        title: gate.code === 'rep' ? 'REP required' : 'Locked perk',
+        title: gate.code === 'license' ? 'License required' : 'Locked perk',
         label: 'SHOP',
       });
       return;
     }
     if (perk.cost >= CONFIG.CONFIRM_PERK_COST) {
-      const repNote = perk.repRequired
-        ? `<br><span style="color:var(--muted);font-size:12px">${perk.tierLabel || 'Rank'} · ${perk.repRequired} REP met</span>`
+      const licNote = perk.licenseRequired && perk.licenseRequired !== 'retail'
+        ? `<br><span style="color:var(--muted);font-size:12px">${LICENSES[perk.licenseRequired]?.short || ''} license held</span>`
         : '';
       const ok = await showConfirm(
-        `Unlock <strong>${perk.name}</strong> for <strong>$${perk.cost.toLocaleString()}</strong>?${repNote}`,
+        `Unlock <strong>${perk.name}</strong> for <strong>$${perk.cost.toLocaleString()}</strong>?${licNote}`,
         { title: 'Confirm perk purchase', label: 'SHOP', okText: `Buy $${perk.cost.toLocaleString()}`, cancelText: 'Cancel' },
       );
       if (!ok) return;
@@ -1022,7 +1194,7 @@ function bindState() {
     if (!result.ok) {
       sfxError();
       showAlert(result.msg || 'Cannot unlock perk.', {
-        title: result.code === 'rep' ? 'REP required' : 'Locked perk',
+        title: result.code === 'license' ? 'License required' : 'Locked perk',
         label: 'SHOP',
       });
       return;
@@ -1039,13 +1211,51 @@ function bindState() {
     if (id === 'aiAdvisor') refreshAiAnalysis(state);
   };
 
+  state.onTakeLicenseExam = async (licenseId) => {
+    const lic = LICENSES[licenseId];
+    if (!lic || (state.licenses || []).includes(licenseId)) return;
+    const snap = licenseSnapshot(state, {
+      netWorth: getNetEquity(state.portfolio, firmDebt()),
+      day: getDayCount(),
+    });
+    const gate = canTakeLicenseExam(licenseId, snap);
+    if (!gate.ok) {
+      sfxError();
+      showAlert(gate.reason, { title: `${lic.short} exam`, label: 'LICENSE' });
+      return;
+    }
+    const ok = await showConfirm(
+      `Sit the <strong>${lic.name}</strong> exam for <strong>$${lic.fee.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">Unlocks: ${lic.unlocks}</span>`,
+      { title: 'Confirm license exam', label: 'LICENSE', okText: `Pay $${lic.fee.toLocaleString()}`, cancelText: 'Not yet' },
+    );
+    if (!ok) return;
+    const result = purchaseLicense(state, licenseId, {
+      netWorth: getNetEquity(state.portfolio, firmDebt()),
+      day: getDayCount(),
+    });
+    if (!result.ok) {
+      sfxError();
+      showAlert(result.msg || 'Exam not available.', { title: `${lic.short} exam`, label: 'LICENSE' });
+      return;
+    }
+    sfxSuccess();
+    toast(`Licensed: ${lic.name}`, { type: 'success' });
+    const gradShown = maybeShowGraduationCoach(state, { saveGame });
+    if (!gradShown && lic.teaches) {
+      fireTeachMoment(teachIdForLicense(licenseId), `${lic.name} earned. ${lic.teaches}`, 'rep-stat-cell');
+    }
+    checkAchievements();
+    saveGame();
+    renderAll(state);
+  };
+
   state.onBuyVaultItem = async (itemId) => {
     const item = getVaultItem(itemId);
     if (!item || state.vaultOwned.includes(item.id)) return;
     const isMasterwork = String(item.rarity || '').toLowerCase() === 'masterwork';
     const confirmNote = isMasterwork
       ? 'Masterwork collectible — books into Net Worth with extra Desk Prestige when equipped. Not buying power.'
-      : 'Collectible appraisal books into Net Worth. Equip for Desk Prestige (capped REP on profitable closes). Not buying power.';
+      : 'Collectible appraisal books into Net Worth. Equip for Desk Prestige display. Not buying power.';
     if (item.cost >= CONFIG.CONFIRM_NOTIONAL_USD) {
       const ok = await showConfirm(
         `Purchase <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">${confirmNote}</span>`,
@@ -1138,44 +1348,11 @@ function bindState() {
       showAlert(result.msg || 'Cannot claim.', { title: 'Collection Log', label: 'COLLECTION' });
       return;
     }
-    if (result.rep > 0) adjustReputation(state.meta, result.rep, 'collection_milestone');
     sfxSuccess();
     const bits = [result.milestone.label];
-    if (result.rep) bits.push(`+${result.rep} REP`);
     if (result.cash) bits.push(`$${result.cash.toLocaleString()}`);
     if (result.flair) bits.push(result.flair);
     toast(`Claimed ${bits.join(' · ')}`, { type: 'success' });
-    saveGame();
-    renderAll(state);
-  };
-
-  state.onBuyBlackMarketItem = async (itemId) => {
-    const listing = getTodaysBlackMarketListing(getDayCount(), { ownedIds: state.blackMarketOwned });
-    const item = listing.items.find((row) => row.id === itemId);
-    if (!item) {
-      showAlert('This listing is no longer active today.', { title: 'Black Market', label: 'BLACK MARKET' });
-      return;
-    }
-    if (item.cost >= CONFIG.CONFIRM_NOTIONAL_USD) {
-      const ok = await showConfirm(
-        `Buy <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">Rare listing. Rotation windows do not wait.</span>`,
-        { title: 'Confirm black market purchase', label: 'BLACK MARKET', okText: 'Buy listing', cancelText: 'Cancel' },
-      );
-      if (!ok) return;
-    }
-    const result = purchaseBlackMarketItem(state, item);
-    if (!result.ok) {
-      sfxError();
-      showAlert(result.msg, { title: 'Black Market', label: 'BLACK MARKET' });
-      return;
-    }
-    sfxSuccess();
-    const auto = tryAutoEquipRelic(state, item.id);
-    if (auto.equipped) {
-      toast(`Acquired ${item.name} and equipped relic power`, { type: 'success' });
-    } else {
-      toast(`Acquired ${item.name}`, { type: 'success' });
-    }
     saveGame();
     renderAll(state);
   };
@@ -1184,7 +1361,7 @@ function bindState() {
     const result = toggleEquippedRelic(state, itemId);
     if (!result.ok) {
       if (result.reason === 'not_relic') return;
-      if (result.msg) showAlert(result.msg, { title: 'Relic slots', label: 'BLACK MARKET' });
+      if (result.msg) showAlert(result.msg, { title: 'Relic slots', label: 'RELICS' });
       return;
     }
     if (result.equipped) {
@@ -1199,7 +1376,7 @@ function bindState() {
   state.onBuySeat = async () => {
     if (state.seatOwned) return;
     const listingActive = isSeatListingActive(getDayCount(), {
-      reputation: state.meta?.reputation || 0,
+      licenses: state.licenses,
       seatOwned: state.seatOwned,
     });
     if (!listingActive) {
@@ -1236,7 +1413,6 @@ function bindState() {
     const r = hireStaff(roleId, state);
     if (r.ok) {
       state.staffLog.unshift({ time: Date.now(), staff: 'HR', action: `Hired ${r.member.name} as ${roleId}` });
-      adjustReputation(state.meta, 10, 'hire');
       sfxSuccess();
       toast(`Hired ${r.member.name}`, { type: 'success' });
       checkAchievements();
@@ -1246,13 +1422,24 @@ function bindState() {
   };
 
   state.onFireStaff = async (staffId) => {
-    const ok = await showConfirm('Let this employee go? Payroll stops tomorrow.', {
+    const ok = await showConfirm('Let this employee go? One day of pay is due as severance.', {
       title: 'Fire employee', label: 'STAFF', okText: 'Fire', cancelText: 'Keep',
     });
     if (!ok) return;
     fireStaff(staffId, state);
-    adjustReputation(state.meta, -5, 'fire');
-    toast('Employee released', { type: 'warn' });
+    toast('Employee released · severance paid if cash allowed', { type: 'warn' });
+    document.getElementById('staff-history-overlay')?.classList.add('hidden');
+    const profile = document.getElementById('staff-roster-profile');
+    if (profile) {
+      profile.classList.add('hidden');
+      profile.setAttribute('hidden', '');
+      profile.innerHTML = '';
+    }
+    const listWrap = document.getElementById('staff-roster-list-wrap');
+    if (listWrap) {
+      listWrap.classList.remove('hidden');
+      listWrap.removeAttribute('hidden');
+    }
     checkAchievements();
     saveGame();
     renderAll(state);
@@ -1261,7 +1448,6 @@ function bindState() {
   state.onTrainStaff = (staffId) => {
     const r = trainStaff(staffId, state);
     if (r.ok) {
-      adjustReputation(state.meta, r.tier === 'expert' ? 25 : 12, 'train');
       sfxSuccess();
       checkAchievements();
       saveGame();
@@ -1293,7 +1479,6 @@ function bindState() {
   state.onClaimAchievement = (id) => {
     const r = claimAchievement(id, state.achievements, state.portfolio);
     if (r.ok) {
-      adjustReputation(state.meta, 8, 'achievement');
       state.apiStatus = { mode: 'online', label: `Claimed ${r.name} (+$${r.reward.toLocaleString()})` };
       toast(`Claimed ${r.name} (+$${r.reward.toLocaleString()})`, { type: 'success' });
       saveGame();
@@ -1317,7 +1502,7 @@ function bindState() {
     const net = firmNetWorth();
     const r = purchaseOfficeUpgrade(state, {
       netWorth: net,
-      reputation: state.meta?.reputation || 0,
+      licenses: state.licenses,
     });
     if (r.ok) {
       toast(`Office upgraded: ${r.tier.name}`, { type: 'success' });
@@ -1397,7 +1582,8 @@ function bindState() {
     const r = purchaseEstate(state, assetId, { netWorth: firmNetWorth() });
     if (r.ok) {
       const flairNote = r.asset.flair ? ` · flair “${r.asset.flair}”` : '';
-      toast(`Estate acquired: ${r.asset.name}${flairNote}`, { type: 'success' });
+      const closeNote = r.closingFee > 0 ? ` · $${r.closingFee.toLocaleString()} closing` : '';
+      toast(`Estate acquired: ${r.asset.name}${flairNote}${closeNote}`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Estate → ${r.asset.name}` };
       checkAchievements();
       saveGame();
@@ -1444,7 +1630,6 @@ function bindState() {
 
   state.onBorrow = async (bankId, type, amount) => {
     const day = getDayCount();
-    const bank = BANKS.find((b) => b.id === bankId);
     const amt = Math.max(0, Math.round(Number(amount) || 0));
     state.vaultPledged = sanitizeVaultPledged(state.vaultPledged, state.vaultOwned);
     const collateralValue = getVaultPledgedAppraisal(state);
@@ -1454,51 +1639,22 @@ function bindState() {
       collateralIds: state.vaultPledged.slice(),
       firmStrength,
     };
-    const preview = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
-    const debtHere = preview.debtHere ?? bankDebt(state.finance, bankId, type);
-    const debtElsewhere = preview.debtElsewhere ?? otherBanksDebt(state.finance, bankId, type);
-    const totalType = preview.totalTypeDebt ?? typeDebt(state.finance, type);
-    const bankLabel = preview.bank?.name || bank?.name || 'Bank';
-    const strengthPct = preview.strengthPct ?? 0;
 
-    const debtLine = `
-      <br><span style="color:var(--muted);font-size:12px">
-        Your ${type} debt — here: <strong>$${Math.round(debtHere).toLocaleString()}</strong>
-        · other banks: <strong>$${Math.round(debtElsewhere).toLocaleString()}</strong>
-        · total: <strong>$${Math.round(totalType).toLocaleString()}</strong>
-      </span>`;
-
-    const strengthLine = strengthPct > 0
-      ? `<br><span style="color:var(--muted);font-size:12px">Firm strength (net worth): <strong>+${strengthPct}%</strong> facility room</span>`
-      : `<br><span style="color:var(--muted);font-size:12px">Firm strength: base facility (grow net worth to unlock larger lines)</span>`;
-
-    const body = preview.ok
-      ? `<strong>${bankLabel} — ${type} loan</strong><br>
-         Amount: <strong>$${amt.toLocaleString()}</strong><br>
-         Your APR: <strong>${preview.apr}%</strong> (${preview.tier}, credit ${preview.credit})<br>
-         Term: <strong>${preview.termDays} game days</strong>
-         · est. interest ~$${Math.round(preview.estimatedInterest).toLocaleString()}
-         · min auto-pay ~$${Number(preview.minDailyPayment || 0).toFixed(2)}/day
-         ${strengthLine}
-         ${collateralValue > 0 ? `<br><span style="color:var(--muted);font-size:12px">Vault collateral bonus: +$${Math.round(preview.collateralBonus || 0).toLocaleString()} ceiling (50% LTV)</span>` : ''}
-         ${debtLine}<br>
-         <span style="color:var(--muted);font-size:12px">Underwriting uses credit score, utilization, firm strength, and collateral — like a small-business loan review.</span>`
-      : `<strong>${bankLabel} — ${type} application</strong><br>
-         Amount requested: <strong>$${amt.toLocaleString()}</strong>
-         ${strengthLine}
-         ${debtLine}<br>
-         <span style="color:var(--muted);font-size:12px">Submit to see if underwriting approves this loan.</span>`;
-
-    const ok = await showConfirm(body, {
-      title: 'Confirm loan application',
-      label: 'FINANCE',
-      okText: preview.ok ? 'Confirm borrow' : 'Submit application',
-      cancelText: 'Cancel',
+    const pick = await showLoanConfirm({
+      bankId,
+      type: type === 'company' ? 'company' : 'personal',
+      amount: amt,
+      finance: state.finance,
+      gameDay: day,
+      collateralOpts,
     });
-    if (!ok) return;
+    if (!pick?.confirmed) return;
+
+    const termDays = normalizeLoanTermDays(pick.termDays, type);
+    const underwriteOpts = { ...collateralOpts, termDays };
 
     // Underwrite only after the player confirms — deny with a clear reason
-    const decision = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
+    const decision = quoteLoan(bankId, type, amt, state.finance, day, underwriteOpts);
     if (!decision.ok) {
       sfxError();
       const denyDebt = `
@@ -1511,11 +1667,10 @@ function bindState() {
       return;
     }
 
-    const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day, collateralOpts);
+    const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day, underwriteOpts);
     if (r.ok) {
-      adjustReputation(state.meta, -3, 'loan_inquiry');
       sfxSuccess();
-      toast(`Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}%`, { type: 'success' });
+      toast(`Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}% · ${r.loan.termDays}d`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}% APR` };
       saveGame();
       renderAll(state);
@@ -1529,17 +1684,67 @@ function bindState() {
     const r = makeLoanPayment(loanId, amount, state.finance, state.portfolio, getDayCount());
     if (r.ok) {
       if (r.earlyPayoff) state.stats.loansPaidEarly = (state.stats.loansPaidEarly || 0) + 1;
-      if (r.rep) adjustReputation(state.meta, r.rep, 'loan_pay');
       sfxSuccess();
       const creditNote = r.creditSkipped
         ? ' · credit unchanged (need 1 day-end interest first)'
         : (r.creditDelta ? ` · credit +${r.creditDelta}` : '');
       toast(`Paid $${r.paid.toFixed(2)} · remaining $${r.remaining.toFixed(2)}${creditNote}`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Paid $${r.paid.toFixed(2)} · remaining $${r.remaining.toFixed(2)}` };
+      const relEvents = Array.isArray(r.loanEvents) ? r.loanEvents : [];
+      for (const teachId of pendingLoanTeachMoments(relEvents, state.meta)) {
+        const moment = TEACH_MOMENTS[teachId];
+        if (moment) fireTeachMoment(teachId, moment.text, moment.target || null);
+      }
       saveGame();
       checkAchievements();
       renderAll(state);
     } else { sfxError(); showAlert(r.msg, { title: 'Payment failed', label: 'FINANCE' }); }
+  };
+
+  state.onBankDeposit = (bankId, bucket, amount) => {
+    const day = getDayCount();
+    const r = depositToBank(state.finance, state.portfolio, bankId, bucket, amount, day);
+    if (r.ok) {
+      sfxSuccess();
+      toast(`Deposited $${r.amount.toFixed(2)} to ${bucket}`, { type: 'success' });
+      if (!teachMomentShown(state.meta, 'firstBankDeposit')) {
+        fireTeachMoment(
+          'firstBankDeposit',
+          'Desk cash is risk capital (Available Buying Power). Bank checking/savings are reserves — they still count toward net worth, but not buying power. Savings earns a quiet APY; interest shows up on Tax Day.',
+        );
+      }
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg || 'Deposit failed', { title: 'ATM', label: 'FINANCE' });
+    }
+  };
+
+  state.onBankWithdraw = (bankId, bucket, amount) => {
+    const r = withdrawFromBank(state.finance, state.portfolio, bankId, bucket, amount, getDayCount());
+    if (r.ok) {
+      sfxSuccess();
+      toast(`Withdrew $${r.amount.toFixed(2)} from ${bucket}`, { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg || 'Withdraw failed', { title: 'ATM', label: 'FINANCE' });
+    }
+  };
+
+  state.onBankInternal = (bankId, direction, amount) => {
+    const r = transferBankInternal(state.finance, bankId, direction, amount);
+    if (r.ok) {
+      sfxSuccess();
+      toast(direction === 'toSavings' ? 'Moved to savings' : 'Moved to checking', { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg || 'Transfer failed', { title: 'ATM', label: 'FINANCE' });
+    }
   };
 }
 
@@ -1594,7 +1799,6 @@ function checkRiskOrders() {
     noteSell,
     noteProfitableShort,
     recordDayTrade,
-    adjustReputation,
   });
 
   for (const t of risk.margin.toasts) toast(t.msg, { type: t.type || 'warn' });
@@ -1616,10 +1820,11 @@ function checkRiskOrders() {
 
   if (risk.trigger) {
     toast(risk.trigger.msg, { type: risk.trigger.type });
+    const exitOpts = { exitReason: risk.trigger.exitReason };
     if (risk.trigger.action === 'closeLong') {
-      state.onCloseLong(risk.trigger.sym);
+      state.onCloseLong(risk.trigger.sym, exitOpts);
     } else {
-      state.onCoverShort(risk.trigger.sym);
+      state.onCoverShort(risk.trigger.sym, exitOpts);
     }
   }
 }
@@ -1640,8 +1845,15 @@ function setPauseButton(running) {
   btn.title = running ? 'Pause' : 'Resume';
 }
 
+/** Loan-lesson teach ids queued at day end; fired after the summary closes. */
+let queuedLoanTeachIds = [];
+
 function handleDayEnd(day) {
   const result = runDayEndSettlement(state, day);
+  queuedLoanTeachIds = [
+    ...pendingLoanTeachMoments(result.loanEvents, state.meta),
+    ...pendingEstateTeachMoments(result.estateEvents, state.meta),
+  ];
 
   if (result.bestRun?.isRecord) toast('New personal best equity!', { type: 'success' });
 
@@ -1654,16 +1866,25 @@ function handleDayEnd(day) {
     toast(`Repossessed: ${names}`, { type: 'warn' });
   }
 
+  for (const ev of result.estateEvents || []) {
+    if (ev?.type === 'estate_foreclosure') {
+      showAlert(
+        `Property credit stayed unpaid — <strong>${ev.assetName || 'an estate'}</strong> was foreclosed. Recovered $${Math.round(ev.recovered || 0).toLocaleString()} toward the line.`,
+        { title: 'Estate foreclosure', label: 'ESTATES' },
+      );
+      toast(ev.msg || 'Estate foreclosed', { type: 'warn' });
+    } else if (ev?.type === 'estate_foreclosure_warning') {
+      toast(ev.msg, { type: 'warn' });
+    } else if (ev?.msg && ev.type !== 'estate_credit_miss') {
+      toast(ev.msg, { type: ev.amount >= 0 ? 'info' : 'warn' });
+    }
+  }
+
   for (const ex of result.expiredOpts || []) {
     const label = ex.intrinsic > 0 ? `settled ITM +$${Math.round(ex.payout)}` : 'expired worthless';
     toast(`${ex.opt.sym} ${ex.opt.type.toUpperCase()} $${ex.opt.strike} ${label}`, {
       type: ex.pnl >= 0 ? 'success' : 'warn',
     });
-  }
-
-  for (const ev of result.estateEvents || []) {
-    if (!ev?.msg) continue;
-    toast(ev.msg, { type: ev.amount >= 0 ? 'info' : 'warn' });
   }
 
   state.daySummaryPending = result.daySummary;
@@ -1677,6 +1898,7 @@ function handleDayEnd(day) {
   stopMarketClock();
   setPauseButton(false);
   checkAchievements();
+  maybeShowGraduationCoach(state, { saveGame });
   saveGame({ immediate: true });
 }
 
@@ -1700,12 +1922,18 @@ function continueNextDay() {
   resumeMarket();
   setPauseButton(true);
   checkAchievements();
+  const teachId = queuedLoanTeachIds.shift();
+  if (teachId && TEACH_MOMENTS[teachId]) {
+    fireTeachMoment(teachId, TEACH_MOMENTS[teachId].text);
+  }
   saveGame({ immediate: true });
   renderAll(state);
 }
 
 async function init() {
   window.__STOCKWAY_INIT = true;
+  // Career charts: ledger uses game clock, not wall clock / Yahoo session times.
+  setSimLedgerClockProviders({ getMarketTime, getDayCount });
   detectAndArmGmMode();
   if (/Electron/i.test(navigator.userAgent)) {
     document.documentElement.classList.add('electron');
@@ -1740,6 +1968,7 @@ async function init() {
       gmWelcome: () => document.getElementById('gm-overlay')?.classList.add('hidden'),
       daySummary: () => document.getElementById('day-summary-continue')?.click(),
       mobileNav: closeMobileNav,
+      loanConfirm: closeLoanConfirmOverlay,
     });
     bindSaveIO();
     bindVisibilityAutoPause((running) => setPauseButton(running));
@@ -1749,6 +1978,15 @@ async function init() {
     bindSettingsNav();
     bindStatPopovers();
     initGlossaryTooltips();
+    setGlossLiveContext(() => {
+      syncEstateDerived(state);
+      return {
+        finance: state.finance,
+        estateCreditUsed: state.estateCreditUsed,
+        vaultPledgedValue: getVaultPledgedAppraisal(state),
+        firmStrengthPct: firmStrengthBoostPct(firmNetWorth()),
+      };
+    });
     bindRightSidebarResize();
     bindLeftSidebarResize();
     bindProfileSettings(state);
@@ -1923,7 +2161,9 @@ async function init() {
       }
       if (type === 'newDay') {
         const day = data?.day || getDayCount();
-        processEarningsForDay(day);
+        resetDayEventCounters(day);
+        const earningsHits = processEarningsForDay(day);
+        maybeShowEarningsHoldTeach(earningsHits);
         const divs = processDividendsForDay(state.portfolio, day);
         for (const d of divs) {
           toast(`Dividend ${d.sym}: +$${d.amount.toFixed(2)}`, { type: 'success' });
@@ -1953,6 +2193,7 @@ async function init() {
           regenerateListingsFeed();
           resetListingsPage();
         }
+        maybeShowIvCrushTeach();
         checkAchievements(false);
         saveGame();
       }
@@ -1967,7 +2208,14 @@ async function init() {
         const chartSym = getSelectedSym();
         if (chartSym) {
           const q = getCachedQuote(chartSym);
-          if (q?.price) updateLastCandleFromQuote(chartSym, q.price);
+          if (q?.price) {
+            updateLastCandleFromQuote(chartSym, q.price);
+            // Keep Trade header print locked to the same tape the candle tracks
+            const priceEl = document.getElementById('chart-price');
+            if (priceEl && document.getElementById('view-trade')?.classList.contains('active')) {
+              priceEl.textContent = `$${Number(q.price).toFixed(2)}`;
+            }
+          }
         }
       }
       // Throttle full paints — rebinding every tick breaks buttons at 5x speed
@@ -2005,7 +2253,10 @@ async function init() {
       }
     });
 
-    onEvent(() => renderAll(state));
+    onEvent((payload) => {
+      if (payload?.type === 'world_event') maybeShowWorldEventTeach(payload.event);
+      renderAll(state);
+    });
 
     document.querySelectorAll('.nav-item').forEach(btn => {
       btn.onclick = () => {
@@ -2120,6 +2371,7 @@ async function init() {
       sfxSuccess();
       toast('Game saved', { type: 'success' });
     });
+    bindSharePlay();
     document.getElementById('settings-desk-code-submit')?.addEventListener('click', () => {
       void submitDeskAccessCode();
     });
@@ -2169,11 +2421,15 @@ async function init() {
     document.getElementById('staff-history-close')?.addEventListener('click', () => {
       document.getElementById('staff-history-overlay')?.classList.add('hidden');
     });
+    document.getElementById('staff-history-overlay')?.addEventListener('click', (e) => {
+      if (e.target?.id === 'staff-history-overlay') {
+        e.currentTarget.classList.add('hidden');
+      }
+    });
 
     document.getElementById('btn-claim-all')?.addEventListener('click', () => {
       const r = claimAllAchievements(state.achievements, state.portfolio);
       if (r.total) {
-        adjustReputation(state.meta, r.claimed.length * 8, 'claim_all');
         state.apiStatus = { mode: 'online', label: `Claimed $${r.total.toLocaleString()}` };
         saveGame();
         renderAll(state);
@@ -2501,7 +2757,7 @@ async function init() {
     getLongAck: (sym) => !!state.portfolio?.longs?.[String(sym || '').toUpperCase()]?.priceCorrectedAck,
     /** Add shares to an existing long (exercises buyLong ack-clear). */
     buyMoreLong: (sym, shares, price) => {
-      const r = buyLong(state.portfolio, sym, shares, price, {}, state.perks);
+      const r = buyLong(state.portfolio, sym, shares, price, {}, state.perks, state.finance?.personalCredit);
       renderAll(state);
       return r;
     },
@@ -2559,12 +2815,24 @@ async function init() {
       return r;
     },
     disableSave: () => { window.__stockwayDisableSave = true; },
-    /** Unlock intern hire path for UI smoke without grinding REP. */
+    /** Arm revenge cool-down + first-time coachmark (QA / screenshot). */
+    forceRevengeCooloff: (pnl = -1e9) => {
+      if (state.meta?.teachMomentsShown?.firstRevengeCooloff) {
+        delete state.meta.teachMomentsShown.firstRevengeCooloff;
+      }
+      maybeArmRevengeCooloff(Number(pnl) || -1e9);
+      renderAll(state);
+      return {
+        until: state.portfolio?.buySuspendUntilMs ?? null,
+        suspended: isBuySuspended(state.portfolio),
+      };
+    },
+    /** Unlock intern hire path for UI smoke without grinding cash. */
     ensureSmokeStaffUnlock: () => {
       if (!state.perks.includes('scanner')) state.perks.push('scanner');
       if (!state.perks.includes('hrDept')) state.perks.push('hrDept');
-      // Cheapest seat is currently $450 hire — keep a cushion for smoke.
-      state.portfolio.cash = Math.max(Number(state.portfolio.cash) || 0, 2500);
+      // Cheapest seat is currently $550 hire — keep a cushion for smoke.
+      state.portfolio.cash = Math.max(Number(state.portfolio.cash) || 0, 3500);
       renderAll(state);
       return { perks: [...state.perks], cash: state.portfolio.cash };
     },

@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=1.0.43">
+  <link rel="stylesheet" href="css/styles.css?v=1.0.44">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script>
     if (typeof echarts === 'undefined') {
@@ -102,10 +102,6 @@
             <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="10" width="4" height="10" rx="1"/><rect x="10" y="6" width="4" height="14" rx="1"/><rect x="16" y="3" width="4" height="17" rx="1"/></svg></span>
             <span>Financing</span>
           </button>
-          <button class="nav-item" data-view="blackmarket">
-            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 12 12 4l9 8-9 8-9-8z"/><path d="M9 12h6M12 9v6"/></svg></span>
-            <span>Black Market</span>
-          </button>
         </div>
         <div class="nav-label">Progress</div>
         <div class="nav-group">
@@ -143,7 +139,7 @@
           <div class="user-meta">
             <div class="user-name" id="user-name">Paper Trader</div>
             <div class="user-cosmetic-badge hidden" id="user-cosmetic-badge"></div>
-            <div class="user-tier" id="player-tier">Unknown Trader · REP 0</div>
+            <div class="user-tier" id="player-tier">Retail Trading Account</div>
           </div>
         </button>
       </div>
@@ -159,10 +155,10 @@
             <span class="stat-lbl" data-gloss="net-worth">Equity</span><span class="stat-num" id="equity">$500</span>
           </div>
           <div class="stat-cell" data-gloss="pnl"><span class="stat-lbl">P&amp;L</span><span class="stat-num" id="pnl">$0</span></div>
-          <div class="stat-cell" data-gloss="buying-power"><span class="stat-lbl">Buying Power</span><span class="stat-num" id="buying-power">$500</span></div>
+          <div class="stat-cell" data-gloss="buying-power"><span class="stat-lbl">Available Buying Power</span><span class="stat-num" id="buying-power">$500</span></div>
           <div class="stat-cell rep-cell has-stat-popover" id="rep-stat-cell" tabindex="0" aria-describedby="rep-popover">
-            <span class="stat-lbl">REP <span class="rep-rank" id="rep-rank">Newcomer</span></span>
-            <span class="stat-num" id="reputation">0</span>
+            <span class="stat-lbl">License <span class="rep-rank" id="rep-rank">Retail Trading Account</span></span>
+            <span class="stat-num license-badge-chip tier-retail" id="reputation">Retail</span>
           </div>
         </div>
 
@@ -244,7 +240,7 @@
           </header>
           <div class="dash-standing" id="dash-standing" aria-label="Standing"></div>
           <div class="dash-stats dash-index-strip" id="dash-stats" aria-label="Firm indices"></div>
-          <div class="dash-ticker-ribbon" id="dash-ticker-ribbon" aria-label="Market movers"></div>
+          <div class="dash-first-trade" id="dash-first-trade" hidden aria-hidden="true"></div>
           <div class="dash-progress-row">
             <div class="dash-card dash-office-card" id="dash-office-stage" aria-label="Office"></div>
             <div class="dash-card dash-goal-card" id="dash-mega-goal" aria-label="Mega goal"></div>
@@ -264,7 +260,7 @@
                 </div>
                 <div class="dash-tf-pills" id="dash-equity-tfs" role="toolbar" aria-label="Equity chart range">
                   <button type="button" class="dash-tf" data-eq-tf="1D">1D</button>
-                  <button type="button" class="dash-tf" data-eq-tf="5D">5D</button>
+                  <button type="button" class="dash-tf" data-eq-tf="1W">1W</button>
                   <button type="button" class="dash-tf" data-eq-tf="1M">1M</button>
                   <button type="button" class="dash-tf" data-eq-tf="YTD">YTD</button>
                   <button type="button" class="dash-tf" data-eq-tf="6M">6M</button>
@@ -278,10 +274,10 @@
               </div>
               <div class="dash-card dash-asset-panel">
                 <div class="dash-card-head">
-                  <span>Desk tape</span>
+                  <span id="dash-asset-title">Desk tape</span>
                   <button type="button" class="btn btn-sm" data-goto="listings">Listings</button>
                 </div>
-                <div id="dash-recent" class="dash-asset-table" aria-label="Recent activity and movers"></div>
+                <div id="dash-recent" class="dash-asset-table" aria-label="Desk tape"></div>
               </div>
               <div class="dash-card dash-challenge-panel">
                 <div class="dash-card-head"><span>Today's Challenge</span></div>
@@ -352,12 +348,10 @@
               <div class="chart-toolbar-left">
                 <div class="tf-group" role="toolbar" aria-label="Chart range">
                   <button class="tf-btn active" data-res="1D">1D</button>
-                  <button class="tf-btn" data-res="5D">5D</button>
+                  <button class="tf-btn" data-res="1W">1W</button>
                   <button class="tf-btn" data-res="1M">1M</button>
                   <button class="tf-btn" data-res="6M">6M</button>
-                  <button class="tf-btn" data-res="YTD">YTD</button>
                   <button class="tf-btn" data-res="1Y">1Y</button>
-                  <button class="tf-btn" data-res="5Y">5Y</button>
                   <button class="tf-btn" data-res="MAX">MAX</button>
                 </div>
                 <div class="chart-style-group" role="toolbar" aria-label="Chart style">
@@ -539,11 +533,14 @@
           </div>
 
           <div class="hr-tab-panel hidden" id="staff-panel-roster" data-staff-panel="roster" role="tabpanel" hidden>
-            <div class="staff-section-head roster-head">
-              <h4>Team board <span id="roster-count-full"></span></h4>
-              <span class="staff-section-hint">Lane · activity · coverage · payroll / day</span>
+            <div id="staff-roster-list-wrap">
+              <div class="staff-section-head roster-head">
+                <h4>Team board <span id="roster-count-full"></span></h4>
+                <span class="staff-section-hint">Click a name for profile · activity · buys &amp; sells</span>
+              </div>
+              <div id="staff-roster" class="roster-list"></div>
             </div>
-            <div id="staff-roster" class="roster-list"></div>
+            <div id="staff-roster-profile" class="staff-roster-profile hidden" hidden></div>
           </div>
 
           <div class="hr-tab-panel hidden" id="staff-panel-hire" data-staff-panel="hire" role="tabpanel" hidden>
@@ -600,19 +597,19 @@
       <section class="view-panel" id="view-vault"><div id="vault-root" class="vault-view"></div></section>
       <section class="view-panel" id="view-estates"><div id="estates-root" class="estates-view"></div></section>
       <section class="view-panel" id="view-collection"><div id="collection-log-root" class="collection-log-view"></div></section>
-      <section class="view-panel" id="view-blackmarket"><div id="blackmarket-root" class="blackmarket-view"></div></section>
+      <!-- Floor relic shop retired; Collection hosts Seat claims -->
       <section class="view-panel" id="view-finance">
         <div class="finance-view">
           <header class="finance-hero">
             <div>
-              <h2 class="finance-title">Financing Desk</h2>
-              <p class="finance-sub" data-gloss="credit-score">Live APR quotes from your credit, utilization, and bank relationship. Hold a loan through one day-end interest tick before payoff builds score — miss payments and it tanks fast.</p>
+              <h2 class="finance-title">Financing desk</h2>
+              <p class="finance-sub" data-gloss="credit-score">Live APR quotes from your credit, utilization, and bank relationship.</p>
             </div>
-            <div class="finance-gauges" id="finance-gauges" data-gloss="credit-score"></div>
           </header>
-          <div class="credit-pills" id="credit-pills"></div>
+          <div class="finance-banking-bar" id="finance-banking-bar"></div>
           <nav class="fin-tabs" id="fin-tabs" role="tablist" aria-label="Financing Desk sections">
             <button type="button" class="fin-tab is-active" role="tab" data-fin-tab="lenders" aria-selected="true">Lenders</button>
+            <button type="button" class="fin-tab" role="tab" data-fin-tab="accounts" aria-selected="false">Accounts</button>
             <button type="button" class="fin-tab" role="tab" data-fin-tab="loans" aria-selected="false">Active Loans</button>
             <button type="button" class="fin-tab" role="tab" data-fin-tab="history" aria-selected="false">Payment History</button>
             <button type="button" class="fin-tab" role="tab" data-fin-tab="builder" aria-selected="false">Credit Builder</button>
@@ -620,6 +617,12 @@
 
           <div class="fin-tab-panel" id="fin-panel-lenders" data-fin-panel="lenders" role="tabpanel">
             <div id="bank-list" class="bank-list"></div>
+          </div>
+
+          <div class="fin-tab-panel hidden" id="fin-panel-accounts" data-fin-panel="accounts" role="tabpanel" hidden>
+            <h4 class="finance-col-title">Checking &amp; savings</h4>
+            <p class="finance-sub accounts-atm-lede">Park reserves at a lender — desk cash drives Available Buying Power; bank cash does not. Savings earns a quiet game-scaled APY; checking is float only.</p>
+            <div id="accounts-atm" class="accounts-atm"></div>
           </div>
 
           <div class="fin-tab-panel hidden" id="fin-panel-loans" data-fin-panel="loans" role="tabpanel" hidden>
@@ -683,6 +686,17 @@
                   <button type="button" class="btn btn-accent" id="settings-quick-save">Save now</button>
                   <button type="button" class="btn" id="settings-goto-trade">Back to Trade</button>
                 </div>
+              </div>
+              <div class="settings-block">
+                <h3>Share play link</h3>
+                <p class="muted-text">Host a temporary public link while this desk is open. Friends click it in Chrome/Edge — no install. Each person gets their own save. The link stops when you quit or hit Stop sharing.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn btn-accent" id="settings-share-start">Create link</button>
+                  <button type="button" class="btn" id="settings-share-copy" disabled>Copy link</button>
+                  <button type="button" class="btn" id="settings-share-stop" disabled>Stop sharing</button>
+                </div>
+                <input type="text" id="settings-share-url" class="settings-share-url hidden" readonly aria-label="Public play link">
+                <p class="muted-text" id="settings-share-status" aria-live="polite">Not sharing. Create a link while this desk is running.</p>
               </div>
               <div class="settings-block">
                 <h3>Desk access</h3>
@@ -865,14 +879,14 @@
     </div>
   </div>
 
-  <!-- Staff history modal -->
-  <div id="staff-history-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="staff-history-title">
-    <div class="modal">
+  <!-- Staff employee dossier -->
+  <div id="staff-history-overlay" class="modal-overlay staff-dossier-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="staff-history-title">
+    <div class="modal staff-dossier-modal">
       <div class="modal-head">
-        <h2 id="staff-history-title">Employee History</h2>
-        <button class="btn-icon modal-x" id="staff-history-close">✕</button>
+        <h2 id="staff-history-title">Employee</h2>
+        <button class="btn-icon modal-x" id="staff-history-close" type="button">✕</button>
       </div>
-      <div id="staff-history-body" class="staff-history-body"></div>
+      <div id="staff-history-body" class="staff-history-body staff-dossier-body"></div>
     </div>
   </div>
 
@@ -929,6 +943,21 @@
       <div id="help-guide" class="help-scroll"></div>
       <div id="help-glossary" class="help-scroll hidden"></div>
       <button class="btn btn-accent btn-block" id="help-got-it">Got it</button>
+    </div>
+  </div>
+
+  <!-- Loan confirm (term pick + underwriting preview) -->
+  <div id="loan-confirm-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="loan-confirm-title">
+    <div class="modal loan-confirm-modal">
+      <div class="help-section-label" id="loan-confirm-label">Finance</div>
+      <h2 id="loan-confirm-title">Confirm loan application</h2>
+      <p class="loan-confirm-sub" id="loan-confirm-sub"></p>
+      <div class="loan-confirm-body" id="loan-confirm-body"></div>
+      <p class="loan-confirm-footnote" id="loan-confirm-footnote"></p>
+      <div class="loan-confirm-actions">
+        <button type="button" class="btn btn-block" id="loan-confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-accent btn-block" id="loan-confirm-ok">Confirm borrow</button>
+      </div>
     </div>
   </div>
 

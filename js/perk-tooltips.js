@@ -3,6 +3,7 @@
  * Desk perk hover dossiers — short, concrete effect sheets (PoE-style density, institutional tone).
  */
 import { PERKS } from './config.js';
+import { LICENSES } from './licenses.js';
 
 const PERK_NAMES = Object.fromEntries(
   Object.values(PERKS).map((p) => [p.id, p.name]),
@@ -106,10 +107,10 @@ export const PERK_DOSSIERS = {
     ],
   },
   auraAmp: {
-    point: 'Raises reputation earned from equipped Vault cosmetics when you close a profitable trade.',
+    point: 'Raises the Desk Prestige tier displayed from equipped Vault cosmetics.',
     effects: [
-      '+1 REP per profitable close (on top of Desk Prestige tier)',
-      'Daily prestige REP cap: ×1.5, then +3',
+      'Boosts the Desk Prestige label on your Standing',
+      'Display flair only — collectors notice',
       'Requires cosmetics equipped in Vault slots',
     ],
     notes: [
@@ -138,7 +139,7 @@ export const PERK_DOSSIERS = {
     effects: [
       'Staff cap → 10 seats',
       '+10% payroll subsidy (60% total with Hedge Fund)',
-      'Requires Hedge Fund Status · Market Legend REP',
+      'Requires Hedge Fund Status · Reg D license',
     ],
   },
 };
@@ -154,8 +155,11 @@ export function buildPerkInlineHtml(perkId) {
 
   const reqs = [];
   if (perk.cost > 0) reqs.push(`Cost $${Number(perk.cost).toLocaleString()}`);
-  if (perk.repRequired > 0) reqs.push(`${perk.repRequired} REP`);
-  else reqs.push('No REP gate');
+  if (perk.licenseRequired && perk.licenseRequired !== 'retail') {
+    reqs.push(`${LICENSES[perk.licenseRequired]?.short || perk.licenseRequired} license`);
+  } else {
+    reqs.push('No license gate');
+  }
   const prereqs = (perk.requires || [])
     .map((id) => PERK_NAMES[id] || id)
     .filter(Boolean);

@@ -182,7 +182,102 @@ async function main() {
     DAILY_CREDIT_GAIN_CAP, quoteLoan, BANKS, priceApr, maxBorrowableAmount,
     bankDebt, otherBanksDebt, underwriteMaxAmount, firmStrengthMultiplier,
     firmStrengthBoostPct, PERSONAL_LOAN_TERM_DAYS, COMPANY_LOAN_TERM_DAYS,
+    LOAN_TERM_CHOICES, normalizeLoanTermDays, loanTermAprBump, getNextLoanPaymentDue,
+    minPaymentForLoan, creditTier,
+    getBankRelationshipTier, getHouseBankId, getBankRelationship, awardRelationshipCycle,
+    demoteBankRelationship, typeCreditLimit, sanitizeBankRelationships, recomputeHouseBank,
+    REL_TIER, relationshipLimitMult,
   } = fin;
+
+  test('house loyalty: aged on-time cycle earns Known; same-day pay does not', () => {
+    const finance = createFinanceState();
+    const portfolio = { cash: 5000 };
+    const sameDay = takeLoan('chase', 'personal', 200, finance, portfolio, 1);
+    assert.equal(sameDay.ok, true);
+    const loan = finance.loans.find((l) => l.id === sameDay.loan.id);
+    makeLoanPayment(loan.id, loan.balance, finance, portfolio, 1);
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.NONE);
+
+    const aged = takeLoan('chase', 'personal', 200, finance, portfolio, 2);
+    assert.equal(aged.ok, true);
+    const loan2 = finance.loans.find((l) => l.id === aged.loan.id);
+    loan2.interestTicks = 1;
+    const pay = makeLoanPayment(loan2.id, loan2.balance, finance, portfolio, 3);
+    assert.equal(pay.ok, true);
+    assert.equal(pay.relationship?.awarded, true);
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.KNOWN);
+  });
+
+  test('house loyalty: Preferred then House edges; util denom unchanged', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 700;
+    finance.firstCreditDay = 1;
+    const utilBefore = typeCreditLimit(finance, 'personal', 0);
+    const apr0 = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 10);
+    const max0 = underwriteMaxAmount('chase', 'personal', finance).bankMax;
+
+    finance.bankRelationships = {
+      chase: { cycles: 2, preferredSinceDay: 5 },
+    };
+    recomputeHouseBank(finance);
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.PREFERRED);
+    const aprPref = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 10);
+    assert.ok(aprPref < apr0 - 0.2, `preferred APR ${aprPref} vs ${apr0}`);
+    assert.equal(typeCreditLimit(finance, 'personal', 0), utilBefore);
+
+    finance.bankRelationships.chase.cycles = 3;
+    recomputeHouseBank(finance);
+    assert.equal(getHouseBankId(finance), 'chase');
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.HOUSE);
+    const aprHouse = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 10);
+    assert.ok(aprHouse < aprPref - 0.1);
+    const maxHouse = underwriteMaxAmount('chase', 'personal', finance).bankMax;
+    assert.ok(maxHouse > max0, `house limit ${maxHouse} > ${max0}`);
+    assert.equal(typeCreditLimit(finance, 'personal', 0), utilBefore);
+    assert.ok(Math.abs(relationshipLimitMult(finance, 'chase') - 1.1) < 1e-9);
+  });
+
+  test('house loyalty: late demotes; second bank can steal House', () => {
+    const finance = createFinanceState();
+    finance.bankRelationships = {
+      chase: { cycles: 3, preferredSinceDay: 2 },
+      boa: { cycles: 3, preferredSinceDay: 8 },
+    };
+    recomputeHouseBank(finance);
+    assert.equal(getHouseBankId(finance), 'chase');
+    demoteBankRelationship(finance, 'chase');
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.PREFERRED);
+    assert.equal(getHouseBankId(finance), 'boa');
+
+    finance.bankRelationships.boa.cycles = 4;
+    finance.bankRelationships.chase = { cycles: 5, preferredSinceDay: 20 };
+    recomputeHouseBank(finance);
+    assert.equal(getHouseBankId(finance), 'chase');
+  });
+
+  test('house loyalty: sanitize drops unknown banks; CU first cycle jumps', () => {
+    const finance = createFinanceState();
+    finance.bankRelationships = {
+      chase: { cycles: 2, preferredSinceDay: 1 },
+      fakeBank: { cycles: 9, preferredSinceDay: 1 },
+    };
+    finance.houseBankId = 'fakeBank';
+    sanitizeBankRelationships(finance);
+    assert.equal(finance.bankRelationships.fakeBank, undefined);
+    assert.equal(getHouseBankId(finance), null);
+
+    const portfolio = { cash: 5000 };
+    const cu = BANKS.find((b) => b.category === 'Credit unions');
+    assert.ok(cu);
+    finance.personalCredit = Math.max(finance.personalCredit, cu.minPersonalCredit || 650);
+    const r = takeLoan(cu.id, 'personal', 200, finance, portfolio, 1);
+    assert.equal(r.ok, true, r.msg);
+    const loan = finance.loans.find((l) => l.id === r.loan.id);
+    loan.interestTicks = 1;
+    awardRelationshipCycle(finance, loan, 2);
+    assert.ok(getBankRelationship(finance, cu.id).cycles >= 2);
+    assert.equal(getBankRelationshipTier(finance, cu.id), REL_TIER.PREFERRED);
+  });
 
   test('firm strength multiplier scales with NW and caps', () => {
     assert.equal(firmStrengthMultiplier(0), 1);
@@ -197,13 +292,14 @@ async function main() {
     const base = underwriteMaxAmount('chase', 'company', finance);
     const strong = underwriteMaxAmount('chase', 'company', finance, { firmStrength: 100000 });
     assert.ok(strong.max > base.max, `expected strength to raise max (${strong.max} > ${base.max})`);
-    assert.equal(finance.businessCredit, 700);
+    assert.equal(finance.businessCredit, 630);
     assert.ok(strong.strengthPct >= 100);
   });
 
-  test('company loans use 90-day term; personal stays 30', () => {
+  test('company loans default to 90-day term; personal stays 30', () => {
     const finance = createFinanceState();
     const portfolio = createPortfolio(20000);
+    void portfolio;
     const personal = quoteLoan('chase', 'personal', 200, finance, 1);
     const company = quoteLoan('chase', 'company', 500, finance, 1);
     assert.equal(personal.ok, true, personal.msg);
@@ -214,8 +310,52 @@ async function main() {
     assert.ok(company.minDailyPayment > 0);
   });
 
+  test('borrower can pick 30 / 60 / 90; longer term raises APR and lowers daily min', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 720;
+    const t30 = quoteLoan('chase', 'personal', 500, finance, 1, { termDays: 30 });
+    const t60 = quoteLoan('chase', 'personal', 500, finance, 1, { termDays: 60 });
+    const t90 = quoteLoan('chase', 'personal', 500, finance, 1, { termDays: 90 });
+    assert.equal(t30.ok && t60.ok && t90.ok, true);
+    assert.deepEqual(LOAN_TERM_CHOICES, [30, 60, 90]);
+    assert.equal(normalizeLoanTermDays(45, 'personal'), PERSONAL_LOAN_TERM_DAYS);
+    assert.equal(t30.termDays, 30);
+    assert.equal(t60.termDays, 60);
+    assert.equal(t90.termDays, 90);
+    assert.ok(t60.apr > t30.apr, '60d should bump APR');
+    assert.ok(t90.apr > t60.apr, '90d should bump APR more');
+    assert.equal(loanTermAprBump(60), 0.5);
+    assert.equal(loanTermAprBump(90), 1);
+    assert.ok(t90.minDailyPayment < t30.minDailyPayment, 'longer term lowers daily min');
+    assert.ok(t90.estimatedInterest > t30.estimatedInterest, 'longer term costs more interest');
+    const taken = takeLoan('chase', 'personal', 500, finance, { cash: 0 }, 1, { termDays: 60 });
+    assert.equal(taken.ok, true);
+    assert.equal(taken.loan.termDays, 60);
+    assert.equal(taken.loan.daysLeft, 60);
+  });
+
+  test('getNextLoanPaymentDue sums tonight min auto-pay across active loans', () => {
+    const finance = createFinanceState();
+    finance.loans = [{
+      id: 'l1', bankId: 'chase', bankName: 'Chase', type: 'personal',
+      principal: 600, balance: 600, apr: 12, dailyRate: 12 / 100 / 365,
+      termDays: 30, daysLeft: 30, openedDay: 1, interestTicks: 0, status: 'active',
+    }];
+    const one = getNextLoanPaymentDue(finance);
+    assert.equal(one.loanCount, 1);
+    assert.ok(one.due > 0);
+    assert.equal(one.due, minPaymentForLoan(finance.loans[0]));
+    assert.match(one.dueLabel, /Due today/);
+    const empty = getNextLoanPaymentDue(createFinanceState());
+    assert.equal(empty.loanCount, 0);
+    assert.equal(empty.due, 0);
+    assert.match(empty.dueLabel, /No active/);
+  });
+
   test('rapid same-day borrow→repay does not raise credit', () => {
     const finance = createFinanceState();
+    // Seed above Day-1 Fair so stacked inquiry hits do not trip Chase's floor mid-loop.
+    finance.personalCredit = 680;
     const startPersonal = finance.personalCredit;
     const portfolio = createPortfolio(500);
     for (let i = 0; i < 5; i++) {
@@ -260,6 +400,7 @@ async function main() {
 
   test('daily credit gain from loans is capped', () => {
     const finance = createFinanceState();
+    finance.personalCredit = 680;
     const portfolio = createPortfolio(50000);
     // Open several aged loans and pay them off same game day
     const ids = [];
@@ -555,6 +696,337 @@ async function main() {
     assert.ok(candleBarVolFraction(15, 0.65) < candleBarVolFraction(1440, 0.65));
   });
 
+  {
+    const {
+      startSimulationMode,
+      clearSimCandleLedger,
+      setSimLedgerClockProviders,
+      seedSimLedgerFromCandles,
+      seedSimLaunchpadDaily,
+      seedSimIntradayFromCandles,
+      sliceSimCandlesForRange,
+      recordSimTick,
+      foldAllSimDays,
+      beginSimSessionFromQuotes,
+      serializeSimCandleLedger,
+      loadSimCandleLedger,
+      hasSimLedger,
+      hasLaunchpadDaily,
+      launchpadCoversRange,
+      ensureCareerDailyCatchUp,
+      fetchCandles,
+      _simLedgerSizeForTests,
+    } = {
+      ...api,
+      ...(await import(pathToFileURL(path.join(__dirname, '../js/sim-candle-ledger.js')).href)),
+    };
+
+    test('1D remaps launchpad intraday to game clock (not Yahoo end stamp)', () => {
+      clearSimCandleLedger();
+      let fakeDay = 1;
+      const fakeMs = Date.UTC(2026, 0, 2, 15, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      const launchpad = [];
+      const base = Math.floor(fakeMs / 1000) - 77 * 300;
+      for (let i = 0; i < 78; i++) {
+        const px = 300 + i * 0.05;
+        launchpad.push({
+          time: base + i * 300,
+          open: px, high: px + 0.2, low: px - 0.2, close: px + 0.05, volume: 1000,
+        });
+      }
+      launchpad[launchpad.length - 1].time = Math.floor(Date.UTC(2026, 6, 15, 20, 0, 0) / 1000);
+
+      assert.equal(seedSimIntradayFromCandles('AAPL', launchpad), true);
+      assert.equal(hasLaunchpadDaily('AAPL'), false, '1D seed must not fake long-TF launchpad');
+      const day1 = sliceSimCandlesForRange('AAPL', '1D', 310);
+      assert.ok(day1 && day1.length >= 2);
+      const end1 = day1[day1.length - 1].time;
+      assert.ok(Math.abs(end1 - Math.floor(fakeMs / 1000)) < 600, `1D end stuck on Yahoo time: ${end1}`);
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('1W hybrid: 7 live → 6L+1S → all sim as career grows', () => {
+      clearSimCandleLedger();
+      let fakeDay = 1;
+      let fakeMs = Date.UTC(2026, 0, 2, 16, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      const live7 = [];
+      const t0 = 1_700_000_000;
+      for (let i = 0; i < 7; i++) {
+        const px = 100 + i;
+        live7.push({
+          time: t0 + i * 86400,
+          open: px, high: px + 0.5, low: px - 0.5, close: px + 0.1, volume: 1e6,
+        });
+      }
+      assert.equal(seedSimLaunchpadDaily('AAPL', live7, { range: '1W' }), true);
+      assert.ok(hasLaunchpadDaily('AAPL'));
+      assert.equal(launchpadCoversRange('AAPL', '1W'), true);
+      assert.equal(launchpadCoversRange('AAPL', '5D'), true, '5D aliases 1W coverage');
+      assert.equal(launchpadCoversRange('AAPL', '1M'), false, '1W pad must not cover 1M');
+      assert.equal(launchpadCoversRange('AAPL', '1Y'), false, '1W pad must not cover 1Y');
+      assert.equal(launchpadCoversRange('AAPL', 'MAX'), false, '1W pad must not cover MAX');
+
+      let w = sliceSimCandlesForRange('AAPL', '1W', 106);
+      assert.equal(w.length, 7, 'start: full live week');
+      assert.equal(w[0].open, 100);
+      assert.ok(Math.abs(w[6].close - 106) < 0.05);
+
+      // 1 sim day → 6 live + 1 sim
+      fakeDay = 1;
+      fakeMs += 86400 * 1000;
+      recordSimTick('AAPL', 111);
+      foldAllSimDays([{ sym: 'AAPL', price: 111 }], { day: 1 });
+      fakeDay = 2;
+      beginSimSessionFromQuotes([{ sym: 'AAPL', price: 111 }]);
+      w = sliceSimCandlesForRange('AAPL', '1W', 111);
+      assert.equal(w.length, 7);
+      assert.equal(w[0].open, 100, 'oldest live kept');
+      assert.equal(w[5].open, 105);
+      assert.ok(Math.abs(w[6].close - 111) < 0.05, 'desk pin on sim tail');
+
+      // 7+ sim days → all sim
+      for (let d = 2; d <= 8; d++) {
+        fakeDay = d;
+        fakeMs += 86400 * 1000;
+        recordSimTick('AAPL', 120 + d);
+        foldAllSimDays([{ sym: 'AAPL', price: 120 + d }], { day: d });
+        fakeDay = d + 1;
+        beginSimSessionFromQuotes([{ sym: 'AAPL', price: 120 + d }]);
+      }
+      w = sliceSimCandlesForRange('AAPL', '1W', 128);
+      assert.equal(w.length, 7);
+      assert.ok(w.every((b) => b.open >= 110), 'window fully sim (no leftover live 100–106 opens)');
+      assert.ok(Math.abs(w[6].close - 128) < 0.05);
+
+      const snap = serializeSimCandleLedger();
+      clearSimCandleLedger();
+      loadSimCandleLedger(snap);
+      assert.ok(hasLaunchpadDaily('AAPL'));
+      const wb = sliceSimCandlesForRange('AAPL', '1W', 128);
+      assert.equal(wb.length, 7);
+      assert.ok(_simLedgerSizeForTests('AAPL').launchpad >= 7);
+
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('1M / 1Y / MAX each need their own full live launchpad then slide like 1W', () => {
+      clearSimCandleLedger();
+      let fakeDay = 1;
+      let fakeMs = Date.UTC(2026, 5, 16, 16, 0, 0); // ~Jun 16
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      // Pretend user opened 1W first
+      const live7 = [];
+      for (let i = 0; i < 7; i++) {
+        live7.push({
+          time: 1_700_000_000 + i * 86400,
+          open: 200 + i, high: 201 + i, low: 199 + i, close: 200.5 + i, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', live7, { range: '1W' });
+      assert.equal(launchpadCoversRange('NVDA', '1M'), false);
+
+      // Upgrade to full 1M live window (22 trading days)
+      const live1M = [];
+      const t0 = 1_718_500_000; // ~Jun-ish
+      for (let i = 0; i < 22; i++) {
+        const px = 250 + Math.sin(i / 3) * 8;
+        live1M.push({
+          time: t0 + i * 86400,
+          open: px, high: px + 1, low: px - 1, close: px + 0.2, volume: 2e6,
+        });
+      }
+      assert.equal(seedSimLaunchpadDaily('NVDA', live1M, { force: true, range: '1M' }), true);
+      assert.equal(launchpadCoversRange('NVDA', '1M'), true);
+      assert.equal(launchpadCoversRange('NVDA', '6M'), false, '1M pad must not cover 6M');
+      assert.equal(launchpadCoversRange('NVDA', '1Y'), false, '1M pad must not cover 1Y');
+
+      let m1 = sliceSimCandlesForRange('NVDA', '1M', live1M[21].close);
+      assert.equal(m1.length, 22, '1M shows full live month');
+      assert.equal(m1[0].time, live1M[0].time);
+
+      // Play 5 game days → 17 live + 5 sim
+      for (let d = 1; d <= 5; d++) {
+        fakeDay = d;
+        fakeMs += 86400 * 1000;
+        recordSimTick('NVDA', 300 + d);
+        foldAllSimDays([{ sym: 'NVDA', price: 300 + d }], { day: d });
+        fakeDay = d + 1;
+        beginSimSessionFromQuotes([{ sym: 'NVDA', price: 300 + d }]);
+      }
+      m1 = sliceSimCandlesForRange('NVDA', '1M', 305);
+      assert.equal(m1.length, 22);
+      assert.equal(m1[0].time, live1M[0].time, 'oldest live month bar retained');
+      assert.ok(Math.abs(m1[21].close - 305) < 0.05);
+
+      // Upgrade to 1Y launchpad (252 days)
+      const live1Y = [];
+      for (let i = 0; i < 252; i++) {
+        const px = 180 + Math.sin(i / 20) * 40;
+        live1Y.push({
+          time: t0 + i * 86400,
+          open: px, high: px + 2, low: px - 2, close: px + 0.3, volume: 3e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', live1Y, { force: true, range: '1Y' });
+      assert.equal(launchpadCoversRange('NVDA', '1Y'), true);
+      assert.equal(launchpadCoversRange('NVDA', '1M'), true, '1Y pad also covers shorter 1M');
+      assert.equal(launchpadCoversRange('NVDA', 'MAX'), false);
+
+      let y1 = sliceSimCandlesForRange('NVDA', '1Y', 305);
+      assert.ok(y1.length >= 240, `1Y should be ~full live year, got ${y1.length}`);
+      assert.ok(Math.abs(y1[y1.length - 1].close - 305) < 0.05);
+
+      // 6M pad (126 days)
+      const live6M = live1Y.slice(-126);
+      seedSimLaunchpadDaily('AMD', live6M, { force: true, range: '6M' });
+      assert.equal(launchpadCoversRange('AMD', '6M'), true);
+      assert.equal(launchpadCoversRange('AMD', '1Y'), false);
+      const m6 = sliceSimCandlesForRange('AMD', '6M', live6M[125].close);
+      assert.equal(m6.length, 126, '6M shows full live half-year');
+
+      // MAX: 400 bars tagged as MAX fetch — covers via tier rule
+      const liveMax = [];
+      for (let i = 0; i < 400; i++) {
+        liveMax.push({
+          time: t0 + i * 86400,
+          open: 100 + i * 0.1, high: 101 + i * 0.1, low: 99 + i * 0.1, close: 100.2 + i * 0.1, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', liveMax, { force: true, range: 'MAX' });
+      assert.equal(launchpadCoversRange('NVDA', 'MAX'), true);
+      const mx = sliceSimCandlesForRange('NVDA', 'MAX', 305);
+      assert.ok(mx.length >= 400, `MAX should use long live history, got ${mx.length}`);
+      assert.ok(Math.abs(mx[mx.length - 1].close - 305) < 0.05);
+
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('NVDA and MSFT get same 1W/1M hybrid slide as AAPL (incl. late catch-up)', () => {
+      clearSimCandleLedger();
+      let fakeDay = 10;
+      let fakeMs = Date.UTC(2026, 2, 20, 16, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+
+      // Late open: never folded MSFT, but career day is already 10
+      assert.equal(ensureCareerDailyCatchUp('MSFT', 400), true);
+      assert.ok(_simLedgerSizeForTests('MSFT').daily >= 9, 'catch-up fills prior career days');
+
+      const live7 = [];
+      for (let i = 0; i < 7; i++) {
+        live7.push({
+          time: 1_710_000_000 + i * 86400,
+          open: 390 + i, high: 391 + i, low: 389 + i, close: 390.5 + i, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('MSFT', live7, { range: '1W' });
+      let w = sliceSimCandlesForRange('MSFT', '1W', 400);
+      assert.equal(w.length, 7);
+      // 9 career days ≥ 7 → all sim (live week opens 390..396 gone)
+      assert.ok(w.every((b, i) => Math.abs(b.open - (390 + i)) > 0.5), 'late MSFT 1W drops live week head');
+      assert.ok(Math.abs(w[6].close - 400) < 0.05);
+
+      // NVDA: seed week, fold one day → 6L+1S like AAPL path
+      clearSimCandleLedger();
+      fakeDay = 1;
+      fakeMs = Date.UTC(2026, 2, 10, 16, 0, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      const nvLive = [];
+      for (let i = 0; i < 7; i++) {
+        nvLive.push({
+          time: 1_712_000_000 + i * 86400,
+          open: 200 + i, high: 201 + i, low: 199 + i, close: 200.4 + i, volume: 2e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', nvLive, { range: '1W' });
+      fakeDay = 1;
+      fakeMs += 86400 * 1000;
+      recordSimTick('NVDA', 220);
+      foldAllSimDays([{ sym: 'NVDA', price: 220 }], { day: 1 });
+      fakeDay = 2;
+      w = sliceSimCandlesForRange('NVDA', '1W', 220);
+      assert.equal(w.length, 7);
+      assert.equal(w[0].open, 200);
+      assert.ok(Math.abs(w[6].close - 220) < 0.05);
+
+      const live1M = [];
+      for (let i = 0; i < 22; i++) {
+        live1M.push({
+          time: 1_713_000_000 + i * 86400,
+          open: 210 + i * 0.5, high: 211 + i * 0.5, low: 209 + i * 0.5, close: 210.2 + i * 0.5, volume: 1e6,
+        });
+      }
+      seedSimLaunchpadDaily('NVDA', live1M, { force: true, range: '1M' });
+      // still 1 career day
+      const m = sliceSimCandlesForRange('NVDA', '1M', 220);
+      assert.equal(m.length, 22);
+      assert.ok(Math.abs(m[21].close - 220) < 0.05);
+      assert.equal(m[0].open, live1M[0].open);
+
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+
+    test('fetchCandles 1D prefers ledger; long TF needs launchpad before hybrid', async () => {
+      clearSimCandleLedger();
+      let fakeDay = 5;
+      const fakeMs = Date.UTC(2026, 2, 10, 14, 30, 0);
+      setSimLedgerClockProviders({
+        getDayCount: () => fakeDay,
+        getMarketTime: () => new Date(fakeMs),
+      });
+      startSimulationMode();
+      getQuoteCache().set('MSFT', { price: 400, prevClose: 398, source: 'seed', simulated: true });
+
+      const seedBars = [];
+      for (let i = 0; i < 20; i++) {
+        seedBars.push({
+          time: 1_700_000_000 + i * 300,
+          open: 390 + i * 0.1,
+          high: 391 + i * 0.1,
+          low: 389 + i * 0.1,
+          close: 390.5 + i * 0.1,
+          volume: 500,
+        });
+      }
+      seedSimLedgerFromCandles('MSFT', seedBars, '1D');
+      assert.equal(hasLaunchpadDaily('MSFT'), false);
+      const a = await fetchCandles('MSFT', '1D');
+      const b = await fetchCandles('MSFT', '1D');
+      assert.ok(a.length >= 2 && b.length >= 2);
+      assert.equal(a[a.length - 1].time, b[b.length - 1].time, 'refresh must not swap timeline');
+      assert.ok(Math.abs(a[a.length - 1].close - 400) < 0.05);
+      clearSimCandleLedger();
+      setSimLedgerClockProviders({});
+    });
+  }
+
   test('shouldRebaseQuote / candle close wins over bad seed', () => {
     assert.equal(shouldRebaseQuote(889, 73), true);
     assert.equal(shouldRebaseQuote(361, 49), true);
@@ -593,15 +1065,21 @@ async function main() {
     assert.equal(isPlausibleQuote(100, 41), true);
   });
 
-  // --- Perk tiers / REP gates ---
+  // --- Perk tiers / license gates ---
   const cfg = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
-  const { PERKS, REP_RANKS, getRepRank, getNextRepRank, canPurchasePerk, CONFIG } = cfg;
+  const { PERKS, canPurchasePerk, CONFIG } = cfg;
+  const licensesMod = await import(pathToFileURL(path.join(__dirname, '../js/licenses.js')).href);
+  const {
+    LICENSES, LICENSE_ORDER, hasLicense, getHighestLicense, getNextLicense,
+    sanitizeLicenses, licensesFromLegacyRep, requiredLicenseForRep,
+    licenseSnapshot, getLicenseRequirements, canTakeLicenseExam, purchaseLicense,
+  } = licensesMod;
   const vaultMod = await import(pathToFileURL(path.join(__dirname, '../js/vault.js')).href);
   const {
     VAULT_ITEMS, KNOWN_VAULT_IDS, VAULT_CATEGORY_LABELS, VAULT_EQUIP_SLOT_LABELS,
     VAULT_COLLATERAL_LTV, MASTERWORK_ITEM_BONUS_CAPS,
     canPurchaseVaultItem, purchaseVaultItem, getVaultItem, isMasterworkVaultItem,
-    getVaultBookValue, getVaultDeskAura, applyVaultDeskAuraOnClose,
+    getVaultBookValue, getVaultDeskAura,
     getCategoryDisplayLabel, getVaultPledgedAppraisal, sanitizeVaultPledged,
     togglePledgedVaultItem, repossessVaultForLoan, loanLocksVaultPledge,
   } = vaultMod;
@@ -673,42 +1151,104 @@ async function main() {
     assert.match(CONFIG.QUOTE_BASELINE_KEY, /v3/);
   });
 
-  test('REP ranks resolve Newcomer → Elite Desk', () => {
-    assert.equal(getRepRank(0).id, 'newcomer');
-    assert.equal(getRepRank(39).id, 'newcomer');
-    assert.equal(getRepRank(40).name, 'Desk Hand');
-    assert.equal(getRepRank(120).name, 'Trusted Trader');
-    assert.equal(getRepRank(250).name, 'Market Veteran');
-    assert.equal(getRepRank(500).name, 'Elite Desk');
-    assert.equal(getRepRank(1800).name, 'Market Legend');
-    assert.equal(getNextRepRank(0).minRep, 40);
-    assert.equal(getNextRepRank(1800), null);
-    assert.ok(REP_RANKS.length >= 6);
+  test('license ladder resolves Retail → Reg D', () => {
+    assert.deepEqual(LICENSE_ORDER, ['retail', 'series7', 'research', 'regd']);
+    assert.equal(getHighestLicense(['retail']).id, 'retail');
+    assert.equal(getHighestLicense(['retail', 'series7']).short, 'Series 7');
+    assert.equal(getHighestLicense(['retail', 'series7', 'research', 'regd']).id, 'regd');
+    assert.equal(getNextLicense(['retail']).id, 'series7');
+    assert.equal(getNextLicense(['retail', 'series7', 'research', 'regd']), null);
+    assert.equal(hasLicense(undefined, 'retail'), true, 'retail is always held');
+    assert.equal(hasLicense(['retail'], 'series7'), false);
+    // Prereq chain fill: a save cannot hold regd without series7/research.
+    assert.deepEqual(sanitizeLicenses(['regd']), ['retail', 'series7', 'research', 'regd']);
+    assert.deepEqual(sanitizeLicenses(['bogus']), ['retail']);
   });
 
-  test('cannot buy high-tier perk with low REP even with cash', () => {
+  test('legacy REP migrates to licenses (≥120 S7, ≥250 research, ≥500 regd)', () => {
+    assert.deepEqual(licensesFromLegacyRep(0), ['retail']);
+    assert.deepEqual(licensesFromLegacyRep(119), ['retail']);
+    assert.deepEqual(licensesFromLegacyRep(120), ['retail', 'series7']);
+    assert.deepEqual(licensesFromLegacyRep(250), ['retail', 'series7', 'research']);
+    assert.deepEqual(licensesFromLegacyRep(5000), ['retail', 'series7', 'research', 'regd']);
+    // Legacy catalog thresholds map to tiers for vault/BM/salon/office gates.
+    assert.equal(requiredLicenseForRep(0).id, 'retail');
+    assert.equal(requiredLicenseForRep(100).id, 'series7');
+    assert.equal(requiredLicenseForRep(300).id, 'research');
+    assert.equal(requiredLicenseForRep(1400).id, 'regd');
+  });
+
+  test('license exam gates on qualifications then fee; purchase debits fee', () => {
+    const mkState = (over = {}) => ({
+      licenses: ['retail'],
+      portfolio: { cash: 5000 },
+      stats: { tradesClosed: 30, greenDays: 0 },
+      finance: { personalCredit: 700, businessCredit: 700, latePayments: 0, lastLateDay: null },
+      ...over,
+    });
+    // Qualified: 30 closed trades + Good personal credit + fee cash
+    const okSnap = licenseSnapshot(mkState(), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', okSnap).ok, true);
+    // Day-1 thin file must NOT already clear Series 7 / Reg D credit rows
+    const day1 = createFinanceState();
+    assert.ok(day1.personalCredit < LICENSES.series7.reqs.personalCredit,
+      `day-1 personal ${day1.personalCredit} should be below Series 7 gate ${LICENSES.series7.reqs.personalCredit}`);
+    assert.ok(day1.businessCredit < LICENSES.regd.reqs.businessCredit,
+      `day-1 business ${day1.businessCredit} should be below Reg D gate ${LICENSES.regd.reqs.businessCredit}`);
+    assert.equal(creditTier(day1.personalCredit).label, 'Fair');
+    // Not enough trades
+    const fewTrades = licenseSnapshot(mkState({ stats: { tradesClosed: 3, greenDays: 0 } }), { day: 5, netWorth: 5000 });
+    const noTrades = canTakeLicenseExam('series7', fewTrades);
+    assert.equal(noTrades.ok, false);
+    assert.equal(noTrades.code, 'trades');
+    // Bad credit blocks the background check
+    const badCredit = licenseSnapshot(mkState({ finance: { personalCredit: 500, businessCredit: 700 } }), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', badCredit).code, 'personalCredit');
+    // Fair personal (Day-1-like) still fails Series 7 Good-band gate
+    const fairOnly = licenseSnapshot(mkState({ finance: { personalCredit: 600, businessCredit: 630 } }), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', fairOnly).code, 'personalCredit');
+    // Qualified but broke → fee gate
+    const broke = licenseSnapshot(mkState({ portfolio: { cash: 100 } }), { day: 5, netWorth: 5000 });
+    assert.equal(canTakeLicenseExam('series7', broke).code, 'cash');
+    // Purchase debits exactly the fee and grants the license
+    const state = mkState();
+    const result = purchaseLicense(state, 'series7', { day: 5, netWorth: 5000 });
+    assert.equal(result.ok, true, result.msg);
+    assert.equal(state.portfolio.cash, 5000 - LICENSES.series7.fee);
+    assert.ok(state.licenses.includes('series7'));
+    // Reg D needs clean payment history in the last 30 days
+    const late = licenseSnapshot({
+      licenses: ['retail', 'series7', 'research'],
+      portfolio: { cash: 100000 },
+      stats: { tradesClosed: 100, greenDays: 40 },
+      finance: { personalCredit: 750, businessCredit: 750, latePayments: 2, lastLateDay: 95 },
+    }, { day: 100, netWorth: 300000 });
+    assert.equal(canTakeLicenseExam('regd', late).code, 'cleanDays');
+  });
+
+  test('cannot buy high-tier perk with low license even with cash', () => {
     const insider = PERKS.insider;
     const gate = canPurchasePerk(insider, {
       cash: 100000,
       perks: ['scanner'],
-      reputation: 10,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
-    assert.equal(gate.code, 'rep');
-    assert.ok(/250|Market Veteran|REP/i.test(gate.reason));
+    assert.equal(gate.code, 'license');
+    assert.ok(/license|Series|Research/i.test(gate.reason));
   });
 
-  test('can buy mid perk when REP and cash met', () => {
+  test('can buy mid perk when license and cash met', () => {
     const news = PERKS.newsWire;
-    const blocked = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], reputation: 10 });
+    const blocked = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], licenses: ['retail', 'series7'] });
     assert.equal(blocked.ok, false);
-    assert.equal(blocked.code, 'rep');
-    const ok = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], reputation: 40 });
+    assert.equal(blocked.code, 'license');
+    const ok = canPurchasePerk(news, { cash: 1000, perks: ['scanner'], licenses: ['retail', 'series7', 'research'] });
     assert.equal(ok.ok, true, ok.reason);
   });
 
-  test('can buy Newcomer scanner with starting cash and 0 REP', () => {
-    const gate = canPurchasePerk(PERKS.scanner, { cash: 500, perks: [], reputation: 0 });
+  test('can buy Retail scanner with starting cash and no exams', () => {
+    const gate = canPurchasePerk(PERKS.scanner, { cash: 500, perks: [], licenses: ['retail'] });
     assert.equal(gate.ok, true, gate.reason);
   });
 
@@ -716,7 +1256,7 @@ async function main() {
     const gate = canPurchasePerk(PERKS.insider, {
       cash: 100000,
       perks: ['scanner', 'insider'],
-      reputation: 0,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
     assert.match(gate.reason, /owned/i);
@@ -726,18 +1266,19 @@ async function main() {
     const perksShopMod = await import(pathToFileURL(path.join(__dirname, '../js/perks.js')).href);
     const { purchasePerk } = perksShopMod;
 
-    test('purchasePerk unlocks perk, debits exact cost, and grants +15 REP', () => {
+    test('purchasePerk unlocks perk and debits exact cost (no REP mint)', () => {
       const cost = PERKS.scanner.cost;
       const state = {
         portfolio: { cash: cost + 50 },
         perks: [],
+        licenses: ['retail'],
         meta: { reputation: 0 },
       };
       const result = purchasePerk(state, 'scanner');
       assert.equal(result.ok, true, result.msg);
       assert.equal(state.portfolio.cash, 50);
       assert.deepEqual(state.perks, ['scanner']);
-      assert.equal(state.meta.reputation, 15);
+      assert.equal(state.meta.reputation, 0, 'perks no longer mint REP');
     });
 
     test('purchasePerk cannot rebuy an owned perk or double-spend cash', () => {
@@ -745,18 +1286,17 @@ async function main() {
       const state = {
         portfolio: { cash: cost * 3 },
         perks: [],
+        licenses: ['retail'],
         meta: { reputation: 0 },
       };
       const first = purchasePerk(state, 'scanner');
       assert.equal(first.ok, true, first.msg);
       const cashAfter = state.portfolio.cash;
-      const repAfter = state.meta.reputation;
       const second = purchasePerk(state, 'scanner');
       assert.equal(second.ok, false);
       assert.match(second.msg || '', /owned/i);
       assert.equal(state.portfolio.cash, cashAfter);
       assert.deepEqual(state.perks, ['scanner']);
-      assert.equal(state.meta.reputation, repAfter);
     });
 
     test('purchasePerk rejects when cash is short without mutating state', () => {
@@ -764,6 +1304,7 @@ async function main() {
       const state = {
         portfolio: { cash: Math.max(0, cost - 1) },
         perks: [],
+        licenses: ['retail'],
         meta: { reputation: 0 },
       };
       const result = purchasePerk(state, 'scanner');
@@ -771,13 +1312,12 @@ async function main() {
       assert.equal(result.code, 'cash');
       assert.equal(state.portfolio.cash, Math.max(0, cost - 1));
       assert.deepEqual(state.perks, []);
-      assert.equal(state.meta.reputation, 0);
     });
   }
 
   {
     const dayEndMod = await import(pathToFileURL(path.join(__dirname, '../js/day-end.js')).href);
-    const { runDayEndSettlement, taperLoanRep } = dayEndMod;
+    const { runDayEndSettlement } = dayEndMod;
     const metaMod = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const { createMetaState } = metaMod;
     const marketMod = await import(pathToFileURL(path.join(__dirname, '../js/market.js')).href);
@@ -793,15 +1333,7 @@ async function main() {
       Object.defineProperty(globalThis, 'localStorage', { value: mem, configurable: true });
     }
 
-    test('taperLoanRep soft-tapers positive loan REP at higher ranks', () => {
-      assert.equal(taperLoanRep(10, 0), 10);
-      assert.equal(taperLoanRep(10, 199), 10);
-      assert.equal(taperLoanRep(10, 200), 8);
-      assert.equal(taperLoanRep(10, 400), 5);
-      assert.equal(taperLoanRep(-3, 500), -3);
-    });
-
-    test('runDayEndSettlement awards green-day REP and builds day-summary DTO', () => {
+    test('runDayEndSettlement tracks green days and builds day-summary DTO (no REP)', () => {
       snapshotDayStart(500, 500, 0);
       const state = {
         portfolio: createPortfolio(650),
@@ -815,15 +1347,17 @@ async function main() {
       assert.equal(result.stats.equityDelta, 150);
       assert.equal(state.stats.greenDays, 1);
       assert.equal(state.stats.greenStreak, 1);
-      assert.ok(result.dayRepDelta >= 20, `expected green_day REP, got ${result.dayRepDelta}`);
+      assert.equal(result.dayRepDelta, undefined, 'REP is gone from day end');
       assert.equal(result.daySummary.day, 1);
-      assert.equal(result.daySummary.repDelta, result.dayRepDelta);
       assert.equal(result.daySummary.challengeDone, false);
       assert.ok('payroll' in result.daySummary);
+      assert.ok('lessonLine' in result.daySummary, 'teach recap field present');
+      assert.ok('recoveryHint' in result.daySummary, 'recovery hint field present');
       assert.ok(Array.isArray(result.daySummary.loanEvents));
+      assert.ok(Array.isArray(result.daySummary.processWins));
     });
 
-    test('runDayEndSettlement awards day_complete REP on flat days and red_day on losses', () => {
+    test('runDayEndSettlement resets green streak on flat/red days without REP swings', () => {
       snapshotDayStart(500, 500, 0);
       const flat = {
         portfolio: createPortfolio(500),
@@ -835,7 +1369,6 @@ async function main() {
       const flatResult = runDayEndSettlement(flat, 2);
       assert.equal(flatResult.stats.equityDelta, 0);
       assert.equal(flat.stats.greenStreak, 0);
-      assert.equal(flatResult.dayRepDelta, 3);
 
       snapshotDayStart(500, 500, 0);
       const red = {
@@ -848,8 +1381,31 @@ async function main() {
       const redResult = runDayEndSettlement(red, 3);
       assert.equal(redResult.stats.equityDelta, -150);
       assert.equal(red.stats.greenStreak, 0);
-      assert.equal(redResult.dayRepDelta, -10);
-      assert.equal(red.meta.reputation, 40);
+      assert.equal(red.meta.reputation, 50, 'legacy REP field stays inert');
+    });
+
+    test('recovery hint appears after 5 consecutive negative-NW days', () => {
+      const state = {
+        portfolio: createPortfolio(100),
+        finance: createFinanceState(),
+        meta: createMetaState(),
+        staff: [],
+        stats: {},
+      };
+      // Force debt so net equity goes negative
+      state.finance.loans = [{
+        id: 'L1', type: 'company', bankName: 'Test', balance: 10000, dailyRate: 0,
+        status: 'active', daysLeft: 100, interestTicks: 5,
+      }];
+      let hint = '';
+      for (let d = 1; d <= 5; d++) {
+        snapshotDayStart(100, 100, 10000);
+        const r = runDayEndSettlement(state, d);
+        hint = r.daySummary.recoveryHint;
+        // keep cash pinned so equity stays negative despite auto-pays
+        state.portfolio.cash = 100;
+      }
+      assert.ok(hint && /payroll|loan|size/i.test(hint), `expected recovery levers, got "${hint}"`);
     });
 
     test('runDayEndSettlement auto-claims a completed unclaimed challenge', () => {
@@ -891,17 +1447,17 @@ async function main() {
     assert.ok(PERKS.hrDept.cost <= 500);
     assert.ok(PERKS.insider.cost >= 15000);
     assert.ok(PERKS.aiAdvisor.cost >= 17000);
-    assert.ok(PERKS.insider.repRequired >= 250);
-    assert.ok(PERKS.aiAdvisor.repRequired >= 250);
-    assert.ok(PERKS.hedgeFund.repRequired >= 500);
+    assert.equal(PERKS.insider.licenseRequired, 'research');
+    assert.equal(PERKS.aiAdvisor.licenseRequired, 'research');
+    assert.equal(PERKS.hedgeFund.licenseRequired, 'regd');
     assert.ok(PERKS.hedgeFund.cost >= 25000);
     assert.ok(PERKS.primeBroker.cost >= 20000);
     assert.ok(PERKS.legendDesk.cost >= 45000);
     assert.ok(PERKS.smartRouting.cost >= 3000);
     assert.ok(PERKS.options.cost >= 4000);
-    assert.equal(PERKS.margin.repRequired, 40, 'margin aligns with Desk Hand');
-    assert.ok(PERKS.legendDesk.repRequired >= 1800);
-    assert.ok(PERKS.primeBroker.repRequired >= 550);
+    assert.equal(PERKS.margin.licenseRequired, 'series7', 'margin needs the Series 7');
+    assert.equal(PERKS.legendDesk.licenseRequired, 'regd');
+    assert.equal(PERKS.primeBroker.licenseRequired, 'regd');
     assert.ok(Object.keys(PERKS).length >= 15, 'expanded perk board');
     // OP stack should dwarf early Desk Hand total
     const early = PERKS.scanner.cost + PERKS.hrDept.cost + PERKS.newsWire.cost + PERKS.analyst.cost + PERKS.margin.cost;
@@ -910,21 +1466,21 @@ async function main() {
     assert.ok(PERKS.legendDesk.cost > PERKS.hedgeFund.cost * 1.5, 'Legend is a prestige cash sink');
   });
 
-  test('new mid/late perks gate on cash + REP + prereqs', () => {
+  test('new mid/late perks gate on cash + license + prereqs', () => {
     assert.equal(canPurchasePerk(PERKS.complianceSuite, {
-      cash: 5000, perks: ['scanner'], reputation: 100,
+      cash: 5000, perks: ['scanner'], licenses: ['retail'],
     }).ok, false, 'needs hrDept');
     assert.equal(canPurchasePerk(PERKS.complianceSuite, {
-      cash: 5000, perks: ['scanner', 'hrDept'], reputation: 45,
+      cash: 5000, perks: ['scanner', 'hrDept'], licenses: ['retail'],
     }).ok, true);
     assert.equal(canPurchasePerk(PERKS.smartRouting, {
-      cash: 5000, perks: ['scanner'], reputation: 130,
+      cash: 5000, perks: ['scanner'], licenses: ['retail', 'series7'],
     }).ok, true);
     assert.equal(canPurchasePerk(PERKS.legendDesk, {
-      cash: 50000, perks: ['hedgeFund'], reputation: 1799,
-    }).ok, false);
+      cash: 50000, perks: ['hedgeFund'], licenses: ['retail', 'series7', 'research'],
+    }).ok, false, 'Legend Desk needs Reg D');
     assert.equal(canPurchasePerk(PERKS.legendDesk, {
-      cash: 50000, perks: ['hedgeFund'], reputation: 1800,
+      cash: 50000, perks: ['hedgeFund'], licenses: ['retail', 'series7', 'research', 'regd'],
     }).ok, true);
   });
 
@@ -985,16 +1541,37 @@ async function main() {
       state.staff = [{ roleId: 'partner', tier: 'newbie', active: true }];
       const before = state.portfolio.cash;
       const paid = payDailySalaries(state);
-      // partner $420 · HF 50% + Legend 10% → pay 40% = $168
-      assert.equal(paid, 168);
-      assert.equal(state.portfolio.cash, before - 168);
+      // partner $450 · HF 50% + Legend 10% → pay 40% = $180
+      assert.equal(paid, 180);
+      assert.equal(state.portfolio.cash, before - 180);
     });
     test('staff wages and train costs resist AFK spam', () => {
       assert.ok(STAFF_ROLES.intern.salary >= 40);
       assert.ok(STAFF_ROLES.partner.salary >= 400);
-      assert.ok(STAFF_ROLES.scout.hireCost >= 1000);
+      assert.ok(STAFF_ROLES.scout.hireCost >= 1400);
+      assert.ok(STAFF_ROLES.trader.hireCost >= 2000);
+      assert.ok(STAFF_ROLES.partner.hireCost >= 10000);
       assert.ok(staffMod.STAFF_TIERS.newbie.trainCost >= 400);
       assert.ok(staffMod.STAFF_TIERS.veteran.trainCost >= 1000);
+    });
+    test('firing pays one day severance when cash allows', () => {
+      const { hireStaff, fireStaff, getMemberDailySalary } = staffMod;
+      const state = {
+        perks: ['hrDept', 'scanner'],
+        staff: [],
+        staffLog: [],
+        portfolio: { cash: 50_000 },
+        stats: {},
+      };
+      const hired = hireStaff('scout', state);
+      assert.ok(hired.ok);
+      const before = state.portfolio.cash;
+      const dayPay = getMemberDailySalary(hired.member);
+      const fired = fireStaff(hired.member.id, state);
+      assert.ok(fired.ok);
+      assert.equal(state.staff.length, 0);
+      assert.equal(state.portfolio.cash, before - dayPay);
+      assert.ok(/severance/i.test(state.staffLog[0]?.action || ''));
     });
     test('staff coverage and next-hire prefer sell gap', () => {
       const { getStaffCoverage, getNextHireRecommendation } = staffMod;
@@ -1104,6 +1681,32 @@ async function main() {
       assert.ok(fixed.high - fixed.low <= 311.4 * 0.021);
     });
 
+    test('computePriceAxisRange keeps completed 1D spikes on-screen (no percentile / maxSpan clip)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 320 + Math.sin(i / 5) * 1.5;
+        bars.push({
+          time: now - (39 - i) * 300,
+          open: px, high: px + 0.4, low: px - 0.4, close: px + 0.1, volume: 1000,
+        });
+      }
+      // Completed spike bar (not forming) — must remain visible after price comes back
+      bars[28] = {
+        time: now - 11 * 300,
+        open: 322, high: 348, low: 321.5, close: 346, volume: 5000,
+      };
+      bars[bars.length - 1] = {
+        time: now, open: 324, high: 325, low: 323.5, close: 324.2, volume: 900,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      assert.ok(axis.max >= 348, `completed spike high clipped: axis.max=${axis.max}`);
+      assert.ok(axis.min <= 321.5, `session lows clipped: ${axis.min}`);
+      assert.ok(axis.max >= 324.2 && axis.min <= 324.2, 'live close on-screen');
+    });
+
     test('computePriceAxisRange ignores last-bar spear high/low', () => {
       const { computePriceAxisRange, clampBarToPeers, peerMedianRange } = chartMod;
       const now = Math.floor(Date.now() / 1000);
@@ -1115,23 +1718,166 @@ async function main() {
           open: px, high: px + 0.25, low: px - 0.2, close: px + 0.05, volume: 1000,
         });
       }
+      // Forming bar: sane close, absurd spear high (bad Yahoo wick)
       bars[bars.length - 1] = {
-        time: now, open: 311, high: 316.58, low: 311, close: 316.4, volume: 9000,
+        time: now, open: 311.2, high: 380, low: 311, close: 316.4, volume: 9000,
       };
       const completedMax = Math.max(...bars.slice(0, -1).map((b) => b.high));
       const axis = computePriceAxisRange(bars, '1D');
       assert.ok(axis);
-      // Must not adopt the spear high/close as the top of the pane
-      assert.ok(axis.max < 316.4, `axis.max adopted spear close: ${axis.max}`);
-      assert.ok(axis.max < bars[bars.length - 1].high, `axis.max adopted spear high: ${axis.max}`);
-      assert.ok(axis.max - completedMax < 4, `axis stretched too far past session: ${axis.max - completedMax}`);
-      assert.ok(axis.max - axis.min >= 311 * 0.018, 'min span too tight');
+      // Live close must stay on-screen
+      assert.ok(axis.max >= 316.4, `axis.max clipped live close: ${axis.max}`);
+      // Spear high must not own the pane
+      assert.ok(axis.max < 360, `axis.max adopted spear high: ${axis.max}`);
+      assert.ok(axis.max - completedMax < 12, `axis stretched too far past session: ${axis.max - completedMax}`);
+      // Composite floor: max(2.5% baseline, $5, legacy session %)
+      const floorSpan = Math.max(316.4 * 0.025, 5.0, 311 * 0.018);
+      assert.ok(axis.max - axis.min >= floorSpan, `min span too tight: ${axis.max - axis.min}`);
 
       const peer = peerMedianRange(bars);
       const clamped = clampBarToPeers(bars[bars.length - 1], peer, 311);
       const maxR = Math.max(peer * 2.2, 311 * 0.0025);
       assert.ok(clamped.high - clamped.low <= maxR + 0.02, `peer clamp still tall: ${clamped.high - clamped.low}`);
       assert.ok(clamped.close < 314, `peer clamp left spear close: ${clamped.close}`);
+    });
+
+    test('computePriceAxisRange enforces $5 / 2.5% floor on flat cheap names', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 24; i++) {
+        const px = 40 + (i % 3) * 0.05;
+        bars.push({
+          time: now - (23 - i) * 300,
+          open: px, high: px + 0.08, low: px - 0.06, close: px + 0.02, volume: 800,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 40.2, high: 40.35, low: 40.15, close: 40.25, volume: 1200,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      const span = axis.max - axis.min;
+      // Absolute $5 floor dominates on ~$40 names (2.5% ≈ $1.01)
+      assert.ok(span >= 5.0, `flat cheap name over-zoomed: span=${span}`);
+      assert.ok(axis.max >= 40.25 && axis.min <= 40.25, 'live close must stay on-screen');
+    });
+
+    test('applyLiveCandleTick keeps close glued to live quote price', () => {
+      const { applyLiveCandleTick } = chartMod;
+      const bar = { time: 1, open: 310, high: 311, low: 309.5, close: 310.2, volume: 100 };
+      const next = applyLiveCandleTick(bar, 318.52, 0.02);
+      assert.ok(next);
+      assert.equal(next.close, 318.52, 'forming close must equal HUD quote');
+      assert.ok(next.high >= 318.52, 'high must include quote');
+      assert.ok(next.low <= 310, 'low stays at body floor');
+      assert.equal(next.open, 310, 'session open is preserved');
+      // Forming wicks stay near the body — no ratchet from prior high/low
+      assert.ok(next.high - next.low < 12, `forming wick too wide: ${next.high - next.low}`);
+      assert.ok(next.high < 320, `forming high still ratcheting: ${next.high}`);
+    });
+
+    test('live ticks lock Y-axis until price breaks out (hysteresis)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 24; i++) {
+        const px = 40 + (i % 3) * 0.05;
+        bars.push({
+          time: now - (23 - i) * 300,
+          open: px, high: px + 0.08, low: px - 0.06, close: px + 0.02, volume: 800,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 40.2, high: 40.35, low: 40.15, close: 40.25, volume: 1200,
+      };
+      const locked = computePriceAxisRange(bars, '1D', 'HYST', false);
+      assert.ok(locked);
+      bars[bars.length - 1].close = 40.55;
+      bars[bars.length - 1].high = 40.6;
+      const same = computePriceAxisRange(bars, '1D', 'HYST', true);
+      assert.equal(same.min, locked.min, 'live tick must not slide axis min');
+      assert.equal(same.max, locked.max, 'live tick must not slide axis max');
+      bars[bars.length - 1].close = locked.max + 0.5;
+      const broke = computePriceAxisRange(bars, '1D', 'HYST', true);
+      assert.ok(broke.max > locked.max, 'breakout must expand max only');
+      assert.equal(broke.min, locked.min, 'breakout must keep min locked');
+    });
+
+    test('xLabelInterval keeps a stable stride so live bars do not crush timeline labels', () => {
+      const { xLabelInterval } = chartMod;
+      assert.equal(xLabelInterval(10), 0, 'short series shows all labels');
+      assert.equal(xLabelInterval(14), 0);
+      const step = xLabelInterval(78);
+      assert.ok(step >= 1, `expected stride for dense 1D series, got ${step}`);
+      // ~14 labels across 78 bars: indices 0, step, 2*step... must stay monotonic
+      const shown = [];
+      for (let i = 0; i < 78; i += step) shown.push(i);
+      if (shown[shown.length - 1] !== 77) shown.push(77);
+      for (let i = 1; i < shown.length; i++) {
+        assert.ok(shown[i] > shown[i - 1], 'label indices must be strictly increasing');
+      }
+      assert.ok(shown.length >= 10 && shown.length <= 20, `label count out of band: ${shown.length}`);
+      // Growing the series only increases stride or holds — never collapses to overcrowding
+      assert.ok(xLabelInterval(130) >= xLabelInterval(78));
+    });
+
+    test('1D axis keeps a drifted live close on-screen (no soft-pin clip)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 300 + (i % 4) * 0.2;
+        bars.push({
+          time: now - (39 - i) * 300,
+          open: px, high: px + 0.3, low: px - 0.25, close: px, volume: 1000,
+        });
+      }
+      bars[bars.length - 1] = {
+        time: now, open: 300.4, high: 300.5, low: 300.2, close: 312.8, volume: 2000,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      assert.ok(axis.max >= 312.8, `live close clipped after drift: ${axis.max}`);
+      assert.ok(axis.min <= 300, `session lows clipped: ${axis.min}`);
+    });
+
+    test('computePriceAxisRange keeps MAX / 1W highs on-screen (no hard maxSpan recenter)', () => {
+      const { computePriceAxisRange, sliceBarsForAxis } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const maxBars = [];
+      for (let i = 0; i < 80; i++) {
+        const px = 80 + i * 4; // ~80 → ~396
+        maxBars.push({
+          time: now - (79 - i) * 86400 * 30,
+          open: px - 1, high: px + 2, low: px - 3, close: px, volume: 1e6,
+        });
+      }
+      const maxAxis = computePriceAxisRange(maxBars, 'MAX');
+      assert.ok(maxAxis);
+      assert.ok(maxAxis.max >= 396, `MAX clipped ATH: max=${maxAxis.max}`);
+      assert.ok(maxAxis.min <= 80, `MAX clipped early lows: min=${maxAxis.min}`);
+
+      const week = [];
+      for (let i = 0; i < 7; i++) {
+        const px = 100 + (i < 3 ? -i * 1.2 : (i - 3) * 1.5); // multi-day swing
+        week.push({
+          time: now - (6 - i) * 86400,
+          open: px, high: px + 0.8, low: px - 0.8, close: px + 0.1, volume: 1e6,
+        });
+      }
+      const wAxis = computePriceAxisRange(week, '1W');
+      const hi = Math.max(...week.map((b) => b.high));
+      const lo = Math.min(...week.map((b) => b.low));
+      assert.ok(wAxis.max >= hi, `1W clipped high ${hi} vs axis ${wAxis.max}`);
+      assert.ok(wAxis.min <= lo, `1W clipped low ${lo} vs axis ${wAxis.min}`);
+
+      const visible = sliceBarsForAxis(maxBars, 75, 100);
+      assert.ok(visible.length >= 10);
+      assert.ok(visible[0].close > 200, 'visible slice should be the recent high band');
+      const visAxis = computePriceAxisRange(visible, 'MAX');
+      assert.ok(visAxis.max >= visible[visible.length - 1].close);
+      assert.ok(visAxis.min > 150, 'visible-window axis should not span the whole multi-year history');
     });
   }
 
@@ -1416,7 +2162,7 @@ async function main() {
   test('masterwork purchase books exact cost into vault book value', () => {
     const state = {
       portfolio: createPortfolio(2_000_000),
-      meta: { reputation: 1500 },
+      licenses: ['retail', 'series7', 'research', 'regd'],
       vaultOwned: [],
       vaultSpentTotal: 0,
     };
@@ -1428,7 +2174,7 @@ async function main() {
 
   test('canPurchaseVaultItem rejects salon-only crown ids from standard vault shop', () => {
     const crown = PRIVATE_SALON_POOL[0];
-    const gate = canPurchaseVaultItem(crown, { cash: 9e9, vaultOwned: [], reputation: 9999 });
+    const gate = canPurchaseVaultItem(crown, { cash: 9e9, vaultOwned: [], licenses: ['retail', 'series7', 'research', 'regd'] });
     assert.equal(gate.ok, false);
     assert.equal(gate.code, 'salon');
   });
@@ -1451,7 +2197,7 @@ async function main() {
     const item = PRIVATE_SALON_ITEMS.vermeerAttribution;
     const state = {
       portfolio: createPortfolio(item.cost + 50000),
-      meta: { reputation: 2000 },
+      licenses: ['retail', 'series7', 'research', 'regd'],
       vaultOwned: [],
       vaultSpentTotal: 0,
       salonSpentTotal: 0,
@@ -1484,27 +2230,28 @@ async function main() {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.goldTerminal, {
       cash: 100000,
       vaultOwned: ['goldTerminal'],
-      reputation: 999,
+      licenses: ['retail', 'series7', 'research', 'regd'],
     });
     assert.equal(gate.ok, false);
     assert.equal(gate.reason, 'Already owned');
   });
 
-  test('canPurchaseVaultItem rejects below REP requirement', () => {
+  test('canPurchaseVaultItem rejects below license requirement', () => {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.yachtBackground, {
       cash: 100000,
       vaultOwned: [],
-      reputation: 10,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
-    assert.match(gate.reason, /REP/);
+    assert.equal(gate.code, 'license');
+    assert.match(gate.reason, /license/i);
   });
 
   test('canPurchaseVaultItem rejects below cash cost', () => {
     const gate = canPurchaseVaultItem(VAULT_ITEMS.goldTerminal, {
       cash: 100,
       vaultOwned: [],
-      reputation: 10,
+      licenses: ['retail'],
     });
     assert.equal(gate.ok, false);
     assert.equal(gate.reason, 'Insufficient cash');
@@ -1515,7 +2262,7 @@ async function main() {
       portfolio: createPortfolio(25000),
       vaultOwned: [],
       vaultSpentTotal: 0,
-      meta: { reputation: 500 },
+      licenses: ['retail', 'series7', 'research', 'regd'],
     };
     const cost = VAULT_ITEMS.crashDayTape.cost;
     const before = state.portfolio.cash;
@@ -1532,10 +2279,11 @@ async function main() {
     assert.equal(getVaultBookValue({ vaultOwned: [] }), 0);
   });
 
-  test('getPlayerStanding labels Rank, Collection, Desk, and Flair without inventing a new currency', async () => {
+  test('getPlayerStanding labels License, Collection, Desk, and Flair without inventing a new currency', async () => {
     const { getPlayerStanding } = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const standing = getPlayerStanding({
-      meta: { reputation: 130, collectionFlair: 'Master Collector' },
+      meta: { collectionFlair: 'Master Collector' },
+      licenses: ['retail', 'series7'],
       vaultOwned: ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'],
       perks: [],
       seatOwned: false,
@@ -1550,15 +2298,15 @@ async function main() {
       seatItem: THE_SEAT,
       salonPool: PRIVATE_SALON_POOL,
     });
-    assert.equal(standing.rankName, 'Trusted Trader');
-    assert.equal(standing.rep, 130);
+    assert.equal(standing.licenseId, 'series7');
+    assert.match(standing.rankName, /Series 7/);
     assert.ok(standing.collectionScore >= 8);
     assert.equal(standing.deskTier, 3);
     assert.match(standing.deskLabel, /Desk Prestige III/i);
     assert.equal(standing.flair, 'Master Collector');
   });
 
-  test('Desk Prestige scales with equipped vault slots and caps daily REP', () => {
+  test('Desk Prestige scales with equipped vault slots (cosmetic display only)', () => {
     const owned = ['goldTerminal', 'yachtBackground', 'apexBadge', 'floorLegendTitle'];
     const none = getVaultDeskAura({ cosmetics: {}, vaultOwned: owned });
     assert.equal(none.tier, 0);
@@ -1567,7 +2315,6 @@ async function main() {
       vaultOwned: owned,
     });
     assert.equal(one.tier, 1);
-    assert.equal(one.repPerClose, 1);
     const full = getVaultDeskAura({
       cosmetics: {
         dashboard: 'goldTerminal',
@@ -1578,7 +2325,6 @@ async function main() {
       vaultOwned: owned,
     });
     assert.equal(full.tier, 3);
-    assert.equal(full.repPerClose, 3);
     const amp = getVaultDeskAura({
       cosmetics: {
         dashboard: 'goldTerminal',
@@ -1589,15 +2335,11 @@ async function main() {
       vaultOwned: owned,
       perks: ['auraAmp'],
     });
-    assert.equal(amp.repPerClose, 4);
-    assert.ok(amp.dailyCap > full.dailyCap);
-    const meta = { vaultAuraRepToday: 0 };
-    const first = applyVaultDeskAuraOnClose(meta, 25, full);
-    assert.equal(first.applied, 3);
-    meta.vaultAuraRepToday = 9;
-    const capped = applyVaultDeskAuraOnClose(meta, 40, full);
-    assert.equal(capped.applied, 0);
-    assert.equal(capped.capped, true);
+    assert.match(amp.label, /Prestige/i);
+    assert.ok(amp.dailyCap > full.dailyCap, 'auraAmp raises display flair only');
+    // No REP application path exists anymore — aura summaries never promise REP.
+    assert.ok(!/REP/.test(full.summary));
+    assert.ok(!/REP/.test(amp.summary));
   });
 
   test('vault book value does not change buying-power base cash math', () => {
@@ -1631,18 +2373,18 @@ async function main() {
   });
 
   test('getCollectionPrestigeScore rewards rarity and seat ownership', () => {
-    const commonOwned = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'common');
-    const legendaryOwned = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
-    assert.ok(commonOwned && legendaryOwned, 'expected common + legendary black market items');
+    const relicA = BLACKMARKET_ITEM_POOL.find((item) => item.id === 'mageOfTheDesk');
+    const relicB = BLACKMARKET_ITEM_POOL.find((item) => item.id === 'liquidityCrown');
+    assert.ok(relicA && relicB, 'expected two floor relics');
     const low = getCollectionPrestigeScore({ vaultOwned: ['goldTerminal'] }, {
       blackMarketPool: BLACKMARKET_ITEM_POOL,
       seatItem: THE_SEAT,
     });
     const high = getCollectionPrestigeScore({
       vaultOwned: ['goldTerminal', 'crashDayTape'],
-      blackMarketOwned: [commonOwned.id, legendaryOwned.id],
+      blackMarketOwned: [relicA.id, relicB.id],
       seatOwned: true,
-      blackMarketEquippedRelics: [legendaryOwned.id],
+      blackMarketEquippedRelics: [relicA.id],
     }, {
       blackMarketPool: BLACKMARKET_ITEM_POOL,
       seatItem: THE_SEAT,
@@ -1688,7 +2430,8 @@ async function main() {
       seatItem: THE_SEAT,
     });
     assert.equal(claim.ok, true);
-    assert.equal(claim.rep, 25);
+    assert.equal(claim.rep, undefined, 'milestones pay cash only now');
+    assert.ok((claim.cash || 0) > 0, 'pct25 pays cash since REP removal');
     assert.equal(state.collectionClaims.includes('pct25'), true);
     assert.equal(state.portfolio.cash, cashBefore + (claim.cash || 0));
     const again = claimCollectionMilestone(state, 'pct25', {
@@ -1726,147 +2469,69 @@ async function main() {
     assert.ok(COLLECTION_MILESTONES.length >= 7);
   });
 
-  test('getTodaysBlackMarketListing is deterministic for a given seed/day', () => {
+  test('getTodaysBlackMarketListing is retired — always empty, still deterministic', () => {
     const a = getTodaysBlackMarketListing(77, { ownedIds: [] });
     const b = getTodaysBlackMarketListing(77, { ownedIds: [] });
     assert.deepEqual(a, b);
-  });
-
-  test('legendary items appear at roughly the specified rate over simulated slots', () => {
-    let legendary = 0;
-    let totalSlots = 0;
-    for (let day = 1; day <= 2400; day++) {
+    assert.deepEqual(a.items, []);
+    assert.equal(a.day, 77);
+    assert.equal(a.expiresDay, 77 + BLACKMARKET_LISTING_TTL_DAYS - 1);
+    for (let day = 1; day <= 200; day++) {
       const listing = getTodaysBlackMarketListing(day, { ownedIds: [] });
-      totalSlots += listing.items.length;
-      legendary += listing.items.filter((item) => item.rarity === 'legendary').length;
+      assert.deepEqual(listing.items, [], `day ${day} should have no shop listings`);
     }
-    const rate = legendary / Math.max(1, totalSlots);
-    // Target is near 1/30 with wide tolerance for deterministic finite samples.
-    assert.ok(rate > 0.02 && rate < 0.05, `legendary slot rate ${rate}`);
   });
 
-  test('isBlackMarketListingExpired returns true after TTL days unpurchased', () => {
+  test('isBlackMarketListingExpired returns true on/after expiresDay', () => {
     const listing = getTodaysBlackMarketListing(20, { ownedIds: [] });
-    assert.equal(isBlackMarketListingExpired(listing, 20 + BLACKMARKET_LISTING_TTL_DAYS - 1), false);
-    assert.equal(isBlackMarketListingExpired(listing, 20 + BLACKMARKET_LISTING_TTL_DAYS), true);
+    assert.equal(listing.expiresDay, 20 + BLACKMARKET_LISTING_TTL_DAYS - 1);
+    assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay - 1), false);
+    assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay), true);
+    assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay + 1), true);
   });
 
-  test('purchased legendary item cannot reappear as purchasable for same save', () => {
-    const legend = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
-    assert.ok(legend, 'expected at least one legendary item');
-    for (let day = 1; day <= 900; day++) {
-      const listing = getTodaysBlackMarketListing(day, { ownedIds: [legend.id] });
-      assert.equal(listing.items.some((item) => item.id === legend.id), false, `legendary ${legend.id} reappeared on day ${day}`);
-    }
+  test('legacy floor relic pool keeps two mechanical relics only', () => {
+    assert.equal(BLACKMARKET_ITEM_POOL.length, 2);
+    assert.ok(BLACKMARKET_ITEM_POOL.every((item) => item.category === 'relic'));
+    assert.ok(BLACKMARKET_ITEM_POOL.every((item) => item.rarity === 'legendary'));
+    assert.ok(BLACKMARKET_ITEM_POOL.some((item) => item.id === 'mageOfTheDesk'));
+    assert.ok(BLACKMARKET_ITEM_POOL.some((item) => item.id === 'liquidityCrown'));
   });
 
-  test('getTodaysBlackMarketListing never includes an owned item regardless of rarity', () => {
-    const samples = ['common', 'rare', 'legendary'].map((rarity) => {
-      const item = BLACKMARKET_ITEM_POOL.find((row) => row.rarity === rarity);
-      assert.ok(item, `missing ${rarity} item`);
-      return item;
-    });
-    for (const item of samples) {
-      for (let day = 1; day <= 400; day++) {
-        const listing = getTodaysBlackMarketListing(day, { ownedIds: [item.id] });
-        assert.equal(
-          listing.items.some((row) => row.id === item.id),
-          false,
-          `owned ${item.rarity} ${item.id} reappeared on day ${day}`,
-        );
-      }
-    }
-  });
-
-  test('getTodaysBlackMarketListing still returns a valid listing when all-but-one common is owned', () => {
-    const commons = BLACKMARKET_ITEM_POOL.filter((item) => item.rarity === 'common');
-    assert.ok(commons.length >= 2, 'need multiple commons');
-    const keep = commons[commons.length - 1];
-    const owned = commons.filter((item) => item.id !== keep.id).map((item) => item.id);
-    let sawKeep = false;
-    for (let day = 1; day <= 300; day++) {
-      const listing = getTodaysBlackMarketListing(day, { ownedIds: owned });
-      assert.ok(listing.items.length >= 1, `day ${day} produced an empty listing`);
-      assert.ok(
-        listing.items.every((item) => !owned.includes(item.id)),
-        `day ${day} included an owned common`,
-      );
-      if (listing.items.some((item) => item.id === keep.id)) sawKeep = true;
-    }
-    assert.ok(sawKeep, 'remaining unowned common should still appear across the sample');
-  });
-
-  test('new mid-band commons appear at rates comparable to legacy commons over 1200 days', () => {
-    const NEW_IDS = ['pitPassLanyard', 'amberTapeBackdrop', 'ledgerLineTitle'];
-    const LEGACY_IDS = ['afterHoursMonogram', 'nightWatchTitle', 'tickerVaultBackdrop', 'clockworkDeskSkin'];
-    for (const id of [...NEW_IDS, ...LEGACY_IDS]) {
-      assert.ok(BLACKMARKET_ITEM_POOL.some((item) => item.id === id), `missing pool item ${id}`);
-    }
-    const counts = new Map();
-    for (let day = 1; day <= 1200; day++) {
-      const listing = getTodaysBlackMarketListing(day, { ownedIds: [] });
-      for (const item of listing.items) {
-        if (item.rarity !== 'common') continue;
-        counts.set(item.id, (counts.get(item.id) || 0) + 1);
-      }
-    }
-    const legacyAvg = LEGACY_IDS.reduce((sum, id) => sum + (counts.get(id) || 0), 0) / LEGACY_IDS.length;
-    assert.ok(legacyAvg > 0, 'legacy commons never appeared');
-    for (const id of NEW_IDS) {
-      const n = counts.get(id) || 0;
-      assert.ok(n > 0, `new common ${id} never appeared`);
-      assert.ok(
-        n > legacyAvg * 0.35 && n < legacyAvg * 2.8,
-        `new common ${id} rate ${n} vs legacy avg ${legacyAvg.toFixed(1)} is badly skewed`,
-      );
-    }
-  });
-
-  test('blackmarket legendary coachmark fires exactly once per save', () => {
+  test('blackmarket legendary coachmark is retired and never shows', () => {
     const legend = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
     const state = {
       meta: { blackMarketLegendCoachShown: false },
       portfolio: createPortfolio(1000),
       blackMarketOwned: [],
     };
-    const listing = { items: [legend] };
     let shown = 0;
-    let saves = 0;
-    /** @type {object | null} */
-    let lastOpts = null;
-    const first = maybeShowBlackMarketLegendaryCoach(state, listing, {
-      showCoachmark: (opts) => { shown++; lastOpts = opts; },
+    const result = maybeShowBlackMarketLegendaryCoach(state, { items: [legend] }, {
+      showCoachmark: () => { shown++; },
       hideCoachmark: () => {},
       switchView: () => {},
-      saveGame: () => { saves++; },
+      saveGame: () => {},
     });
-    assert.equal(first, true);
-    assert.equal(state.meta.blackMarketLegendCoachShown, true);
-    assert.equal(shown, 1);
-    assert.equal(saves, 1);
-    assert.equal(lastOpts?.target, '.nav-item[data-view="blackmarket"]');
-    assert.equal(typeof lastOpts?.onSkip, 'function');
-    assert.equal(typeof lastOpts?.onNext, 'function');
-    assert.match(String(lastOpts?.text || ''), /Legendary Black Market/i);
-    const second = maybeShowBlackMarketLegendaryCoach(state, listing, {
-      showCoachmark: (opts) => { shown++; lastOpts = opts; },
-      saveGame: () => { saves++; },
-    });
-    assert.equal(second, false);
-    assert.equal(shown, 1);
-    assert.equal(saves, 1);
+    assert.equal(result, false);
+    assert.equal(shown, 0);
+    assert.equal(state.meta.blackMarketLegendCoachShown, false);
   });
 
-  test('collection entries include black market pool and mark unowned as false', () => {
+  test('collection entries only include owned floor relics (shop stripped)', () => {
     const ownedId = BLACKMARKET_ITEM_POOL[0].id;
     const entries = getCollectionLogEntries(
       { vaultOwned: [], blackMarketOwned: [ownedId] },
       { blackMarketPool: BLACKMARKET_ITEM_POOL },
     );
-    const ownedEntry = entries.find((entry) => entry.id === ownedId);
-    const missedEntry = entries.find((entry) => entry.source === 'blackmarket' && entry.id !== ownedId);
-    assert.equal(ownedEntry?.owned, true);
-    assert.equal(missedEntry?.owned, false);
+    const bmEntries = entries.filter((entry) => entry.source === 'blackmarket');
+    assert.equal(bmEntries.length, 1);
+    assert.equal(bmEntries[0]?.id, ownedId);
+    assert.equal(bmEntries[0]?.owned, true);
+    const empty = getCollectionLogEntries(
+      { vaultOwned: [], blackMarketOwned: [] },
+      { blackMarketPool: BLACKMARKET_ITEM_POOL },
+    );
+    assert.equal(empty.filter((e) => e.source === 'blackmarket').length, 0);
   });
 
   test('relic slot limit starts at one and seat unlocks second slot', () => {
@@ -1879,22 +2544,35 @@ async function main() {
     const {
       buildFirmRelicRowHtml, configureDashboardUi,
       getSoftOfficeStage, getNextNetWorthMilestone,
+      getDeskTapeSymbols, isVirginDesk,
     } = dashMod;
     test('dashboard Firm Snapshot shows None equipped with correct slot count when empty', () => {
       const one = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [], seatOwned: false });
       assert.match(one, /None equipped \(1 slot\)/);
-      assert.match(one, /data-goto="blackmarket"/);
+      assert.match(one, /data-goto="collection"/);
       const two = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [], seatOwned: true });
       assert.match(two, /None equipped \(2 slots\)/);
-      assert.match(two, /data-goto="blackmarket"/);
+      assert.match(two, /data-goto="collection"/);
     });
-    test('getSoftOfficeStage advances with Net Worth and REP (eligibility gates)', () => {
-      const early = getSoftOfficeStage(500, 0);
+    test('Desk tape symbols prefer recent trades over movers; virgin desk is any save with no fills', () => {
+      assert.equal(isVirginDesk({ portfolio: { history: [] } }), true);
+      assert.equal(isVirginDesk({ portfolio: { history: [{ sym: 'AAPL', action: 'BUY', shares: 1, price: 100 }] } }), false);
+      const traded = getDeskTapeSymbols({
+        portfolio: { history: [{ sym: 'NVDA', action: 'BUY', shares: 2, price: 200 }] },
+        listings: [],
+        watchlist: [],
+      });
+      assert.deepEqual(traded, ['NVDA']);
+    });
+    test('getSoftOfficeStage advances with Net Worth and licenses (eligibility gates)', () => {
+      const early = getSoftOfficeStage(500, ['retail']);
       assert.equal(early.current.id, 'bedroom');
       assert.ok(early.next);
-      const mid = getSoftOfficeStage(120000, 250);
+      const mid = getSoftOfficeStage(120000, ['retail', 'series7', 'research']);
       assert.equal(mid.current.id, 'professional');
-      const peak = getSoftOfficeStage(60_000_000, 2000);
+      const licenseCapped = getSoftOfficeStage(60_000_000, ['retail', 'series7']);
+      assert.notEqual(licenseCapped.current.id, 'empire', 'top stages need Reg D');
+      const peak = getSoftOfficeStage(60_000_000, ['retail', 'series7', 'research', 'regd']);
       assert.equal(peak.current.id, 'empire');
       assert.equal(peak.next, null);
     });
@@ -1922,14 +2600,15 @@ async function main() {
       assert.match(html, /Liquidity Crown/);
       assert.doesNotMatch(html, /None equipped/);
       assert.doesNotMatch(html, /data-goto="blackmarket"/);
+      assert.doesNotMatch(html, /data-goto="collection"/);
       assert.match(html, /15% less slippage|margin-call grace/i);
     });
-    test('dashboard relic empty-row data-goto targets blackmarket via configureDashboardUi', () => {
+    test('dashboard relic empty-row data-goto targets collection via configureDashboardUi', () => {
       let navigated = '';
       configureDashboardUi({ switchView: (id) => { navigated = id; } });
       const html = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [] });
       const goto = /data-goto="([^"]+)"/.exec(html)?.[1];
-      assert.equal(goto, 'blackmarket');
+      assert.equal(goto, 'collection');
       // Same binding renderDashboard applies: btn.onclick = () => switchView(btn.dataset.goto)
       const fakeBtn = { dataset: { goto }, onclick: null };
       fakeBtn.onclick = () => {
@@ -1941,7 +2620,7 @@ async function main() {
       navigated = '';
       const handler = () => { navigated = fakeBtn.dataset.goto; };
       handler();
-      assert.equal(navigated, 'blackmarket');
+      assert.equal(navigated, 'collection');
     });
   }
 
@@ -1962,26 +2641,26 @@ async function main() {
       };
       assert.equal(getEffectiveOfficeTier(state).id, 'bedroom');
       assert.equal(getNextOfficeUpgrade(state).id, 'studio');
-      const blocked = canPurchaseOfficeUpgrade(state, { netWorth: 500, reputation: 0 });
+      const blocked = canPurchaseOfficeUpgrade(state, { netWorth: 500, licenses: ['retail'] });
       assert.equal(blocked.ok, false);
-      assert.ok(blocked.code === 'net' || blocked.code === 'rep');
+      assert.ok(blocked.code === 'net' || blocked.code === 'license');
       const affordFail = canPurchaseOfficeUpgrade(
         { ...state, portfolio: { cash: 100 } },
-        { netWorth: 3000, reputation: 25 },
+        { netWorth: 3000, licenses: ['retail', 'series7'] },
       );
       assert.equal(affordFail.ok, false);
       assert.equal(affordFail.code, 'cash');
-      const ok = purchaseOfficeUpgrade(state, { netWorth: 3000, reputation: 25 });
+      const ok = purchaseOfficeUpgrade(state, { netWorth: 3000, licenses: ['retail', 'series7'] });
       assert.equal(ok.ok, true);
       assert.equal(state.officeTierId, 'studio');
       assert.equal(state.officeSpentTotal, 2000);
       assert.equal(state.portfolio.cash, 3000);
-      const cashBlocked = purchaseOfficeUpgrade(state, { netWorth: 200000, reputation: 300 });
+      const cashBlocked = purchaseOfficeUpgrade(state, { netWorth: 200000, licenses: ['retail', 'series7', 'research'] });
       assert.equal(cashBlocked.ok, false);
       assert.equal(cashBlocked.code, 'cash');
       const ordered = purchaseOfficeUpgrade(
         { ...state, portfolio: { cash: 100000 } },
-        { netWorth: 5000, reputation: 300 },
+        { netWorth: 5000, licenses: ['retail', 'series7', 'research'] },
       );
       assert.equal(ordered.ok, false);
       assert.equal(ordered.code, 'net');
@@ -2098,32 +2777,40 @@ async function main() {
       ESTATE_ASSETS, purchaseEstate, canPurchaseEstate, sanitizeEstateProgress,
       drawEstateCredit, cashOutEstateEquity, syncEstateDerived, getEstateGraceBonus,
       getEstateLiquidationScale, getEstatePrestigeAura,
+      ESTATE_CLOSING_COST_PCT, ESTATE_CREDIT_MIN_BUSINESS,
     } = estateMod;
 
     test('estate purchase gates, credit draw, sanitize forge strip, and resilience helpers', () => {
       assert.ok(ESTATE_ASSETS.length >= 26);
       assert.ok(ESTATE_ASSETS.filter((a) => a.category === 'cars').length >= 10);
       assert.ok(ESTATE_ASSETS.filter((a) => a.category === 'penthouses').length >= 4);
+      assert.equal(ESTATE_CLOSING_COST_PCT, 0.02);
+      assert.equal(ESTATE_CREDIT_MIN_BUSINESS, 580);
       const state = {
         portfolio: { cash: 200_000 },
+        finance: { businessCredit: 700, personalCredit: 680 },
         estateOwned: [],
         estateSpentTotal: 0,
-        meta: { reputation: 100 },
+        licenses: ['retail', 'series7'],
+        meta: {},
       };
       const locked = canPurchaseEstate(state, 'coastalResidence', { netWorth: 50_000 });
       assert.equal(locked.ok, false);
       assert.equal(locked.code, 'net');
       const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
       assert.equal(buy.ok, true);
+      assert.equal(buy.closingFee, 2500);
       assert.deepEqual(state.estateOwned, ['coastalResidence']);
       assert.equal(state.estateSpentTotal, 125_000);
+      const afterBuyCash = 200_000 - 125_000 - 2500;
+      assert.equal(state.portfolio.cash, afterBuyCash);
       syncEstateDerived(state);
       assert.ok(state.estateCreditMax > 0);
       assert.ok(state.resilienceRating >= 8);
       const draw = drawEstateCredit(state, 10_000);
       assert.equal(draw.ok, true);
       assert.equal(state.estateCreditUsed, 10_000);
-      assert.equal(state.portfolio.cash, 200_000 - 125_000 + 10_000);
+      assert.equal(state.portfolio.cash, afterBuyCash + 10_000);
       assert.ok(getEstateGraceBonus(state) >= 1);
       assert.ok(getEstateLiquidationScale(state) < 1);
       const forged = sanitizeEstateProgress({
@@ -2142,7 +2829,8 @@ async function main() {
         estateSpentTotal: 125_000 + 2_500_000 + 12_000_000,
       };
       const prestige = getEstatePrestigeAura(yachtState);
-      assert.ok(prestige.repPerClose >= 1);
+      assert.ok(prestige.items.length >= 1, 'yacht counts as flagship prestige holding');
+      assert.ok(!/REP/.test(prestige.summary), 'estate prestige is cosmetic only');
       const earlyCash = cashOutEstateEquity({
         ...state,
         estateEquityExtracted: 0,
@@ -2155,17 +2843,140 @@ async function main() {
       // Category prereq: cars unlock after any residence
       const carGate = canPurchaseEstate({
         portfolio: { cash: 500_000 },
+        finance: { businessCredit: 700 },
         estateOwned: ['coastalResidence'],
-        meta: { reputation: 250 },
+        licenses: ['retail', 'series7', 'research'],
       }, 'performanceGt', { netWorth: 500_000 });
       assert.equal(carGate.ok, true);
       const carLocked = canPurchaseEstate({
         portfolio: { cash: 500_000 },
+        finance: { businessCredit: 700 },
         estateOwned: [],
-        meta: { reputation: 250 },
+        licenses: ['retail', 'series7', 'research'],
       }, 'performanceGt', { netWorth: 500_000 });
       assert.equal(carLocked.ok, false);
       assert.equal(carLocked.code, 'prereq');
+      // License gate: high-tier estates stay locked on a retail-only account
+      const licLocked = canPurchaseEstate({
+        portfolio: { cash: 500_000 },
+        finance: { businessCredit: 700 },
+        estateOwned: [],
+        licenses: ['retail'],
+      }, 'coastalResidence', { netWorth: 500_000 });
+      assert.equal(licLocked.ok, false);
+      assert.equal(licLocked.code, 'license');
+    });
+
+    test('property credit draw and cash buy both require Fair+ business credit', () => {
+      const state = {
+        portfolio: { cash: 200_000 },
+        finance: { businessCredit: 300, personalCredit: 300 },
+        estateOwned: [],
+        estateSpentTotal: 0,
+        licenses: ['retail', 'series7'],
+        meta: {},
+      };
+      const buyDenied = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
+      assert.equal(buyDenied.ok, false);
+      assert.equal(buyDenied.code, 'credit');
+      state.finance.businessCredit = 580;
+      const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
+      assert.equal(buy.ok, true);
+      state.finance.businessCredit = 300;
+      const denied = drawEstateCredit(state, 5_000);
+      assert.equal(denied.ok, false);
+      assert.equal(denied.code, 'credit');
+      assert.match(denied.msg, /580\+ business credit/);
+      state.finance.businessCredit = 580;
+      const ok = drawEstateCredit(state, 5_000);
+      assert.equal(ok.ok, true);
+    });
+
+    test('unpaid property credit interest forecloses cheapest estate after miss streak', () => {
+      const {
+        processDailyEstates, ESTATE_FORECLOSE_MISS_DAYS, ESTATE_FORECLOSE_RECOVERY,
+      } = estateMod;
+      const state = {
+        portfolio: { cash: 200_000 },
+        finance: { businessCredit: 700, personalCredit: 680 },
+        estateOwned: [],
+        estateSpentTotal: 0,
+        estateCreditMissDays: 0,
+        licenses: ['retail', 'series7'],
+        meta: {},
+      };
+      assert.equal(purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 }).ok, true);
+      assert.equal(drawEstateCredit(state, 20_000).ok, true);
+      let foreclosed = null;
+      for (let d = 0; d < ESTATE_FORECLOSE_MISS_DAYS + 2; d++) {
+        // Estate income can refill cash — force a dry HELOC miss each day.
+        state.portfolio.cash = 0;
+        const day = processDailyEstates(state);
+        const hit = (day.events || []).find((e) => e.type === 'estate_foreclosure');
+        if (hit) {
+          foreclosed = hit;
+          break;
+        }
+      }
+      assert.ok(foreclosed, 'expected foreclosure event');
+      assert.equal(state.estateOwned.includes('coastalResidence'), false);
+      assert.equal(state.estateCreditUsed, 0);
+      // Recovery applied to the HELOC is capped at drawn credit; scrap goes to cash.
+      assert.ok(foreclosed.recovered >= 20_000 - 50);
+      assert.ok(state.portfolio.cash >= Math.floor(125_000 * ESTATE_FORECLOSE_RECOVERY) - 20_050);
+      assert.ok(state.finance.businessCredit < 700);
+      assert.equal(state.estateCreditMissDays, 0);
+    });
+
+    test('checking/savings ATM: BP excludes deposits; NW includes; savings interest + tax accrual', async () => {
+      const finMod = await import(pathToFileURL(path.join(__dirname, '../js/finance.js')).href);
+      const portMod = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+      const taxMod = await import(pathToFileURL(path.join(__dirname, '../js/tax.js')).href);
+      const {
+        createFinanceState, depositToBank, withdrawFromBank, transferBankInternal,
+        processDailyBankAccounts, getTotalBankDeposits, getSavingsApy, SAVINGS_APY_CAP,
+      } = finMod;
+      const { getBuyingPower, getFirmNetWorth, createPortfolio } = portMod;
+      const { accrueInterestIncome, computeTaxBill } = taxMod;
+
+      const portfolio = createPortfolio(10_000);
+      const finance = createFinanceState();
+      const bpBefore = getBuyingPower(portfolio, [], 700);
+      assert.equal(bpBefore, 10_000);
+
+      const dep = depositToBank(finance, portfolio, 'chase', 'savings', 2000, 1);
+      assert.equal(dep.ok, true);
+      assert.equal(portfolio.cash, 8000);
+      assert.equal(getTotalBankDeposits(finance), 2000);
+      assert.equal(getBuyingPower(portfolio, [], 700), 8000);
+      const nw = getFirmNetWorth(portfolio, {
+        debt: 0,
+        bankDeposits: getTotalBankDeposits(finance),
+      });
+      assert.equal(nw, 10_000);
+
+      const move = transferBankInternal(finance, 'chase', 'toChecking', 500);
+      assert.equal(move.ok, true);
+      const w = withdrawFromBank(finance, portfolio, 'chase', 'checking', 500, 1);
+      assert.equal(w.ok, true);
+      assert.equal(portfolio.cash, 8500);
+
+      // Force larger savings + House tier for APY bump still under cap
+      finance.bankAccounts.chase.savings = 5000;
+      finance.bankRelationships.local = { cycles: 3, preferredSinceDay: 1 };
+      finance.houseBankId = 'local';
+      depositToBank(finance, portfolio, 'local', 'savings', 1000, 2);
+      const apy = getSavingsApy(finance, 'local');
+      assert.ok(apy > 0 && apy <= SAVINGS_APY_CAP);
+
+      const day = processDailyBankAccounts(finance, portfolio, 10);
+      assert.ok(day.interestTotal >= 0);
+      if (day.interestTotal > 0) {
+        accrueInterestIncome(portfolio, day.interestTotal);
+        const bill = computeTaxBill(portfolio.taxAccrual, 0);
+        assert.ok(bill.interestIncome >= day.interestTotal - 0.01);
+        assert.ok(bill.periodTax > 0);
+      }
     });
 
     test('firm net worth includes estate equity; cash-out and credit keep NW consistent', async () => {
@@ -2181,14 +2992,18 @@ async function main() {
         estateSpentTotal: 0,
         estateEquityExtracted: 0,
         estateCreditUsed: 0,
-        meta: { reputation: 100 },
+        licenses: ['retail', 'series7'],
+        meta: {},
       };
+      state.finance.businessCredit = 700;
+      state.finance.personalCredit = 700;
       const nwParts = () => {
         syncEstateDerived(state);
         return getFirmNetWorth(state.portfolio, {
           debt: getFirmDebt(state.finance, state.estateCreditUsed),
           vaultBook: 0,
           estateEquity: state.estateEquity,
+          bankDeposits: finMod.getTotalBankDeposits(state.finance),
         });
       };
       const before = nwParts();
@@ -2197,9 +3012,11 @@ async function main() {
       const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
       assert.equal(buy.ok, true);
       const afterBuy = nwParts();
-      assert.ok(Math.abs(afterBuy - before) < 0.01, 'buy estate: cash→equity keeps firm NW flat');
+      // Closing fee is a pure cash sink (not estate equity) — firm NW drops by the fee.
+      assert.ok(Math.abs(afterBuy - (before - (buy.closingFee || 0))) < 0.01,
+        'buy estate: equity books flat; closing fee reduces firm NW');
       assert.equal(state.estateEquity, 125_000);
-      assert.equal(state.portfolio.cash, 75_000);
+      assert.equal(state.portfolio.cash, 200_000 - 125_000 - (buy.closingFee || 0));
       assert.ok(afterBuy > getEquity(state.portfolio), 'Portfolio Total Equity must exceed cash+positions when estates owned');
 
       const draw = drawEstateCredit(state, 10_000);
@@ -2241,6 +3058,17 @@ async function main() {
       assert.deepEqual(cats.map((c) => c.name), [
         'Residences', 'Penthouses', 'Yachts', 'Garage', 'Islands',
       ]);
+    });
+
+    test('estates UI structure key ignores live cash/NW (no tick thrash)', () => {
+      const src = require('fs').readFileSync(path.join(__dirname, '../js/ui/estates.js'), 'utf8');
+      const m = src.match(/function estatesStructureKey\([\s\S]*?\n\}/);
+      assert.ok(m, 'estatesStructureKey must exist');
+      const body = m[0];
+      assert.ok(!/cashBucket/.test(body), 'cashBucket in structure key remounts bento every tick');
+      assert.ok(!/nwBucket/.test(body), 'nwBucket in structure key remounts bento on quote churn');
+      assert.ok(!/portfolio\?\.cash/.test(body), 'live cash must not be in estatesStructureKey');
+      assert.ok(/patchEstatesLive/.test(src), 'patchEstatesLive required for Ready/Locked without remount');
     });
   }
 
@@ -2293,10 +3121,13 @@ async function main() {
     const { getActiveFlair, createMetaState } = metaMod;
 
     test('collection set progress, claim-once flair, and forge strip', () => {
-      assert.ok(COLLECTION_SETS.length >= 8);
+      assert.ok(COLLECTION_SETS.length >= 7);
       assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceVault'));
-      assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceBlackMarket'));
+      assert.ok(COLLECTION_SETS.some((s) => s.id === 'floorRelics'));
+      assert.equal(COLLECTION_SETS.some((s) => s.id === 'sourceBlackMarket'), false);
       assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceSalon'));
+      const floorRelics = COLLECTION_SETS.find((s) => s.id === 'floorRelics');
+      assert.deepEqual(floorRelics.memberIds.slice().sort(), ['liquidityCrown', 'mageOfTheDesk'].sort());
       // Source set ids must not collide with cash/REP collection milestones.
       assert.equal(COLLECTION_SETS.some((s) => s.id === 'vaultSet'), false);
       const desk = COLLECTION_SETS.find((s) => s.id === 'deskInstruments');
@@ -2402,7 +3233,7 @@ async function main() {
     const gmMod = await import(pathToFileURL(path.join(__dirname, '../js/gm-mode.js')).href);
     const metaGm = await import(pathToFileURL(path.join(__dirname, '../js/meta.js')).href);
     const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
-    const { applyFullGmLoadout, applyGmAction, verifyAccessCode, GM_CASH, GM_REP } = gmMod;
+    const { applyFullGmLoadout, applyGmAction, verifyAccessCode, GM_CASH } = gmMod;
     const { createMetaState: createGmMeta } = metaGm;
     test('desk support loadout survives sanitize; access code is not plaintext', async () => {
       assert.equal(await verifyAccessCode('000000'), false);
@@ -2431,7 +3262,7 @@ async function main() {
       };
       applyFullGmLoadout(state);
       assert.equal(state.portfolio.cash, GM_CASH);
-      assert.equal(state.meta.reputation, GM_REP);
+      assert.deepEqual(state.licenses, ['retail', 'series7', 'research', 'regd'], 'GM grants all licenses');
       assert.ok(state.perks.length >= 5);
       assert.ok(state.vaultOwned.length >= Object.keys(VAULT_ITEMS).length);
       assert.equal(state.seatOwned, true);
@@ -2439,7 +3270,7 @@ async function main() {
       const cleaned = sanitizeRunData(state);
       assert.ok(cleaned);
       assert.equal(cleaned.portfolio.cash, GM_CASH);
-      assert.equal(cleaned.meta.reputation, GM_REP);
+      assert.deepEqual(cleaned.licenses, ['retail', 'series7', 'research', 'regd']);
       assert.equal(cleaned.vaultOwned.length, state.vaultOwned.length);
       assert.equal(cleaned.blackMarketOwned.length, state.blackMarketOwned.length);
       assert.equal(cleaned.seatOwned, true);
@@ -2574,13 +3405,13 @@ async function main() {
     assert.equal(withGrace, 26);
   });
 
-  test('isSeatListingActive never true below repRequired regardless of roll', () => {
+  test('isSeatListingActive never true without the Reg D license regardless of roll', () => {
     for (let day = 1; day <= 1500; day++) {
       const active = isSeatListingActive(day, {
-        reputation: THE_SEAT.repRequired - 1,
+        licenses: ['retail', 'series7', 'research'],
         seatOwned: false,
       });
-      assert.equal(active, false, `seat listing should never be active below rep requirement (day ${day})`);
+      assert.equal(active, false, `seat listing should never be active without Reg D (day ${day})`);
     }
   });
 
@@ -2588,7 +3419,7 @@ async function main() {
     let activeDays = 0;
     const totalDays = 6000;
     for (let day = 1; day <= totalDays; day++) {
-      if (isSeatListingActive(day, { reputation: THE_SEAT.repRequired, seatOwned: false })) activeDays++;
+      if (isSeatListingActive(day, { licenses: ['retail', 'series7', 'research', 'regd'], seatOwned: false })) activeDays++;
     }
     const rate = activeDays / totalDays;
     assert.ok(rate > SEAT_LISTING_RATE * 0.45 && rate < SEAT_LISTING_RATE * 1.9, `seat rate ${rate}`);
@@ -2610,6 +3441,28 @@ async function main() {
     assert.equal(missingSeat?.owned, false);
   });
 
+  // --- Hot listings soft-avoid tape / desk symbols ---
+  {
+    const listingsUiMod = await import(pathToFileURL(path.join(__dirname, '../js/ui/listings.js')).href);
+    const { buildHotListingPool, hotListingAvoidSymbols, listingDealEdge } = listingsUiMod;
+    test('Hot listings soft-rank away from top-tape and desk-tape symbols', () => {
+      const listings = [
+        { sym: 'META', price: 90, trueValue: 100, isDeal: true }, // on CONFIG tape
+        { sym: 'EL', price: 80, trueValue: 100, isDeal: true },
+        { sym: 'DDOG', price: 85, trueValue: 100, isDeal: true },
+      ];
+      const avoid = hotListingAvoidSymbols({
+        portfolio: { history: [] },
+        listings: [],
+        watchlist: [],
+      });
+      assert.ok(avoid.includes('META'), 'top tape symbols should be in avoid set');
+      const pool = buildHotListingPool(listings, 3, avoid);
+      assert.equal(pool[0].sym, 'EL', `best non-tape deal should lead, got ${pool.map((l) => l.sym)}`);
+      assert.ok(listingDealEdge(listings[0]) > 0);
+    });
+  }
+
   // --- Interactive onboarding / perk callouts ---
   const onboardMod = await import(pathToFileURL(path.join(__dirname, '../js/onboarding-walkthrough.js')).href);
   const {
@@ -2622,6 +3475,7 @@ async function main() {
     shouldShowMarginCallCoach, markMarginCallCoachShown, maybeShowMarginCallCoach,
     shouldShowCircuitHaltCoach, markCircuitHaltCoachShown, maybeShowCircuitHaltCoach,
     shouldShowSimStatusCoach, markSimStatusCoachShown,
+    MARGIN_CALL_COACH_TEXT, CIRCUIT_HALT_COACH_TEXT, SIM_STATUS_COACH_TEXT,
   } = onboardMod;
   const notifyMod = await import(pathToFileURL(path.join(__dirname, '../js/notify.js')).href);
   const {
@@ -2643,27 +3497,42 @@ async function main() {
   const beforeGlossary = JSON.stringify(GLOSSARY);
 
   test('HELP_SECTIONS and GLOSSARY stay intact (reference layer unchanged)', () => {
-    assert.equal(HELP_SECTIONS.length, 13);
+    assert.equal(HELP_SECTIONS.length, 14);
     assert.ok(HELP_SECTIONS.some((s) => s.id === 'start'));
     assert.ok(HELP_SECTIONS.some((s) => s.id === 'risk-options'));
+    assert.ok(HELP_SECTIONS.some((s) => s.id === 'compressed-realism'));
     assert.ok(GLOSSARY.length > 20);
     assert.equal(JSON.stringify(HELP_SECTIONS), beforeHelpSections);
     assert.equal(JSON.stringify(GLOSSARY), beforeGlossary);
     assert.ok(GLOSSARY.some((g) => /halt/i.test(g.term)));
     assert.ok(GLOSSARY.some((g) => /margin call/i.test(g.term)));
+    assert.ok(GLOSSARY.some((g) => /compressed realism/i.test(g.term)));
+  });
+
+  test('coachmark texts keep all concatenated sentences (no dropped ASI +)', () => {
+    assert.ok(MARGIN_CALL_COACH_TEXT.includes('equity cushion fell below'));
+    assert.ok(MARGIN_CALL_COACH_TEXT.includes('liquidat'));
+    assert.ok(MARGIN_CALL_COACH_TEXT.includes('Real brokers do the same'));
+    assert.ok(CIRCUIT_HALT_COACH_TEXT.includes('Trading halt'));
+    assert.ok(CIRCUIT_HALT_COACH_TEXT.includes('Exchanges halt'));
+    assert.ok(CIRCUIT_HALT_COACH_TEXT.includes('halt lifts'));
+    assert.ok(SIM_STATUS_COACH_TEXT.includes('Online means'));
+    assert.ok(SIM_STATUS_COACH_TEXT.includes('Simulated tape'));
+    assert.ok(SIM_STATUS_COACH_TEXT.includes('Offline uses cached'));
   });
 
   {
     const glossMod = await import(pathToFileURL(path.join(__dirname, '../js/glossary-tooltips.js')).href);
     const {
       GLOSS_TIPS, listGlossTipIds, resolveGlossTip, buildGlossTipHtml, getGlossHoverMs,
-      resyncGlossaryHover,
+      resyncGlossaryHover, hideGlossTip,
     } = glossMod;
-    test('glossary tip dwell is 0.5s and survives re-render sync', () => {
+    test('glossary tip dwell is 0.5s first-open; retarget swaps while tip is open', () => {
       assert.equal(getGlossHoverMs(), 500);
       assert.equal(typeof resyncGlossaryHover, 'function');
+      assert.equal(typeof hideGlossTip, 'function');
     });
-    test('glossary tips cover desk markers with equity-style sheets', () => {
+    test('glossary tips cover desk markers with achievement-style cursor sheets', () => {
       const ids = listGlossTipIds();
       assert.ok(ids.length >= 15, 'enough desk glossary tips');
       const required = [
@@ -2677,8 +3546,8 @@ async function main() {
         assert.ok(tip?.title, `${id} needs title`);
         assert.ok(tip?.blurb?.length > 20, `${id} needs blurb`);
         const html = buildGlossTipHtml(tip);
-        assert.match(html, /stat-popover-title/);
-        assert.match(html, /stat-popover-blurb/);
+        assert.match(html, /ach-cursor-tip-name/);
+        assert.match(html, /ach-cursor-tip-desc/);
         assert.ok(html.includes(tip.title.replace(/&/g, '&amp;')) || html.includes(tip.title), `${id} title in html`);
       }
     });
@@ -2856,11 +3725,11 @@ async function main() {
     const base = {
       cash: 2000,
       perks: ['scanner'],
-      reputation: 50,
+      licenses: ['retail', 'series7'],
       perkCalloutsShown: {},
     };
     assert.equal(shouldShowPerkCallout('margin', base), true);
-    assert.equal(shouldShowPerkCallout('options', base), false); // needs margin prereq + more REP/cash
+    assert.equal(shouldShowPerkCallout('options', base), false); // needs margin prereq + more cash
 
     const meta = { perkCalloutsShown: {} };
     markPerkCalloutShown(meta, 'margin');
@@ -2872,10 +3741,10 @@ async function main() {
 
   test('perk callout never shows for owned perk or already-shown', () => {
     assert.equal(shouldShowPerkCallout('margin', {
-      cash: 5000, perks: ['scanner', 'margin'], reputation: 100, perkCalloutsShown: {},
+      cash: 5000, perks: ['scanner', 'margin'], licenses: ['retail', 'series7'], perkCalloutsShown: {},
     }), false);
     assert.equal(shouldShowPerkCallout('insider', {
-      cash: 20000, perks: ['scanner'], reputation: 250, perkCalloutsShown: { insider: true },
+      cash: 20000, perks: ['scanner'], licenses: ['retail', 'series7', 'research'], perkCalloutsShown: { insider: true },
     }), false);
   });
 
@@ -2883,7 +3752,8 @@ async function main() {
     const pending = listPendingPerkCallouts({
       portfolio: { cash: 2000 },
       perks: ['scanner'],
-      meta: { reputation: 50, perkCalloutsShown: {} },
+      licenses: ['retail', 'series7'],
+      meta: { perkCalloutsShown: {} },
     });
     assert.ok(pending.includes('margin'));
     assert.ok(pending.every((id) => CALLOUT_PERK_IDS.includes(id)));
@@ -2986,6 +3856,38 @@ async function main() {
     assert.equal(shouldShowSimStatusCoach(meta), false);
   });
 
+  test('graduation coach copy explains trusted-desk graduation', () => {
+    assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('past the tutorial desk'));
+    assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('judgment and firm identity'));
+    assert.ok(onboardMod.GRADUATION_COACH_TEXT.includes('No more hand-holding'));
+  });
+
+  test('graduation coach fires once when Series 7 is earned', () => {
+    const meta = { graduationCoachShown: false };
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail']), false);
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail', 'series7']), true);
+    onboardMod.markGraduationCoachShown(meta);
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail', 'series7']), false);
+  });
+
+  test('graduation coach still eligible when licenses jump past Series 7', () => {
+    const meta = { graduationCoachShown: false };
+    assert.equal(onboardMod.shouldShowGraduationCoach(meta, ['retail', 'series7', 'research', 'regd']), true);
+  });
+
+  test('graduation coach quiet mode does not mark shown', () => {
+    const meta = { graduationCoachShown: false };
+    const saves = [];
+    setWalkthroughActive(true);
+    assert.equal(isCoachQuiet(), true);
+    assert.equal(onboardMod.maybeShowGraduationCoach({ meta, licenses: ['retail', 'series7'] }, {
+      saveGame: (o) => saves.push(o),
+    }), false);
+    assert.equal(meta.graduationCoachShown, false);
+    assert.equal(saves.length, 0);
+    endCoachQuietAndFlush();
+  });
+
   test('completeWalkthroughReset uses archive:false and remounts onboarded flag', () => {
     const baselineKey = 'stockway_quote_baselines_v3';
     const store = { stockway_onboarded_v1: '1', stockway_leaderboard_v1: '[]' };
@@ -3011,6 +3913,70 @@ async function main() {
     assert.equal(store.stockway_leaderboard_v1, '[]', 'Best Runs untouched');
     assert.equal(store[baselineKey], '{"AAPL":{"price":123.45}}', 'quote baselines preserved');
   });
+
+  {
+    const wipeMod = await import(pathToFileURL(path.join(__dirname, '../js/save-wipe.js')).href);
+    const {
+      DESK_WIPE_FLAG_KEY,
+      DESK_WIPE_SESSION_KEY,
+      markDeskWipe,
+      isDeskWipePending,
+      shouldBlockSaveAfterForeignWipe,
+      consumeDeskWipeOnBoot,
+      clearDeskWipeFlags,
+      wipeRunSaveKeys,
+    } = wipeMod;
+
+    function memStorage(seed = {}) {
+      const d = { ...seed };
+      return {
+        _d: d,
+        getItem(k) { return Object.prototype.hasOwnProperty.call(d, k) ? d[k] : null; },
+        setItem(k, v) { d[k] = String(v); },
+        removeItem(k) { delete d[k]; },
+      };
+    }
+
+    test('desk wipe flag blocks foreign-tab saves and consumes slot revival on boot', () => {
+      const storage = memStorage({
+        stockway_save_v1: '{"v":2,"portfolio":{"cash":999999}}',
+        stockway_save_v1_slot: JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]),
+        stockway_save_v1__tmp: '{"v":2}',
+        stockway_alert_history_v1: '[]',
+      });
+      const session = memStorage();
+      const otherSession = memStorage();
+
+      markDeskWipe(storage, session);
+      assert.equal(isDeskWipePending(storage, session), true);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), true, 'other tab must not rewrite wiped desk');
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, session), false, 'wiping tab may write fresh Day 1');
+
+      wipeRunSaveKeys({
+        storage,
+        also: ['stockway_alert_history_v1'],
+      });
+      // Simulate late slot rewrite (race / other tab before it notices wipe)
+      storage.setItem('stockway_save_v1_slot', JSON.stringify([{ day: 40, data: { v: 2, portfolio: { cash: 999999 } } }]));
+      storage.setItem('stockway_save_v1', '{"v":2,"portfolio":{"cash":999999}}');
+
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), true, 'boot must honor wipe');
+      assert.equal(storage.getItem('stockway_save_v1'), null, 'primary cleared on boot');
+      assert.equal(storage.getItem('stockway_save_v1_slot'), null, 'slot cleared — no revival');
+      assert.equal(storage.getItem('stockway_save_v1__tmp'), null);
+      assert.equal(isDeskWipePending(storage, session), true, 'flag stays until fresh save');
+
+      // Fresh Day-1 write then clear sentinel
+      storage.setItem('stockway_save_v1', JSON.stringify({ v: 2, portfolio: { cash: 500 } }));
+      clearDeskWipeFlags(storage, session);
+      assert.equal(isDeskWipePending(storage, session), false);
+      assert.equal(shouldBlockSaveAfterForeignWipe(storage, otherSession), false);
+      assert.equal(consumeDeskWipeOnBoot({ storage, session }), false);
+      assert.ok(storage.getItem('stockway_save_v1'), 'fresh save kept after sentinel clear');
+      assert.equal(storage.getItem(DESK_WIPE_FLAG_KEY), null);
+      assert.equal(session.getItem(DESK_WIPE_SESSION_KEY), null);
+    });
+  }
 
   test('needsOnboarding / markOnboarded still gate first boot only', () => {
     const key = 'stockway_onboarded_v1';
@@ -3106,6 +4072,122 @@ async function main() {
     assert.equal(p.cash, 500);
   });
 
+  test('buyLong stores notionalPctAtEntry once; adds leave it unchanged', () => {
+    const p = realCreatePortfolio(1000);
+    const r = realBuyLong(p, 'AAPL', 2, 100); // $200 / $1000 = 0.2
+    assert.equal(r.ok, true);
+    assert.ok(Number.isFinite(p.longs.AAPL.notionalPctAtEntry));
+    assert.ok(Math.abs(p.longs.AAPL.notionalPctAtEntry - 0.2) < 0.001);
+    const first = p.longs.AAPL.notionalPctAtEntry;
+    assert.equal(realBuyLong(p, 'AAPL', 1, 100).ok, true);
+    assert.equal(p.longs.AAPL.notionalPctAtEntry, first, 'add must not recompute entry pct');
+  });
+
+  test('legacy positions without notionalPctAtEntry are skipped by sized-right', async () => {
+    const { collectProcessWins, PROCESS_WIN_MAX_SIZE_PCT } = await import(
+      pathToFileURL(path.join(__dirname, '../js/process-wins.js')).href
+    );
+    assert.equal(PROCESS_WIN_MAX_SIZE_PCT, 0.25);
+    const legacy = collectProcessWins({
+      day: 5,
+      loanEvents: [],
+      portfolio: {
+        longs: {
+          OLD: { shares: 10, avgPrice: 10, lots: [{ shares: 10, avgPrice: 10, openedDay: 5 }] },
+        },
+        shorts: {},
+      },
+    });
+    assert.ok(!legacy.some((w) => w.id === 'sized_right'));
+
+    const sized = collectProcessWins({
+      day: 5,
+      loanEvents: [],
+      portfolio: {
+        longs: {
+          AAPL: {
+            shares: 1, avgPrice: 50, notionalPctAtEntry: 0.1,
+            lots: [{ shares: 1, avgPrice: 50, openedDay: 5 }],
+          },
+        },
+        shorts: {},
+      },
+    });
+    assert.ok(sized.some((w) => w.id === 'sized_right'));
+
+    const oversized = collectProcessWins({
+      day: 5,
+      loanEvents: [],
+      portfolio: {
+        longs: {
+          AAPL: {
+            shares: 10, avgPrice: 50, notionalPctAtEntry: 0.4,
+            lots: [{ shares: 10, avgPrice: 50, openedDay: 5 }],
+          },
+        },
+        shorts: {},
+      },
+    });
+    assert.ok(!oversized.some((w) => w.id === 'sized_right'));
+
+    const paid = collectProcessWins({
+      day: 5,
+      loanEvents: [{ type: 'payment', rep: 4 }],
+      portfolio: { longs: {}, shorts: {} },
+    });
+    assert.ok(paid.some((w) => w.id === 'paid_on_time'));
+
+    const late = collectProcessWins({
+      day: 5,
+      loanEvents: [{ type: 'payment' }, { type: 'late' }],
+      portfolio: { longs: {}, shorts: {} },
+    });
+    assert.ok(!late.some((w) => w.id === 'paid_on_time'));
+  });
+
+  test('exitReason tags sell/cover; patience needs MAE + voluntary green', async () => {
+    const {
+      collectProcessWins,
+      updateOpenPositionMae,
+      maybeRecordPatienceWin,
+      PROCESS_WIN_DRAWDOWN_PCT,
+      normalizeExitReason,
+    } = await import(pathToFileURL(path.join(__dirname, '../js/process-wins.js')).href);
+    assert.equal(PROCESS_WIN_DRAWDOWN_PCT, 0.05);
+    assert.equal(normalizeExitReason('margin'), 'margin');
+    assert.equal(normalizeExitReason('nope'), 'voluntary');
+
+    const p = realCreatePortfolio(10_000);
+    assert.equal(realBuyLong(p, 'AAA', 10, 100).ok, true);
+    updateOpenPositionMae(p, () => 90);
+    assert.ok(p.longs.AAA.worstUnrealizedPct <= -0.1);
+
+    const marginSell = realSellLong(p, 'AAA', 1, 110, { exitReason: 'margin' });
+    assert.equal(marginSell.ok, true);
+    assert.equal(marginSell.exitReason, 'margin');
+    assert.equal(p.history[0].exitReason, 'margin');
+    assert.ok(!p.dayPatienceWins?.length, 'margin green exit must not earn patience');
+
+    updateOpenPositionMae(p, () => 90);
+    const stopSell = realSellLong(p, 'AAA', 1, 110, { exitReason: 'stop_loss' });
+    assert.equal(stopSell.exitReason, 'stop_loss');
+    assert.ok(!p.dayPatienceWins?.length, 'stop_loss must not earn patience');
+
+    updateOpenPositionMae(p, () => 90);
+    const vol = realSellLong(p, 'AAA', 1, 110);
+    assert.equal(vol.exitReason, 'voluntary');
+    assert.ok(p.dayPatienceWins?.some((w) => w.id === 'patience_paid'));
+
+    const wins = collectProcessWins({ day: 1, loanEvents: [], portfolio: p });
+    assert.ok(wins.some((w) => w.id === 'patience_paid'));
+
+    // Direct gate: shallow MAE does not qualify
+    const p2 = { dayPatienceWins: [] };
+    assert.equal(maybeRecordPatienceWin(p2, {
+      exitReason: 'voluntary', pnl: 10, worstUnrealizedPct: -0.02, sym: 'X',
+    }), false);
+  });
+
   test('negative sell/cover cannot mint shares or cash', () => {
     const p = realCreatePortfolio(500);
     realBuyLong(p, 'Z', 10, 10);
@@ -3128,10 +4210,146 @@ async function main() {
   test('margin perk doubles buying power for longs', () => {
     const p = realCreatePortfolio(100);
     assert.equal(getAvailableForLong(p, []), 100);
+    // Missing personal credit → Good band (2×) for backward-compatible callers
     assert.equal(getAvailableForLong(p, ['margin']), 200);
     const r = realBuyLong(p, 'AAPL', 1, 150, {}, ['margin']);
     assert.equal(r.ok, true);
     assert.ok(p.cash < 100);
+  });
+
+  test('credit-scaled Available Buying Power multipliers by personal credit band', async () => {
+    const desk = await import(pathToFileURL(path.join(__dirname, '../js/desk-rules.js')).href);
+    const { getBuyingPower, getAvailableForLong, getAvailableForShort, createPortfolio } = await import(
+      pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href
+    );
+    const { CONFIG: cfg } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
+    const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
+    const { marginBuyingPowerMultiplier, personalCreditOpenScale, POOR_OPEN_RISK_SCALE } = desk;
+
+    // Day-1 Intern / cash anchors untouched
+    assert.equal(cfg.STARTING_CASH, 500);
+    assert.equal(STAFF_ROLES.intern.hireCost, 550);
+    assert.equal(POOR_OPEN_RISK_SCALE, 0.7);
+    assert.equal(personalCreditOpenScale(600), 1);
+    assert.equal(personalCreditOpenScale(500), 0.7);
+
+    // Multiplier table (Margin unlocked)
+    assert.equal(marginBuyingPowerMultiplier(720), 2.0); // Good/Exceptional
+    assert.equal(marginBuyingPowerMultiplier(850), 2.0);
+    assert.equal(marginBuyingPowerMultiplier(670), 2.0);
+    assert.equal(marginBuyingPowerMultiplier(600), 1.5); // Fair
+    assert.equal(marginBuyingPowerMultiplier(580), 1.5);
+    assert.equal(marginBuyingPowerMultiplier(669), 1.5);
+    assert.equal(marginBuyingPowerMultiplier(500), 1.0); // Poor
+    assert.equal(marginBuyingPowerMultiplier(579), 1.0);
+
+    const cash = 10000;
+    const p = createPortfolio(cash);
+    // With Margin: exact BP dollars (verified matrix)
+    assert.equal(getBuyingPower(p, ['margin'], 720), 20000);
+    assert.equal(getBuyingPower(p, ['margin'], 850), 20000);
+    assert.equal(getBuyingPower(p, ['margin'], 600), 15000);
+    assert.equal(getBuyingPower(p, ['margin'], 500), 7000); // Poor 1.0× × 0.70
+    // Margin locked → Fair+ flat 1.0×; Poor still 0.70×
+    assert.equal(getBuyingPower(p, [], 600), 10000);
+    assert.equal(getAvailableForLong(p, [], 600), 10000);
+    assert.equal(getBuyingPower(p, [], 850), 10000);
+    assert.equal(getBuyingPower(p, [], 450), 7000);
+    assert.equal(getAvailableForLong(p, [], 450), 7000);
+    assert.equal(getAvailableForShort(p, 450), 7000);
+    assert.equal(getAvailableForShort(p, 600), 10000);
+  });
+
+  test('revenge cool-down arms on blowup close; blocks opens; allows sells/covers', async () => {
+    const {
+      armBuySuspend, isBuySuspended, shouldArmRevengeCooloff,
+      BUY_SUSPEND_MS, BUY_SUSPEND_LOSS_PCT, BUY_SUSPEND_MIN_LOSS,
+      buyLong, sellLong, openShort, coverShort, createPortfolio,
+    } = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+    const { CONFIG: cfg, PERKS } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
+    const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
+
+    assert.equal(BUY_SUSPEND_MS, 30_000);
+    assert.equal(BUY_SUSPEND_LOSS_PCT, 0.15);
+    assert.equal(BUY_SUSPEND_MIN_LOSS, 40);
+
+    // Case A: sub-threshold — 0.5% NW or under $40 floor → gate stays open
+    assert.equal(shouldArmRevengeCooloff(-500, 100_000), false);
+    assert.equal(shouldArmRevengeCooloff(-39, 100), false);
+    assert.equal(shouldArmRevengeCooloff(16_000, 100_000), false); // green
+
+    // Case B: blowup — 16% NW and ≥$40 → arm
+    assert.equal(shouldArmRevengeCooloff(-16_000, 100_000), true);
+    assert.equal(shouldArmRevengeCooloff(-150, 1000), true);
+    assert.equal(shouldArmRevengeCooloff(-149, 1000), false); // under 15%
+
+    const p = createPortfolio(50_000);
+    const t0 = Date.now();
+    armBuySuspend(p, t0);
+    assert.equal(p.buySuspendUntilMs, t0 + 30_000);
+    assert.ok(isBuySuspended(p, t0 + 1));
+
+    // Case C: buy-side rejected at engine
+    const buyDenied = buyLong(p, 'AAPL', 10, 10, {}, []);
+    assert.equal(buyDenied.ok, false);
+    assert.match(buyDenied.msg, /Trading [Dd]esk [Ss]uspended/);
+    const shortDenied = openShort(p, 'TSLA', 5, 10, true);
+    assert.equal(shortDenied.ok, false);
+    assert.match(shortDenied.msg, /Trading [Dd]esk [Ss]uspended/);
+
+    // Case D: risk liquidations remain open
+    p.longs.AAPL = { shares: 10, avgPrice: 10, lots: [{ shares: 10, avgPrice: 10, openedDay: 1 }] };
+    assert.equal(sellLong(p, 'AAPL', 5, 10).ok, true);
+    p.shorts.TSLA = { shares: 5, avgPrice: 20, marginHeld: 50, openedDay: 1 };
+    p.cash += 50;
+    assert.equal(coverShort(p, 'TSLA', 5, 20).ok, true);
+
+    // Undisturbed when criteria not met
+    const openBook = createPortfolio(5000);
+    assert.equal(openBook.buySuspendUntilMs, undefined);
+    assert.equal(buyLong(openBook, 'IBM', 1, 10, {}, []).ok, true);
+
+    // firstRevengeCooloff teach — one-shot; subsequent stays quiet
+    const teach = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
+    assert.ok(teach.TEACH_MOMENTS.firstRevengeCooloff?.text);
+    const meta = { teachMomentsShown: {} };
+    assert.equal(teach.markTeachMoment(meta, 'firstRevengeCooloff'), true);
+    assert.equal(meta.teachMomentsShown.firstRevengeCooloff, true);
+    const subsequentQuiet = !teach.markTeachMoment(meta, 'firstRevengeCooloff');
+    assert.equal(subsequentQuiet, true);
+
+    // Sanitize: drop expired; keep future
+    const { sanitizeRunData } = await import(pathToFileURL(path.join(__dirname, '../js/save-sanitize.js')).href);
+    const expired = sanitizeRunData({
+      v: 2,
+      portfolio: {
+        cash: 500, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [],
+        buySuspendUntilMs: Date.now() - 5000,
+      },
+      perks: [],
+      licenses: ['retail'],
+      finance: { personalCredit: 600, businessCredit: 630, loans: [] },
+    });
+    assert.equal(expired.portfolio.buySuspendUntilMs, undefined);
+    const futureUntil = Date.now() + 20_000;
+    const active = sanitizeRunData({
+      v: 2,
+      portfolio: {
+        cash: 500, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [],
+        buySuspendUntilMs: futureUntil,
+      },
+      perks: [],
+      licenses: ['retail'],
+      finance: { personalCredit: 600, businessCredit: 630, loans: [] },
+    });
+    assert.ok(active.portfolio.buySuspendUntilMs >= futureUntil - 1);
+
+    // Day-1 Intern path completely untouched
+    assert.equal(cfg.STARTING_CASH, 500);
+    assert.equal(PERKS.hrDept.licenseRequired, 'retail');
+    assert.equal(PERKS.hrDept.cost, 400);
+    assert.equal(STAFF_ROLES.intern.hireCost, 550);
+    assert.equal(STAFF_ROLES.intern.salary, 48);
   });
 
   test('overlapping limit buys respect shared cash pool', () => {
@@ -3158,6 +4376,36 @@ async function main() {
     assert.ok(clean.meta.reputation <= 100000);
     assert.ok(clean.finance.personalCredit <= 850);
     assert.ok(clean.finance.businessCredit >= 300);
+  });
+
+  test('sanitizeRunData retunes virgin old-default credit so Series 7 is not Day-1 green', () => {
+    const clean = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 500, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      finance: {
+        personalCredit: 680,
+        businessCredit: 700,
+        loans: [],
+        totalBorrowed: 0,
+        firstCreditDay: null,
+      },
+    });
+    assert.equal(clean.finance.personalCredit, 600);
+    assert.equal(clean.finance.businessCredit, 630);
+    // Earned scores on a non-virgin file are kept.
+    const earned = sanitizeRunData({
+      v: 2,
+      portfolio: { cash: 5000, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
+      finance: {
+        personalCredit: 680,
+        businessCredit: 700,
+        loans: [],
+        totalBorrowed: 1000,
+        firstCreditDay: 3,
+      },
+    });
+    assert.equal(earned.finance.personalCredit, 680);
+    assert.equal(earned.finance.businessCredit, 700);
   });
 
   test('sanitizeRunData strips unknown vault IDs from save', () => {
@@ -3222,9 +4470,9 @@ async function main() {
       v: 2,
       portfolio: { cash: 900, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
       perks: [],
-      blackMarketOwned: [kept.id, 'forgedBlackMarketId'],
+      blackMarketOwned: [kept.id, 'forgedBlackMarketId', 'afterHoursMonogram'],
       blackMarketSpentTotal: kept.cost,
-      blackMarketSeenExpired: [kept.id, 'bogusExpiredId'],
+      blackMarketSeenExpired: [kept.id, 'bogusExpiredId', 'afterHoursMonogram'],
     });
     assert.deepEqual(clean.blackMarketOwned, [kept.id]);
     assert.deepEqual(clean.blackMarketSeenExpired, [kept.id]);
@@ -3262,7 +4510,9 @@ async function main() {
       meta: { reputation: 10 },
     });
     assert.deepEqual(withSeat.collectionClaims, ['seatTaken']);
-    assert.equal(withSeat.collectionRewardCashTotal, 0);
+    // seatTaken pays cash since the REP removal; ledger syncs to the milestone reward.
+    const seatMilestoneCash = COLLECTION_MILESTONES.find((m) => m.id === 'seatTaken')?.cash || 0;
+    assert.equal(withSeat.collectionRewardCashTotal, seatMilestoneCash);
   });
 
   test('sanitizeRunData cannot forge seatOwned=true without matching purchase record', () => {
@@ -3489,8 +4739,11 @@ async function main() {
     earningsVolMultiplier, processDividendsForDay, DIVIDEND_PAYERS, resetCorporateActionGuards,
     isDividendExDay, dividendExDayInQuarter,
   } = corp;
-  const { shouldTripCircuit, CIRCUIT_BREAK_PCT, isSymbolHalted, resetSessionAnchors, checkCircuitBreaker } = mkt;
-  const { defaultVol } = await import(pathToFileURL(path.join(__dirname, '../js/options-math.js')).href);
+  const {
+    shouldTripCircuit, CIRCUIT_BREAK_PCT, CIRCUIT_BREAK_PCT_MIN, CIRCUIT_BREAK_PCT_MAX,
+    isSymbolHalted, resetSessionAnchors, checkCircuitBreaker, circuitHaltThreshold,
+  } = mkt;
+  const { defaultVol, blackScholesPremium } = await import(pathToFileURL(path.join(__dirname, '../js/options-math.js')).href);
 
   test('each symbol has a stable quarterly earnings day', () => {
     const a = earningsDayInQuarter('AAPL');
@@ -3558,15 +4811,63 @@ async function main() {
     assert.equal(shouldTripCircuit(100, 106.9, CIRCUIT_BREAK_PCT).trip, false);
     assert.equal(shouldTripCircuit(100, 107, CIRCUIT_BREAK_PCT).trip, true);
     assert.equal(shouldTripCircuit(100, 93, CIRCUIT_BREAK_PCT).trip, true);
-    // Live halt path: seed session open then shock past threshold
+    // Live halt path: seed session open then shock past the max band (8.5%)
     getQuoteCache().set('HALT', { price: 100, prevClose: 100, high: 100, low: 100 });
     checkCircuitBreaker('HALT', 100); // set open
     assert.equal(isSymbolHalted('HALT'), false);
-    checkCircuitBreaker('HALT', 108);
+    checkCircuitBreaker('HALT', 109);
     assert.equal(isSymbolHalted('HALT'), true);
-    const blocked = realBuyLong(realCreatePortfolio(500), 'HALT', 1, 108);
+    const blocked = realBuyLong(realCreatePortfolio(500), 'HALT', 1, 109);
     assert.equal(blocked.ok, false);
     assert.match(blocked.msg, /HALTED/i);
+  });
+
+  test('circuitHaltThreshold is seeded per symbol/day inside 6.5–8.5%', () => {
+    const a = circuitHaltThreshold('AAPL', 12);
+    const b = circuitHaltThreshold('AAPL', 12);
+    const c = circuitHaltThreshold('MSFT', 12);
+    assert.equal(a, b);
+    assert.ok(a >= CIRCUIT_BREAK_PCT_MIN && a <= CIRCUIT_BREAK_PCT_MAX, `AAPL band ${a}`);
+    assert.ok(c >= CIRCUIT_BREAK_PCT_MIN && c <= CIRCUIT_BREAK_PCT_MAX, `MSFT band ${c}`);
+    // Not all names share the same ceiling on a given day
+    let foundDiff = a !== c;
+    for (let d = 1; d <= 40 && !foundDiff; d++) {
+      if (circuitHaltThreshold('NVDA', d) !== circuitHaltThreshold('KO', d)) foundDiff = true;
+    }
+    assert.ok(foundDiff, 'expected at least one day where two symbols differ');
+  });
+
+  test('soft free-lunch: +6.7% does not always halt when band is higher', () => {
+    resetSessionAnchors();
+    // Find a symbol/day whose threshold is above 6.7%
+    let sym = null;
+    let day = 1;
+    for (let d = 1; d <= 80; d++) {
+      for (const s of ['ZZTOP', 'SOFTA', 'SOFTB', 'SOFTC']) {
+        if (circuitHaltThreshold(s, d) >= 0.075) {
+          sym = s;
+          day = d;
+          break;
+        }
+      }
+      if (sym) break;
+    }
+    assert.ok(sym, 'expected a high-band symbol');
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: day,
+      dayStartEquity: 500,
+      dayStartCash: 500,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    resetSessionAnchors();
+    checkCircuitBreaker(sym, 100);
+    assert.equal(checkCircuitBreaker(sym, 106.7), false);
+    assert.equal(isSymbolHalted(sym), false);
   });
 
   // --- A5 Margin call / A6 Macro / A7 Slippage ---
@@ -3578,7 +4879,7 @@ async function main() {
   const macroMod = await import(pathToFileURL(path.join(__dirname, '../js/macro.js')).href);
   const {
     applyFedPolicy, getFedFundsRate, getYield10Y, macroAprAdjustment, fedShockMultiplier,
-    resetMacroForTests, MACRO_BASE_FED, stepMacroTowardNeutral,
+    macroEventScale, resetMacroForTests, MACRO_BASE_FED, stepMacroTowardNeutral,
   } = macroMod;
   const slipMod = await import(pathToFileURL(path.join(__dirname, '../js/slippage.js')).href);
   const { applySlippage, slipFractionFromParticipation } = slipMod;
@@ -3643,6 +4944,23 @@ async function main() {
         seatOwned: false,
       };
       assert.equal(getDeskMarginGraceMinutes(relicAndPrime), 34);
+    });
+
+    test('Poor credit quietly shortens margin grace by 5 minutes', () => {
+      const fair = {
+        perks: [],
+        blackMarketOwned: [],
+        blackMarketEquippedRelics: [],
+        finance: { personalCredit: 680, businessCredit: 700 },
+      };
+      const poor = {
+        perks: [],
+        blackMarketOwned: [],
+        blackMarketEquippedRelics: [],
+        finance: { personalCredit: 300, businessCredit: 300 },
+      };
+      assert.equal(getDeskMarginGraceMinutes(fair), 20);
+      assert.equal(getDeskMarginGraceMinutes(poor), 15);
     });
 
     test('smartRouting perk still stacks after relic slippage shrink, not before', () => {
@@ -3762,7 +5080,7 @@ async function main() {
     resetSessionAnchors();
     getQuoteCache().set('HALTX', { price: 100, prevClose: 100, high: 100, low: 100 });
     checkCircuitBreaker('HALTX', 100);
-    checkCircuitBreaker('HALTX', 108);
+    checkCircuitBreaker('HALTX', 109);
     assert.equal(isSymbolHalted('HALTX'), true);
     const p = realCreatePortfolio(5000);
     p.longs.HALTX = { shares: 5, avgPrice: 100, lots: [{ shares: 5, avgPrice: 100, openedDay: 1 }] };
@@ -3773,7 +5091,7 @@ async function main() {
     // Halt AAPL separately
     getQuoteCache().set('AAPL', { price: 100, prevClose: 100 });
     checkCircuitBreaker('AAPL', 100);
-    checkCircuitBreaker('AAPL', 108);
+    checkCircuitBreaker('AAPL', 109);
     assert.equal(isSymbolHalted('AAPL'), true);
     const covered = realCoverShort(p2, 'AAPL', 2, 108);
     assert.equal(covered.ok, true, covered.msg);
@@ -4101,7 +5419,103 @@ async function main() {
   });
 
   // --- B11 Options expiry alignment ---
-  const { estimateOptionValue, settleExpiredOptions, optionIntrinsicPerShare } = portMod;
+  const {
+    estimateOptionValue, settleExpiredOptions, optionIntrinsicPerShare, liveOptionVol,
+  } = portMod;
+  const teachMod = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
+  const {
+    detectIvCrush, heldThroughEarnings, TEACH_MOMENTS, lessonLineForDay, markTeachMoment,
+    resolveCoachTarget,
+  } = teachMod;
+  const { earningsChipInfo, daysUntilEarnings } = corp;
+  const {
+    getEventTemplates, pickWeightedEvent, applyEvent, triggerEvent,
+    resetEventEngineStateForTests, FED_ANTIFLIP_DAYS, eventRollChance,
+    MAX_EVENTS_PER_GAME_DAY, eventTouchesBook, getMajorEventsToday,
+    getLastSkippedHaltedSymbols,
+  } = evMod;
+  const {
+    installRiskOffOverlay, clearRiskOffOverlay, isRiskOffOverlayActive, getRiskOffNoisePad,
+    resetDailyShockAccum,
+  } = mkt;
+
+  test('earningsChipInfo shows tonight / E-N within a week only', () => {
+    const sym = 'AAPL';
+    const eDay = earningsDayInQuarter(sym);
+    // Build a game day where until === 0 (earnings day in quarter)
+    // quarterDay = ((day-1) % 63) + 1 === eDay → day = eDay for first quarter
+    const onDay = eDay;
+    const chip0 = earningsChipInfo(sym, onDay);
+    assert.ok(chip0 && chip0.label === 'E tonight' && chip0.urgent);
+    const far = earningsChipInfo(sym, onDay + 20);
+    assert.equal(far, null);
+    assert.equal(daysUntilEarnings(sym, onDay), 0);
+  });
+
+  test('heldThroughEarnings detects stock and option exposure', () => {
+    assert.equal(heldThroughEarnings([{ sym: 'NVDA' }], { longs: {}, options: [] }), false);
+    assert.equal(heldThroughEarnings([{ sym: 'NVDA' }], { longs: { NVDA: { shares: 2 } } }), true);
+    assert.equal(heldThroughEarnings(
+      [{ sym: 'TSLA' }],
+      { options: [{ sym: 'TSLA', type: 'call', qty: 1 }] },
+    ), true);
+  });
+
+  test('detectIvCrush requires favorable move, underwater mark, and cooler live IV', () => {
+    const opt = { type: 'call', premium: 5, qty: 1, entryVol: 0.55, vol: 0.55 };
+    assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 400, liveVol: 0.4 }), true);
+    assert.equal(detectIvCrush(opt, { changePct: 0.2, markedValue: 400, liveVol: 0.4 }), false);
+    assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 520, liveVol: 0.4 }), false);
+    assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 400, liveVol: 0.54 }), false);
+    assert.ok(TEACH_MOMENTS.firstIvCrush.text.includes('IV crush'));
+    assert.ok(TEACH_MOMENTS.firstEarningsHold.text.includes('earnings'));
+  });
+
+  test('TEACH_MOMENTS targets are non-empty and simple #ids exist in index.html', () => {
+    const fs = require('fs');
+    const indexHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+    const dashboardSrc = fs.readFileSync(path.join(__dirname, '../js/ui/dashboard.js'), 'utf8');
+    assert.ok(dashboardSrc.includes('data-gloss="next-payment"'), 'next-payment gloss in dashboard.js');
+    assert.equal(resolveCoachTarget('body'), null, 'body is never a coach target');
+    assert.equal(resolveCoachTarget('html'), null, 'html is never a coach target');
+    for (const [id, moment] of Object.entries(TEACH_MOMENTS)) {
+      assert.ok(typeof moment.target === 'string' && moment.target.trim(), `${id} needs a target`);
+      const t = moment.target.trim();
+      if (/^#[A-Za-z][\w-]*$/.test(t)) {
+        const domId = t.slice(1);
+        assert.ok(
+          indexHtml.includes(`id="${domId}"`) || indexHtml.includes(`id='${domId}'`),
+          `${id} target ${t} missing from index.html`,
+        );
+      }
+    }
+  });
+
+  test('estimateOptionValue uses live vol (entry vol snapshot does not freeze the mark)', () => {
+    getQuoteCache().set('LIVEV', { price: 100, prevClose: 100, changePct: 0 });
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 1,
+      dayStartEquity: 500,
+      dayStartCash: 500,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const hot = {
+      sym: 'LIVEV', type: 'call', strike: 100, qty: 1, premium: 8,
+      openedDay: 1, expiryDay: 30, vol: 0.9, entryVol: 0.9,
+    };
+    const live = liveOptionVol(hot);
+    assert.ok(live < 0.5, `live vol should be calm, got ${live}`);
+    const marked = estimateOptionValue(hot);
+    const frozenMark = blackScholesPremium({
+      spot: 100, strike: 100, daysToExpiry: 29, vol: 0.9, type: 'call',
+    }) * 100;
+    assert.ok(marked < frozenMark * 0.75, `live mark ${marked} should be well below frozen-IV mark ${frozenMark}`);
+  });
 
   test('estimateOptionValue at expiry matches intrinsic settle (no fake 1-day TV)', () => {
     getQuoteCache().set('AAPL', { price: 110, prevClose: 100 });
@@ -4155,6 +5569,272 @@ async function main() {
     const marked = estimateOptionValue(opt);
     const intrinsic = optionIntrinsicPerShare(opt, 100) * 100;
     assert.ok(marked > intrinsic, `ATM with time left should exceed intrinsic (${marked} > ${intrinsic})`);
+  });
+
+  // --- no_chase process win ---
+  const { collectProcessWins } = await import(pathToFileURL(path.join(__dirname, '../js/process-wins.js')).href);
+
+  test('no_chase stays silent after red exit plus same-day rebuy', () => {
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 21,
+      dayStartEquity: 10000,
+      dayStartCash: 10000,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const p = realCreatePortfolio(10000);
+    assert.equal(realBuyLong(p, 'NCH1', 10, 100).ok, true);
+    assert.equal(realSellLong(p, 'NCH1', 10, 90, { exitReason: 'voluntary' }).ok, true);
+    assert.equal(realBuyLong(p, 'NCH1', 1, 91).ok, true);
+    const wins = collectProcessWins({ portfolio: p, day: 21 });
+    assert.equal(wins.some((w) => w.id === 'no_chase'), false);
+  });
+
+  test('no_chase appears after red exit without same-day rebuy', () => {
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 22,
+      dayStartEquity: 10000,
+      dayStartCash: 10000,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const p = realCreatePortfolio(10000);
+    assert.equal(realBuyLong(p, 'NCH2', 10, 100).ok, true);
+    assert.equal(realSellLong(p, 'NCH2', 10, 90, { exitReason: 'voluntary' }).ok, true);
+    const wins = collectProcessWins({ portfolio: p, day: 22 });
+    assert.ok(wins.some((w) => w.id === 'no_chase'));
+  });
+
+  test('no_chase ignores margin red exits', () => {
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 23,
+      dayStartEquity: 10000,
+      dayStartCash: 10000,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const p = realCreatePortfolio(10000);
+    assert.equal(realBuyLong(p, 'NCH3', 10, 100).ok, true);
+    assert.equal(realSellLong(p, 'NCH3', 10, 90, { exitReason: 'margin' }).ok, true);
+    const wins = collectProcessWins({ portfolio: p, day: 23 });
+    assert.equal(wins.some((w) => w.id === 'no_chase'), false);
+    assert.equal(p.dayLastRedExit, undefined);
+  });
+
+  // --- News events depth: pacing, cooldown, overlay, halt skip, teach ---
+  test('event catalog includes coverage-gap template ids', () => {
+    const ids = new Set(getEventTemplates().map((t) => t.id));
+    for (const id of [
+      'housing_rates', 'megacap_miss', 'cyber_outage', 'ma_rumor', 'labor_strike',
+      'drought_ag', 'recession_scare', 'dollar_spike', 'guidance_raise', 'sec_probe',
+    ]) {
+      assert.ok(ids.has(id), `missing template ${id}`);
+    }
+    assert.ok(getEventTemplates().length >= 23, `expected ~23+ templates, got ${getEventTemplates().length}`);
+  });
+
+  test('Fed antiflip blocks opposite Fed template for N game days', () => {
+    resetEventEngineStateForTests();
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    const hike = getEventTemplates().find((t) => t.id === 'fed_hike');
+    triggerEvent(hike, false, 10);
+    for (let d = 10; d < 10 + FED_ANTIFLIP_DAYS; d++) {
+      for (let i = 0; i < 80; i++) {
+        const pick = pickWeightedEvent(d, () => 0.999);
+        assert.notEqual(pick.id, 'fed_cut', `fed_cut should be blocked on day ${d}`);
+      }
+    }
+    let sawCut = false;
+    for (let i = 0; i < 200; i++) {
+      if (pickWeightedEvent(10 + FED_ANTIFLIP_DAYS, Math.random).id === 'fed_cut') {
+        sawCut = true;
+        break;
+      }
+    }
+    assert.ok(sawCut, 'fed_cut should return after antiflip window');
+    resetEventEngineStateForTests();
+  });
+
+  test('recently fired templates are down-weighted vs unused', () => {
+    resetEventEngineStateForTests();
+    const all = getEventTemplates();
+    const keep = all.find((t) => t.id === 'guidance_raise');
+    assert.ok(keep);
+    for (const t of all) {
+      if (t.id !== keep.id) triggerEvent(t, false, 5);
+    }
+    const counts = {};
+    for (let i = 0; i < 120; i++) {
+      const id = pickWeightedEvent(6, Math.random).id;
+      counts[id] = (counts[id] || 0) + 1;
+    }
+    assert.ok((counts.guidance_raise || 0) >= 8, `fresh template should win often: ${JSON.stringify(counts)}`);
+    resetEventEngineStateForTests();
+  });
+
+  test('eventRollChance soft-caps at MAX_EVENTS_PER_GAME_DAY', () => {
+    resetEventEngineStateForTests();
+    assert.ok(eventRollChance('Morning', 1) > 0);
+    const tmpl = getEventTemplates()[0];
+    for (let i = 0; i < MAX_EVENTS_PER_GAME_DAY; i++) triggerEvent(tmpl, false, 1);
+    assert.equal(eventRollChance('Morning', 1), 0);
+    resetEventEngineStateForTests();
+  });
+
+  test('macroEventScale amplifies housing/dollar when Fed is extreme', () => {
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    assert.equal(macroEventScale('cyber_outage'), 1);
+    assert.equal(macroEventScale('housing_rates'), 1); // flag off → no scale
+    assert.equal(macroEventScale('housing_rates', true), 0.85);
+    assert.equal(macroEventScale('dollar_spike', true), 0.85);
+    resetMacroForTests(6.5, 5.5);
+    assert.ok(macroEventScale('housing_rates', true) > 1);
+    assert.ok(macroEventScale('dollar_spike', true) > 1);
+    assert.equal(macroEventScale('housing_rates'), 1);
+    assert.ok(fedShockMultiplier('fed_hike') > 0.85);
+    assert.equal(macroEventScale('fed_hike'), fedShockMultiplier('fed_hike'));
+    assert.equal(macroEventScale('fed_cut', true), fedShockMultiplier('fed_cut')); // fed path ignores flag
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    const scaled = getEventTemplates().filter((t) => t.macroScale);
+    assert.deepEqual(scaled.map((t) => t.id).sort(), ['dollar_spike', 'housing_rates']);
+  });
+
+  test('halted symbols are skipped and never deferred after lift', () => {
+    resetEventEngineStateForTests();
+    resetSessionAnchors();
+    resetDailyShockAccum();
+    clearRiskOffOverlay();
+    getQuoteCache().set('META', { price: 100, prevClose: 100, high: 100, low: 100 });
+    getQuoteCache().set('AMZN', { price: 100, prevClose: 100, high: 100, low: 100 });
+    checkCircuitBreaker('META', 100);
+    checkCircuitBreaker('META', 109);
+    assert.equal(isSymbolHalted('META'), true);
+    const cyber = getEventTemplates().find((t) => t.id === 'cyber_outage');
+    const beforeMeta = getQuoteCache().get('META').price;
+    const beforeAmzn = getQuoteCache().get('AMZN').price;
+    const result = applyEvent({ ...cyber, templateId: 'cyber_outage' });
+    assert.ok(result.skippedHalted.includes('META'));
+    assert.ok(!result.applied.includes('META'));
+    assert.equal(getQuoteCache().get('META').price, beforeMeta);
+    assert.ok(result.applied.includes('AMZN') || getQuoteCache().get('AMZN').price !== beforeAmzn);
+    assert.deepEqual(getLastSkippedHaltedSymbols(), result.skippedHalted);
+    // Lift halt — no queued retry: price must stay put until a new shock
+    resetSessionAnchors();
+    assert.equal(isSymbolHalted('META'), false);
+    assert.equal(getQuoteCache().get('META').price, beforeMeta);
+    resetEventEngineStateForTests();
+  });
+
+  test('risk-off overlay does not flip getTapeRegime and stays silent', () => {
+    clearRiskOffOverlay();
+    const day = 42;
+    const before = mkt.getTapeRegime(day);
+    const regimeBefore = mkt.serializeMarket().tapeRegime;
+    installRiskOffOverlay({ gameMinutes: 90, betaNudge: -0.2, noisePad: 0.0002 });
+    assert.equal(isRiskOffOverlayActive(), true);
+    assert.ok(getRiskOffNoisePad() > 0);
+    assert.equal(mkt.getTapeRegime(day), before);
+    assert.equal(mkt.serializeMarket().tapeRegime, regimeBefore);
+    const recession = getEventTemplates().find((t) => t.id === 'recession_scare');
+    const playerCopy = [
+      recession.headline, recession.teaser, recession.body, recession.whyItMatters, recession.deskTake,
+    ].join('\n');
+    assert.ok(!/overlay|noise pad|tapeRegime|marketBeta/i.test(playerCopy), 'player copy must not disclose overlay internals');
+    clearRiskOffOverlay();
+    assert.equal(isRiskOffOverlayActive(), false);
+    assert.equal(getRiskOffNoisePad(), 0);
+  });
+
+  test('recession_scare installs overlay without changing day regime identity', () => {
+    resetEventEngineStateForTests();
+    clearRiskOffOverlay();
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    loadMarket({
+      ...mkt.serializeMarket(),
+      marketBeta: 0,
+    });
+    const day = typeof mkt.getDayCount === 'function' ? mkt.getDayCount() : 1;
+    const regime = mkt.getTapeRegime(day);
+    const scare = getEventTemplates().find((t) => t.id === 'recession_scare');
+    assert.equal(scare.macroScale, undefined);
+    assert.equal(scare.riskOffOverlay, true);
+    triggerEvent(scare, false, day);
+    assert.equal(isRiskOffOverlayActive(), true);
+    // Stronger overlay: 150min / -0.28 nudge / 0.00018 pad (not generic 120/-0.22/0.00015)
+    assert.ok(Math.abs(getMarketBeta() - (-0.28)) < 1e-9, `beta ${getMarketBeta()}`);
+    assert.ok(Math.abs(getRiskOffNoisePad() - 0.00018) < 1e-12, `pad ${getRiskOffNoisePad()}`);
+    assert.equal(mkt.getTapeRegime(day), regime);
+    assert.ok(getMajorEventsToday().includes('recession_scare'));
+    clearRiskOffOverlay();
+    resetEventEngineStateForTests();
+  });
+
+  test('eventTouchesBook flags held names', () => {
+    const cyber = getEventTemplates().find((t) => t.id === 'cyber_outage');
+    assert.equal(eventTouchesBook(cyber, { longs: {}, shorts: {}, options: [] }), false);
+    assert.equal(eventTouchesBook(cyber, { longs: { META: { shares: 1 } }, shorts: {}, options: [] }), true);
+    assert.equal(eventTouchesBook(cyber, { longs: {}, shorts: {}, options: [{ sym: 'AMZN', qty: 1 }] }), true);
+  });
+
+  test('Fed/oil teach moments and day-end lesson lines exist', () => {
+    assert.ok(TEACH_MOMENTS.firstFedEvent?.text);
+    assert.ok(TEACH_MOMENTS.firstOilEvent?.text);
+    const meta = { teachMomentsShown: {} };
+    assert.equal(markTeachMoment(meta, 'firstFedEvent'), true);
+    assert.equal(markTeachMoment(meta, 'firstFedEvent'), false);
+    assert.match(lessonLineForDay({ majorEvents: ['fed_hike'] }), /Fed|rates/i);
+    assert.match(lessonLineForDay({ majorEvents: ['oil_spike'] }), /energy|sector/i);
+    assert.match(lessonLineForDay({ majorEvents: ['housing_rates'] }), /rate-sensitive|macro/i);
+  });
+
+  // --- Phase B tape regime / listings constants / AI cap ---
+  const listingsMod = await import(pathToFileURL(path.join(__dirname, '../js/ui/listings.js')).href);
+  const aiMod = await import(pathToFileURL(path.join(__dirname, '../js/ai.js')).href);
+
+  test('Phase B getTapeRegime is deterministic with roughly 40% chop days', () => {
+    for (let day = 1; day <= 120; day++) {
+      assert.equal(mkt.getTapeRegime(day), mkt.getTapeRegime(day));
+      assert.ok(['chop', 'trend'].includes(mkt.getTapeRegime(day)));
+    }
+    const chopDays = Array.from({ length: 120 }, (_, i) => i + 1)
+      .filter(day => mkt.getTapeRegime(day) === 'chop').length;
+    assert.ok(chopDays >= 36 && chopDays <= 60, `expected ~40% chop days, got ${chopDays}/120`);
+  });
+
+  test('Phase B listing deal thresholds are centralized exports', () => {
+    assert.equal(listingsMod.LISTING_DEAL_THRESHOLD_SCANNER, 0.08);
+    assert.equal(listingsMod.LISTING_DEAL_THRESHOLD_NO_SCANNER, 0.12);
+  });
+
+  Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true });
+  getQuoteCache().set('AAPL', {
+    price: 100,
+    prevClose: 95,
+    open: 95,
+    high: 105,
+    low: 94,
+    change: 5,
+    changePct: 5,
+    volume: 10_000_000,
+    updated: Date.now(),
+    simulated: true,
+  });
+  const phaseBAiAnalysis = await aiMod.generateSymbolSummary('AAPL');
+  test('Phase B AI confidence is capped at 78', () => {
+    assert.ok(phaseBAiAnalysis, 'expected AAPL analysis');
+    assert.ok(phaseBAiAnalysis.confidence <= 78, `confidence ${phaseBAiAnalysis.confidence} should be capped at 78`);
   });
 
   console.log(`\n${passed} tests passed${failed ? `, ${failed} failed` : ''}`);

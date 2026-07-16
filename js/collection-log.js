@@ -19,15 +19,14 @@ function flavorFields(id) {
   };
 }
 
-/** Claimable completion milestones — cash/REP only; no buying-power hooks. */
+/** Claimable completion milestones — cash + flair only; no buying-power hooks. */
 export const COLLECTION_MILESTONES = [
   {
     id: 'pct25',
     label: 'First Quarter',
     kind: 'pct',
     threshold: 25,
-    rep: 25,
-    cash: 0,
+    cash: 250,
     flair: null,
     blurb: 'Own 25% of the full catalog.',
   },
@@ -36,7 +35,6 @@ export const COLLECTION_MILESTONES = [
     label: 'Halfway Desk',
     kind: 'pct',
     threshold: 50,
-    rep: 50,
     cash: 750,
     flair: null,
     blurb: 'Half the catalog booked. Cash toast for the grind.',
@@ -46,7 +44,6 @@ export const COLLECTION_MILESTONES = [
     label: 'Near Complete',
     kind: 'pct',
     threshold: 75,
-    rep: 90,
     cash: 2000,
     flair: null,
     blurb: 'Three-quarters done — rare chase territory.',
@@ -56,7 +53,6 @@ export const COLLECTION_MILESTONES = [
     label: 'Full Catalog',
     kind: 'pct',
     threshold: 100,
-    rep: 150,
     cash: 5000,
     flair: 'Collection Archivist',
     blurb: 'Every registered piece owned. Prestige title unlocked.',
@@ -65,26 +61,15 @@ export const COLLECTION_MILESTONES = [
     id: 'vaultSet',
     label: 'Vault Cleared',
     kind: 'vault_all',
-    rep: 60,
     cash: 1500,
     flair: null,
     blurb: 'Every Trophy Vault item owned.',
   },
   {
-    id: 'bmRares',
-    label: 'Rare Floor',
-    kind: 'bm_rares',
-    rep: 80,
-    cash: 2500,
-    flair: null,
-    blurb: 'Every rare and legendary Black Market piece owned.',
-  },
-  {
     id: 'seatTaken',
     label: 'Seat Secured',
     kind: 'seat',
-    rep: 40,
-    cash: 0,
+    cash: 500,
     flair: null,
     blurb: 'A Seat on the Trading Floor is yours.',
   },
@@ -93,7 +78,6 @@ export const COLLECTION_MILESTONES = [
     label: 'Master Collector',
     kind: 'masterwork_n',
     threshold: 3,
-    rep: 100,
     cash: 5000,
     flair: 'Master Collector',
     blurb: 'Own three masterwork-tier Trophy Vault pieces.',
@@ -102,7 +86,6 @@ export const COLLECTION_MILESTONES = [
     id: 'crownSecured',
     label: 'Crown Provenance',
     kind: 'crown_any',
-    rep: 150,
     cash: 10000,
     flair: 'Crown Provenance',
     blurb: 'Acquire any Private Salon crown jewel.',
@@ -173,6 +156,8 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
 
   (Array.isArray(blackMarketPool) ? blackMarketPool : []).forEach((item) => {
     if (!item?.id) return;
+    // Shop removed — only legacy owned pieces remain in the Collection Log.
+    if (!blackOwned.has(item.id)) return;
     entries.push({
       id: item.id,
       name: item.name || item.id,
@@ -180,7 +165,7 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       icon: item.icon || '',
       source: 'blackmarket',
       rarity: normalizeRarity(item, 'rare'),
-      owned: blackOwned.has(item.id),
+      owned: true,
       cost: Number(item.cost) || 0,
       ...flavorFields(item.id),
     });
@@ -271,10 +256,6 @@ function isMilestoneEarned(milestone, state, opts) {
     const vault = entries.filter((e) => e.source === 'vault');
     return vault.length > 0 && vault.every((e) => e.owned);
   }
-  if (milestone.kind === 'bm_rares') {
-    const rares = entries.filter((e) => e.source === 'blackmarket' && (e.rarity === 'rare' || e.rarity === 'legendary'));
-    return rares.length > 0 && rares.every((e) => e.owned);
-  }
   if (milestone.kind === 'seat') {
     return !!state.seatOwned;
   }
@@ -314,7 +295,7 @@ export function getCollectionMilestones(state = {}, opts = {}) {
 export function getCollectionHuntTargets(state = {}, opts = {}) {
   const limit = Math.max(1, Math.min(6, Math.floor(Number(opts.limit) || 3)));
   const rarityRank = { crown: 5, masterwork: 4, legendary: 3, rare: 2, common: 1 };
-  const sourceRank = { salon: 5, seat: 4, blackmarket: 3, vault: 2 };
+  const sourceRank = { salon: 5, seat: 4, vault: 2 };
   return getCollectionLogEntries(state, opts)
     .filter((entry) => !entry.owned)
     .slice()
@@ -330,7 +311,6 @@ export function getCollectionHuntTargets(state = {}, opts = {}) {
 
 /**
  * Claim a milestone. Mutates state.portfolio.cash / collectionClaims / meta.collectionFlair.
- * Caller should apply reputation via adjustReputation using returned rep.
  * @param {object} state
  * @param {string} milestoneId
  * @param {{ blackMarketPool?: Array<any>, seatItem?: any }} [opts]
@@ -364,7 +344,6 @@ export function claimCollectionMilestone(state, milestoneId, opts = {}) {
     ok: true,
     milestone,
     cash,
-    rep: Math.max(0, Math.floor(Number(milestone.rep) || 0)),
     flair: milestone.flair || null,
     claims: state.collectionClaims.slice(),
     rewardCashTotal: state.collectionRewardCashTotal,
