@@ -8,7 +8,7 @@ Start with **$500**. Trade live-anchored prices on a sped-up market clock. Snipe
 
 ## About This Game
 
-StockWay is a single-player trading desk RPG. Build a firm from a bare desk into a legend operation: long/short equities, options, off-market deals, world events, staff automation, credit lines, and a collectibles chase across Vault, Black Market, and The Seat.
+StockWay is a single-player trading desk RPG. Build a firm from a bare desk into a legend operation: long/short equities, options, off-market deals, world events, staff automation, credit lines, and a collectibles chase across Vault, Private Salon, and The Seat.
 
 **30 real minutes = 1 game day** at 1×. Grind slow or burn the clock at 10×.
 
@@ -116,15 +116,15 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 ### Collectibles
 - Trophy Vault (~21 cosmetics) — dashboard, background, trophy, title slots
 - Foil SVG art & masterworks tier
-- Black Market — 3-day rotating rares & legendaries
-- Relics: Mage of the Desk · Liquidity Crown
-- The Seat — $500K once-in-a-career listing
-- Private Salon — ultra-rare crown jewels ($2.5M–$5M)
+- Private Salon — ultra-rare crown jewels ($2.5M–$5M) in scarce windows
+- The Seat — $500K once-in-a-career prestige listing (rare window; claim from Collection when active)
+- Legacy relics (Mage of the Desk · Liquidity Crown) — still equippable if owned from older saves
 - Collection Log with completion % & 9 milestones
-- Museum mode — owned gallery with short lore + 5 immersion sets
+- Museum mode — owned gallery with short lore + immersion sets
 - Set completion claims cosmetic flair only (no REP / cash / Desk Prestige)
 - Standing flair cascade: mega → luxury → set → collection
 - Profile cosmetics applied across the desk
+- Black Market shop — retired (no nav / listings / coach); owned pieces remain in Collection
 
 ### Achievements
 - 47 achievements across 6 tiers
@@ -159,7 +159,6 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Perk unlock callouts
 - Margin call & circuit halt coaches
 - Live vs Offline status coach
-- Black Market legendary coach
 - In-game Help guide (10 sections)
 - Glossary (40+ terms) + hover tooltips
 
@@ -243,7 +242,6 @@ Use for playtesting — mark **Works** · **Broken** · **Polish** · **Untested
 - [ ] Perks
 - [ ] Staff
 - [ ] Financing
-- [ ] Black Market
 - [ ] Achievements
 - [ ] Trophy Vault
 - [ ] Collection Log
@@ -311,9 +309,9 @@ Use for playtesting — mark **Works** · **Broken** · **Polish** · **Untested
 
 ### Collectibles
 - [ ] Vault equip slots
-- [ ] Black Market rotation
-- [ ] Relics
-- [ ] The Seat
+- [ ] Private Salon windows
+- [ ] The Seat listing (Collection claim when active)
+- [ ] Legacy relics (owned saves)
 - [ ] Private Salon
 - [ ] Collection Log milestones
 

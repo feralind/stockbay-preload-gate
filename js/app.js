@@ -25,6 +25,7 @@ import {
   ensurePendingOrders, ensureOrderTickets,
   markPriceCorrectedNotices,
   armBuySuspend, shouldArmRevengeCooloff, isBuySuspended,
+  estimateOptionValue, liveOptionVol,
 } from './portfolio.js';
 import {
   confirmOrderFlow,
@@ -72,12 +73,11 @@ import {
 } from './licenses.js';
 import {
   TEACH_MOMENTS, teachIdForLicense, markTeachMoment, pendingLoanTeachMoments,
-  teachMomentShown,
+  teachMomentShown, detectIvCrush, heldThroughEarnings,
 } from './teach-moments.js';
 import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
 import {
-  getBlackMarketItem, getTodaysBlackMarketListing, maybeShowBlackMarketLegendaryCoach, purchaseBlackMarketItem,
-  recordExpiredBlackMarketSeen, BLACKMARKET_ITEM_POOL,
+  getBlackMarketItem, BLACKMARKET_ITEM_POOL,
 } from './blackmarket.js';
 import {
   sanitizeEquippedRelics,
@@ -942,6 +942,32 @@ function maybeShowOversizedTeach() {
   if (oversized) fireTeachMoment('firstOversized', TEACH_MOMENTS.firstOversized.text);
 }
 
+/** One-shot: long option mark fell while the underlying moved in your favor (IV crush). */
+function maybeShowIvCrushTeach() {
+  if (teachMomentShown(state.meta, 'firstIvCrush')) return;
+  const opts = state.portfolio?.options || [];
+  if (!opts.length) return;
+  for (const opt of opts) {
+    const q = getCachedQuote(opt.sym);
+    const marked = estimateOptionValue(opt);
+    const liveVol = liveOptionVol(opt);
+    if (detectIvCrush(opt, {
+      changePct: q?.changePct,
+      markedValue: marked,
+      liveVol,
+    })) {
+      fireTeachMoment('firstIvCrush', TEACH_MOMENTS.firstIvCrush.text);
+      return;
+    }
+  }
+}
+
+/** One-shot: held stock/options through an overnight earnings gap. */
+function maybeShowEarningsHoldTeach(earningsResults) {
+  if (!heldThroughEarnings(earningsResults, state.portfolio)) return;
+  fireTeachMoment('firstEarningsHold', TEACH_MOMENTS.firstEarningsHold.text);
+}
+
 function applyConfirmOrderResult(result) {
   if (!result?.ok) {
     if (result?.sound === 'error') sfxError();
@@ -999,14 +1025,7 @@ function applyCloseOptionResult(result) {
 }
 
 function syncBlackMarketForCurrentDay() {
-  recordExpiredBlackMarketSeen(state, getDayCount());
-  const listing = getTodaysBlackMarketListing(getDayCount(), { ownedIds: state.blackMarketOwned });
-  maybeShowBlackMarketLegendaryCoach(state, listing, {
-    showCoachmark,
-    hideCoachmark,
-    saveGame,
-    switchView,
-  });
+  // Black Market shop retired — no listings, no legendary coach spotlight.
 }
 
 function bindState() {
@@ -1305,42 +1324,15 @@ function bindState() {
     renderAll(state);
   };
 
-  state.onBuyBlackMarketItem = async (itemId) => {
-    const listing = getTodaysBlackMarketListing(getDayCount(), { ownedIds: state.blackMarketOwned });
-    const item = listing.items.find((row) => row.id === itemId);
-    if (!item) {
-      showAlert('This listing is no longer active today.', { title: 'Black Market', label: 'BLACK MARKET' });
-      return;
-    }
-    if (item.cost >= CONFIG.CONFIRM_NOTIONAL_USD) {
-      const ok = await showConfirm(
-        `Buy <strong>${item.name}</strong> for <strong>$${item.cost.toLocaleString()}</strong>?<br><span style="color:var(--muted);font-size:12px">Rare listing. Rotation windows do not wait.</span>`,
-        { title: 'Confirm black market purchase', label: 'BLACK MARKET', okText: 'Buy listing', cancelText: 'Cancel' },
-      );
-      if (!ok) return;
-    }
-    const result = purchaseBlackMarketItem(state, item);
-    if (!result.ok) {
-      sfxError();
-      showAlert(result.msg, { title: 'Black Market', label: 'BLACK MARKET' });
-      return;
-    }
-    sfxSuccess();
-    const auto = tryAutoEquipRelic(state, item.id);
-    if (auto.equipped) {
-      toast(`Acquired ${item.name} and equipped relic power`, { type: 'success' });
-    } else {
-      toast(`Acquired ${item.name}`, { type: 'success' });
-    }
-    saveGame();
-    renderAll(state);
+  state.onBuyBlackMarketItem = async () => {
+    showAlert('Black Market has been retired from this desk.', { title: 'Desk', label: 'INFO' });
   };
 
   state.onToggleBlackMarketRelic = (itemId) => {
     const result = toggleEquippedRelic(state, itemId);
     if (!result.ok) {
       if (result.reason === 'not_relic') return;
-      if (result.msg) showAlert(result.msg, { title: 'Relic slots', label: 'BLACK MARKET' });
+      if (result.msg) showAlert(result.msg, { title: 'Relic slots', label: 'RELICS' });
       return;
     }
     if (result.equipped) {
@@ -2097,7 +2089,8 @@ async function init() {
       }
       if (type === 'newDay') {
         const day = data?.day || getDayCount();
-        processEarningsForDay(day);
+        const earningsHits = processEarningsForDay(day);
+        maybeShowEarningsHoldTeach(earningsHits);
         const divs = processDividendsForDay(state.portfolio, day);
         for (const d of divs) {
           toast(`Dividend ${d.sym}: +$${d.amount.toFixed(2)}`, { type: 'success' });
@@ -2127,6 +2120,7 @@ async function init() {
           regenerateListingsFeed();
           resetListingsPage();
         }
+        maybeShowIvCrushTeach();
         checkAchievements(false);
         saveGame();
       }

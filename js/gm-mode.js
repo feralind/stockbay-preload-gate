@@ -120,7 +120,7 @@ export const GM_PANEL_ACTIONS = [
   { id: 'fullLoadout', label: 'Full playtest loadout', hint: 'Cash, licenses, perks, vault, BM, seat, office, luxury, collections' },
   { id: 'cashRep', label: 'Cash + licenses only', hint: `$${GM_CASH.toLocaleString()} cash · all licenses · max credit` },
   { id: 'allPerks', label: 'Unlock all perks', hint: 'Every perk id owned' },
-  { id: 'allCollectibles', label: 'All collectibles', hint: 'Vault + salon + Black Market + Seat (ledgers justified)' },
+  { id: 'allCollectibles', label: 'All collectibles', hint: 'Vault + salon + Seat (ledgers justified)' },
   { id: 'maxOfficeLuxury', label: 'Max office + luxury', hint: 'Investment Empire + all luxury sinks' },
   { id: 'claimCollections', label: 'Claim collection prestige', hint: 'Milestones + set flair (sanitize-safe)' },
   { id: 'skipCoaches', label: 'Skip coaches / tours', hint: 'Mark onboarded one-shots so UI stays clear' },
@@ -315,7 +315,6 @@ export function buildGmPanelHtml() {
     <div class="gm-panel-foot">
       <button type="button" class="btn btn-sm" data-gm-goto="dashboard">Dashboard</button>
       <button type="button" class="btn btn-sm" data-gm-goto="vault">Vault</button>
-      <button type="button" class="btn btn-sm" data-gm-goto="blackmarket">Black Market</button>
       <button type="button" class="btn btn-sm" data-gm-goto="collection">Collection</button>
       <button type="button" class="btn btn-sm" data-gm-goto="finance">Finance</button>
     </div>

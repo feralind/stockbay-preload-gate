@@ -131,6 +131,18 @@ function gameNowSec() {
   return Math.floor(getClock().getTime() / 1000);
 }
 
+/** Deterministic per-tick share count so the volume pane isn't empty in sim. */
+export function synthTickVolume(sym, price, salt = 0) {
+  const px = Math.max(0.5, Number(price) || 1);
+  const seed = [...String(sym || 'X').toUpperCase()].reduce(
+    (a, c, i) => a + c.charCodeAt(0) * (i + 3),
+    17 + Math.floor(Number(salt) || 0),
+  );
+  const n = Math.sin(seed * 0.017) * 43758.5453;
+  const u = n - Math.floor(n);
+  return Math.max(180, Math.round(px * (10 + u * 48) + (seed % 1100)));
+}
+
 export function getSimLedgerNowSec() {
   return gameNowSec();
 }
@@ -306,12 +318,15 @@ export function recordSimTick(sym, price, { barMinutes = 5, volume = 0 } = {}) {
   const day = getDay();
   const t = bucketStart(gameNowSec(), barMinutes);
   const last = L.intraday[L.intraday.length - 1];
+  const tickVol = volume > 0
+    ? Math.round(volume)
+    : Math.max(35, Math.round(synthTickVolume(key, px, t) * 0.09));
 
   if (last && Number(last.time) === t && Number(last.day) === day) {
     last.high = Math.max(last.high, px);
     last.low = Math.min(last.low, px);
     last.close = +px.toFixed(4);
-    if (volume > 0) last.volume = (last.volume || 0) + volume;
+    last.volume = (last.volume || 0) + tickVol;
     return true;
   }
 
@@ -323,7 +338,7 @@ export function recordSimTick(sym, price, { barMinutes = 5, volume = 0 } = {}) {
     high: +px.toFixed(4),
     low: +px.toFixed(4),
     close: +px.toFixed(4),
-    volume: Math.max(0, Math.round(volume) || 0),
+    volume: volume > 0 ? Math.round(volume) : synthTickVolume(key, px, t),
     day,
   });
   if (L.intraday.length > MAX_INTRADAY_BARS) {

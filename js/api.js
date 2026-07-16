@@ -23,6 +23,7 @@ import {
   launchpadCoversRange,
   isSessionRangeKey,
   ensureCareerDailyCatchUp,
+  synthTickVolume,
 } from './sim-candle-ledger.js';
 
 export {
@@ -43,6 +44,7 @@ export {
   hasLaunchpadDaily,
   launchpadCoversRange,
   ensureCareerDailyCatchUp,
+  synthTickVolume,
 };
 
 const quoteCache = new Map();
@@ -1104,9 +1106,10 @@ export async function fetchCandles(sym, range = '1D', count = null) {
   const deskPx = quoteCache.get(key)?.price;
   const session = isSessionRangeKey(rangeKey);
 
-  // Sim 1D: prefer real intraday ledger only (≥2 bars). A single morning stub
-  // from beginSimSession must NOT block Yahoo/seed remap — that made only
-  // heavily-watched names (often AAPL) look correct.
+  // Sim: prefer local career ledger whenever it already covers this TF.
+  // Refresh / TF clicks must NOT force Yahoo when launchpad (or 1D intraday) is usable —
+  // Yahoo is only a one-shot launchpad seed / upgrade for longer windows.
+  // There is no gameState.market.stocks[].history; candles live in sim-candle-ledger.
   if (simulationMode) {
     if (!session && deskPx > 0) ensureCareerDailyCatchUp(key, deskPx);
     if (session && hasUsableSimIntraday(key)) {

@@ -102,10 +102,6 @@
             <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="10" width="4" height="10" rx="1"/><rect x="10" y="6" width="4" height="14" rx="1"/><rect x="16" y="3" width="4" height="17" rx="1"/></svg></span>
             <span>Financing</span>
           </button>
-          <button class="nav-item" data-view="blackmarket">
-            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 12 12 4l9 8-9 8-9-8z"/><path d="M9 12h6M12 9v6"/></svg></span>
-            <span>Black Market</span>
-          </button>
         </div>
         <div class="nav-label">Progress</div>
         <div class="nav-group">
@@ -244,7 +240,7 @@
           </header>
           <div class="dash-standing" id="dash-standing" aria-label="Standing"></div>
           <div class="dash-stats dash-index-strip" id="dash-stats" aria-label="Firm indices"></div>
-          <div class="dash-ticker-ribbon" id="dash-ticker-ribbon" aria-label="Market movers"></div>
+          <div class="dash-first-trade" id="dash-first-trade" hidden aria-hidden="true"></div>
           <div class="dash-progress-row">
             <div class="dash-card dash-office-card" id="dash-office-stage" aria-label="Office"></div>
             <div class="dash-card dash-goal-card" id="dash-mega-goal" aria-label="Mega goal"></div>
@@ -278,10 +274,10 @@
               </div>
               <div class="dash-card dash-asset-panel">
                 <div class="dash-card-head">
-                  <span>Desk tape</span>
+                  <span id="dash-asset-title">Desk tape</span>
                   <button type="button" class="btn btn-sm" data-goto="listings">Listings</button>
                 </div>
-                <div id="dash-recent" class="dash-asset-table" aria-label="Recent activity and movers"></div>
+                <div id="dash-recent" class="dash-asset-table" aria-label="Desk tape"></div>
               </div>
               <div class="dash-card dash-challenge-panel">
                 <div class="dash-card-head"><span>Today's Challenge</span></div>
@@ -601,7 +597,7 @@
       <section class="view-panel" id="view-vault"><div id="vault-root" class="vault-view"></div></section>
       <section class="view-panel" id="view-estates"><div id="estates-root" class="estates-view"></div></section>
       <section class="view-panel" id="view-collection"><div id="collection-log-root" class="collection-log-view"></div></section>
-      <section class="view-panel" id="view-blackmarket"><div id="blackmarket-root" class="blackmarket-view"></div></section>
+      <!-- Black Market view retired -->
       <section class="view-panel" id="view-finance">
         <div class="finance-view">
           <header class="finance-hero">

@@ -36,7 +36,11 @@ const sessionOpen = new Map();
 /** Active halts: sym -> { day, untilMinute, reason, movePct } */
 const halts = new Map();
 
+/** Default / docs midpoint — live trips use per-symbol seeded bands. */
 export const CIRCUIT_BREAK_PCT = 0.07;
+/** Soft free-lunch fix: each name rolls a hidden trip band in [min, max] for the day. */
+export const CIRCUIT_BREAK_PCT_MIN = 0.065;
+export const CIRCUIT_BREAK_PCT_MAX = 0.085;
 export const CIRCUIT_HALT_MINUTES = 15;
 /** Hard cap on a single shock apply (events, drift, gaps use their own max via opts). */
 export const MAX_SHOCK_PCT = 0.04;
@@ -126,6 +130,24 @@ export function getTapeRegime(day = dayCount) {
   return (h % 10) < 4 ? 'chop' : 'trend';
 }
 
+/**
+ * Pure: per-symbol circuit threshold for a game day (6.5%–8.5%).
+ * Seeded from day + symbol so reloads stay stable and players cannot memorize 7.0%.
+ */
+export function circuitHaltThreshold(sym, day = dayCount) {
+  const key = String(sym || '').toUpperCase();
+  const d = Math.max(1, Math.floor(Number(day) || 1));
+  let h = Math.imul(d ^ 0x9e3779b9, 2654435761) >>> 0;
+  for (let i = 0; i < key.length; i++) {
+    h = Math.imul(h ^ key.charCodeAt(i), 2246822507) >>> 0;
+  }
+  h = Math.imul(h ^ (h >>> 16), 2246822507) >>> 0;
+  const span = CIRCUIT_BREAK_PCT_MAX - CIRCUIT_BREAK_PCT_MIN;
+  const steps = 20; // 0.1% increments
+  const t = CIRCUIT_BREAK_PCT_MIN + ((h % (steps + 1)) / steps) * span;
+  return Math.round(t * 10000) / 10000;
+}
+
 function currentMinuteOfDay() {
   return marketDate.getHours() * 60 + marketDate.getMinutes();
 }
@@ -175,7 +197,8 @@ export function checkCircuitBreaker(sym, price) {
     return false;
   }
   const open = sessionOpen.get(key);
-  const { trip, movePct } = shouldTripCircuit(open, px);
+  const threshold = circuitHaltThreshold(key, dayCount);
+  const { trip, movePct } = shouldTripCircuit(open, px, threshold);
   // Seed→live / candle rebase: reset anchor instead of inventing a 1000% halt
   if (Math.abs(movePct) >= SESSION_OPEN_REBASE_PCT) {
     sessionOpen.set(key, px);
@@ -188,6 +211,7 @@ export function checkCircuitBreaker(sym, price) {
     untilMinute: until,
     reason: movePct > 0 ? 'limit-up' : 'limit-down',
     movePct,
+    threshold,
   };
   halts.set(key, info);
   emit('halt', { sym: key, ...info });

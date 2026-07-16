@@ -9,8 +9,8 @@ import { requiredLicenseForRep, hasLicense } from './licenses.js';
 export const PRIVATE_SALON_ITEMS = {
   vermeerAttribution: {
     id: 'vermeerAttribution',
-    name: 'Interior with Attribution, c. 1660',
-    desc: 'Museum-grade Dutch interior, disputed attribution. Crown provenance — extreme appraisal and flagship Desk Prestige when equipped.',
+    name: 'Cat Under the Violet Moon',
+    desc: 'Pixel nocturne — a lone cat beneath a violet sky and crescent moon. Crown provenance, extreme appraisal, and flagship Desk Prestige when equipped.',
     cost: 2500000,
     category: 'background',
     repRequired: 1400,

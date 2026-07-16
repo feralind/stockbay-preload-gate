@@ -15,11 +15,14 @@ import {
   getSymbolName, getSymbolSector, getRandomSymbols, getSymbolMeta, ALL_SYMBOLS, getSymbolCount,
 } from '../symbols.js';
 import { getWalkthroughSuggestMeta } from '../onboarding-walkthrough.js';
+import { earningsChipInfo } from '../corporate-actions.js';
+import { getDayCount } from '../market.js';
 import { getSelectedSym, setSelectedSym } from './selection.js';
 import { escapeAttr, escapeHtml, quoteForDisplay } from './shared.js';
 import {
   computeListingEdgePct, computeEdgeGlowScale, edgeVisualTokens, dealWaveSvg, truncate1,
 } from './deal-desk.js';
+import { getDeskTapeSymbols } from './dashboard.js';
 
 let watchlist = ['AAPL', 'NVDA', 'TSLA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'AMD'];
 let listingsVisibleCount = CONFIG.LISTING_PAGE_SIZE;
@@ -407,11 +410,18 @@ export function listingDealEdge(listing) {
 }
 
 /** Top deal-score candidates for Hot listings rotation (~15–20). Ranking only — may include seeds. */
-export function buildHotListingPool(listings, poolSize = CONFIG.HOT_LISTING_POOL_SIZE || 18) {
+export function buildHotListingPool(listings, poolSize = CONFIG.HOT_LISTING_POOL_SIZE || 18, avoidSyms = null) {
   const size = Math.max(CONFIG.MINI_LISTING_COUNT || 5, Number(poolSize) || 18);
+  const avoid = new Set(
+    (avoidSyms || []).map((s) => String(s || '').toUpperCase()).filter(Boolean),
+  );
   return [...(listings || [])]
     .filter((l) => l?.sym)
     .sort((a, b) => {
+      // Soft prefer names not already on top tape / desk tape
+      const aHit = avoid.has(String(a.sym).toUpperCase()) ? 1 : 0;
+      const bHit = avoid.has(String(b.sym).toUpperCase()) ? 1 : 0;
+      if (aHit !== bHit) return aHit - bHit;
       const edge = listingDealEdge(b) - listingDealEdge(a);
       if (edge !== 0) return edge;
       const deal = (b.isDeal ? 1 : 0) - (a.isDeal ? 1 : 0);
@@ -419,6 +429,17 @@ export function buildHotListingPool(listings, poolSize = CONFIG.HOT_LISTING_POOL
       return String(a.sym).localeCompare(String(b.sym));
     })
     .slice(0, size);
+}
+
+/**
+ * Symbols Hot listings should soft-avoid (already ambient on top tape or Desk tape).
+ * @param {object} [state]
+ * @returns {string[]}
+ */
+export function hotListingAvoidSymbols(state) {
+  const tape = (CONFIG.TICKER_SYMBOLS || []).map((s) => String(s).toUpperCase());
+  const desk = state ? getDeskTapeSymbols(state) : [];
+  return [...new Set([...tape, ...desk])];
 }
 
 /**
@@ -459,7 +480,7 @@ export function hotPoolAllLiveAnchored(pool, getQuote = getCachedQuote) {
 /** Ranked prefetch set (may still be seed) — fed into viewport-priority quote refresh. */
 export function getHotListingPrefetchCandidates(state) {
   const n = CONFIG.HOT_LISTING_PREFETCH_SIZE || CONFIG.HOT_LISTING_POOL_SIZE || 24;
-  return buildHotListingPool(state?.listings, n);
+  return buildHotListingPool(state?.listings, n, hotListingAvoidSymbols(state));
 }
 
 /**
@@ -859,6 +880,30 @@ function vectorMarkHtml(meta, size = 'sm') {
   return `<div class="sym-mark sym-mark-vector ${sizeClass}" style="--mark:${color}" aria-hidden="true">${sectorVectorSvg(sector)}</div>`;
 }
 
+function earningsBadgeHtml(sym) {
+  const chip = earningsChipInfo(sym, getDayCount());
+  if (!chip) return '';
+  return `<span class="earn-chip${chip.urgent ? ' urgent' : ''}" title="${escapeAttr(chip.title)}">${escapeHtml(chip.label)}</span>`;
+}
+
+function patchEarningsBadge(hostEl, sym) {
+  if (!hostEl) return;
+  const next = earningsBadgeHtml(sym);
+  const existing = hostEl.querySelector(':scope > .earn-chip');
+  if (!next) {
+    if (existing) existing.remove();
+    return;
+  }
+  if (existing) {
+    const tmp = document.createElement('span');
+    tmp.innerHTML = next;
+    const neu = tmp.firstElementChild;
+    if (neu && existing.outerHTML !== neu.outerHTML) existing.replaceWith(neu);
+    return;
+  }
+  hostEl.insertAdjacentHTML('beforeend', next);
+}
+
 function hotListingHtml(l) {
   const meta = getSymbolMeta(l.sym);
   const up = (l.changePct || 0) >= 0;
@@ -868,7 +913,7 @@ function hotListingHtml(l) {
     <div class="hot-row ${l.isDeal ? 'deal' : ''} ${getSelectedSym() === l.sym ? 'selected' : ''}" data-sym="${l.sym}">
       <div class="hot-row-main">
         <div class="hot-id">
-          <span class="hot-sym">${l.sym}</span>
+          <span class="hot-sym">${l.sym}${earningsBadgeHtml(l.sym)}</span>
           <span class="hot-name">${meta.name || l.name || l.sym}</span>
         </div>
         ${spark}
@@ -891,6 +936,7 @@ function patchHotRow(el, l) {
     chgEl.textContent = `${up ? '+' : ''}${(l.changePct || 0).toFixed(2)}%`;
     chgEl.className = `hot-chg ${up ? 'up' : 'down'}`;
   }
+  patchEarningsBadge(el.querySelector('.hot-sym'), l.sym);
   if (el.querySelector('.listing-spark')) patchSparkline(el, l);
 }
 
@@ -932,6 +978,7 @@ function listingHtml(l, state, { scale = DEFAULT_EDGE_SCALE, hot = false } = {})
               <span class="deal-card-sym">${l.sym}</span>
               <span class="deal-card-exchange">${escapeHtml(meta.exchange || '')}</span>
               ${marketTag}
+              ${earningsBadgeHtml(l.sym)}
               ${isSuggest ? `<span class="deal-card-tag deal-card-tag-suggest suggest-badge" title="${escapeAttr(suggestMeta.reason || '')}">Suggested</span>` : ''}
             </div>
             <div class="deal-card-name">${escapeHtml(l.name || l.sym)}</div>
@@ -970,6 +1017,8 @@ function patchListingRow(el, l, { scale = DEFAULT_EDGE_SCALE } = {}) {
   if (askPxEl) askPxEl.textContent = `$${l.price.toFixed(2)}`;
   const askLbl = el.querySelector('.deal-card-ask-lbl');
   if (askLbl) askLbl.textContent = l.isMarket ? 'Market' : 'Ask';
+
+  patchEarningsBadge(el.querySelector('.deal-card-sym-row'), l.sym);
 
   const edgeRowEl = el.querySelector('.deal-card-edge-row');
   if (edgeRowEl) {

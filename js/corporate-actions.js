@@ -76,6 +76,37 @@ export function isEarningsDay(sym, gameDay) {
   return daysUntilEarnings(sym, gameDay) === 0;
 }
 
+/**
+ * Compact calendar chip for listings / trade ticket.
+ * Tonight / E-1 / E-N within a week; empty when farther out.
+ * @param {string} sym
+ * @param {number} gameDay
+ * @returns {{ label: string, title: string, urgent: boolean } | null}
+ */
+export function earningsChipInfo(sym, gameDay) {
+  const until = daysUntilEarnings(sym, gameDay);
+  if (!Number.isFinite(until) || until < 0 || until > 7) return null;
+  if (until === 0) {
+    return {
+      label: 'E tonight',
+      title: 'Earnings print on the next overnight roll — gap risk is live',
+      urgent: true,
+    };
+  }
+  if (until === 1) {
+    return {
+      label: 'E-1',
+      title: 'Earnings tomorrow — options usually get richer into the print, then can crush',
+      urgent: true,
+    };
+  }
+  return {
+    label: `E-${until}`,
+    title: `Earnings in ${until} game days`,
+    urgent: false,
+  };
+}
+
 export function isDividendExDay(sym, gameDay) {
   return dividendExDayInQuarter(sym) === quarterDay(gameDay);
 }

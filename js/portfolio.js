@@ -537,8 +537,10 @@ export function buyOption(portfolio, opt, hasOptionsPerk) {
   entry.openedDay = day;
   entry.expiryDay = day + (entry.expiryDays || 30);
   if (!entry.vol) {
+    // Snapshot entry IV for dossier / IV-crush teach; marks use live vol below.
     entry.vol = defaultVol(symbol, getCachedQuote(symbol)?.price ?? strike, 0, earningsVolMultiplier(symbol, day));
   }
+  entry.entryVol = entry.vol;
   portfolio.options.push(entry);
   logTrade(portfolio, { action: 'BUY_OPT', sym: symbol, type: entry.type, strike, qty, price: premium });
   return { ok: true };
@@ -574,12 +576,22 @@ export function estimateOptionValue(opt) {
       : Math.max(0, opt.strike - spot);
     return intrinsic * (opt.qty || 0) * 100;
   }
-  const vol = opt.vol ?? defaultVol(opt.sym, spot, q?.changePct, earningsVolMultiplier(opt.sym, gameDay));
+  // Live mark: recompute IV from today's move + earnings calendar so IV crush is visible.
+  // Keep opt.vol / entryVol as the purchase-time snapshot for teach moments.
+  const liveVol = defaultVol(opt.sym, spot, q?.changePct, earningsVolMultiplier(opt.sym, gameDay));
   const prem = blackScholesPremium({
     spot, strike: opt.strike, daysToExpiry: daysLeft,
-    vol, type: opt.type,
+    vol: liveVol, type: opt.type,
   });
   return prem * opt.qty * 100;
+}
+
+/** Live implied vol for a held contract (same inputs as estimateOptionValue). */
+export function liveOptionVol(opt) {
+  const q = getCachedQuote(opt?.sym);
+  const spot = q?.price ?? opt?.strike ?? 0;
+  if (!(spot > 0)) return 0.28;
+  return defaultVol(opt.sym, spot, q?.changePct, earningsVolMultiplier(opt.sym, getDayCount()));
 }
 
 /** Shared intrinsic helper (tests + settle path). */

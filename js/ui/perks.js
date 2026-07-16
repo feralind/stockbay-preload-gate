@@ -157,6 +157,17 @@ function licenseReqListHtml(licId, snap) {
     </li>`).join('')}</ul>`;
 }
 
+/**
+ * One-sentence credit-building signpost (Series 7) — only while the
+ * personal-credit row is still unmet, so debt-averse novices see the loop.
+ */
+function licenseCreditHintHtml(licId, snap) {
+  const lic = LICENSES[licId];
+  if (!lic?.hint || !lic.reqs?.personalCredit) return '';
+  if (snap.personalCredit >= lic.reqs.personalCredit) return '';
+  return `<p class="license-card-hint">${lic.hint}</p>`;
+}
+
 /** License chapter cards — the exam UI. */
 function licenseBoardHtml(snap) {
   return LICENSE_ORDER.map((id) => {
@@ -178,6 +189,7 @@ function licenseBoardHtml(snap) {
         <p class="license-card-unlocks"><strong>Unlocks:</strong> ${lic.unlocks}</p>
         <p class="license-card-teaches">${lic.teaches}</p>
         ${owned ? '' : licenseReqListHtml(id, snap)}
+        ${owned ? '' : licenseCreditHintHtml(id, snap)}
         <footer class="license-card-foot">
           <span class="license-card-fee">${owned ? 'Held' : feeLine}</span>
           ${canSit ? `<button type="button" class="btn btn-accent btn-sm license-exam-btn" data-license="${id}">Sit exam · ${fmt(lic.fee)}</button>` : ''}

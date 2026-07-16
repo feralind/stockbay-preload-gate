@@ -34,6 +34,8 @@ export const LICENSES = {
     unlocks: 'Margin & shorts, Options Desk, Trading Floor, Smart Routing',
     // Good-band FICO (670+) — must build from Day-1 Fair start (600).
     reqs: { tradesClosed: 25, personalCredit: 670 },
+    // Signpost for debt-averse novices: credit does not rise without a borrow→pay cycle.
+    hint: 'Build personal credit: take a small loan and pay it on time — thin files start near 600 and need 670+ for the background check.',
   },
   research: {
     id: 'research',

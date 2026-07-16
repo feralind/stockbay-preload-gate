@@ -24,6 +24,12 @@ export const TEACH_MOMENTS = {
   firstRevengeCooloff: {
     text: 'Trading desk suspended for 30 seconds — cool-down from risk management. After a blowup loss, pause before revenge sizing. Watch the tape; do not chase the hole.',
   },
+  firstIvCrush: {
+    text: 'Your option fell while the stock went your way? The market calmed down, and calm is cheap. You just felt IV crush — when implied volatility drops, option premiums deflate fast.',
+  },
+  firstEarningsHold: {
+    text: 'You held through an earnings print. Overnight gaps are the classic options coin-flip — the premium you paid was the price of that lottery ticket.',
+  },
 };
 
 /** One-shot license-earned moments use ids like license_series7. */
@@ -111,4 +117,44 @@ export function pendingLoanTeachMoments(loanEvents = [], meta = {}) {
     ids.push('firstInterest');
   }
   return ids;
+}
+
+/**
+ * Pure: did a long option just feel IV crush?
+ * Favorable underlying day move, mark below entry cost, live IV clearly below entry IV.
+ * @param {{ type?: string, premium?: number, qty?: number, vol?: number, entryVol?: number }} opt
+ * @param {{ changePct?: number, markedValue?: number, liveVol?: number }} ctx
+ */
+export function detectIvCrush(opt, ctx = {}) {
+  if (!opt) return false;
+  const type = String(opt.type || '').toLowerCase();
+  const changePct = Number(ctx.changePct) || 0;
+  const favorable = type === 'call' ? changePct >= 1.5 : type === 'put' ? changePct <= -1.5 : false;
+  if (!favorable) return false;
+  const cost = Math.max(0, (Number(opt.premium) || 0) * (Number(opt.qty) || 0) * 100);
+  const marked = Number(ctx.markedValue);
+  if (!(cost > 0) || !Number.isFinite(marked) || marked >= cost * 0.98) return false;
+  const entryVol = Number(opt.entryVol ?? opt.vol) || 0;
+  const liveVol = Number(ctx.liveVol) || 0;
+  if (!(entryVol > 0) || !(liveVol > 0)) return false;
+  // Live IV at least ~12% relative cooler than what you paid for
+  return liveVol <= entryVol * 0.88;
+}
+
+/**
+ * Pure: player held stock or options through an earnings gap print.
+ * @param {Array<{ sym?: string }>} earningsResults
+ * @param {object} portfolio
+ */
+export function heldThroughEarnings(earningsResults = [], portfolio = {}) {
+  if (!Array.isArray(earningsResults) || !earningsResults.length) return false;
+  const longs = portfolio.longs || {};
+  const shorts = portfolio.shorts || {};
+  const opts = Array.isArray(portfolio.options) ? portfolio.options : [];
+  return earningsResults.some((r) => {
+    const sym = String(r?.sym || '').toUpperCase();
+    if (!sym) return false;
+    if (longs[sym]?.shares > 0 || shorts[sym]?.shares > 0) return true;
+    return opts.some((o) => String(o?.sym || '').toUpperCase() === sym);
+  });
 }

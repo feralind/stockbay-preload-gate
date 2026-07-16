@@ -1544,6 +1544,32 @@ async function main() {
       assert.ok(fixed.high - fixed.low <= 311.4 * 0.021);
     });
 
+    test('computePriceAxisRange keeps completed 1D spikes on-screen (no percentile / maxSpan clip)', () => {
+      const { computePriceAxisRange } = chartMod;
+      const now = Math.floor(Date.now() / 1000);
+      const bars = [];
+      for (let i = 0; i < 40; i++) {
+        const px = 320 + Math.sin(i / 5) * 1.5;
+        bars.push({
+          time: now - (39 - i) * 300,
+          open: px, high: px + 0.4, low: px - 0.4, close: px + 0.1, volume: 1000,
+        });
+      }
+      // Completed spike bar (not forming) — must remain visible after price comes back
+      bars[28] = {
+        time: now - 11 * 300,
+        open: 322, high: 348, low: 321.5, close: 346, volume: 5000,
+      };
+      bars[bars.length - 1] = {
+        time: now, open: 324, high: 325, low: 323.5, close: 324.2, volume: 900,
+      };
+      const axis = computePriceAxisRange(bars, '1D');
+      assert.ok(axis);
+      assert.ok(axis.max >= 348, `completed spike high clipped: axis.max=${axis.max}`);
+      assert.ok(axis.min <= 321.5, `session lows clipped: ${axis.min}`);
+      assert.ok(axis.max >= 324.2 && axis.min <= 324.2, 'live close on-screen');
+    });
+
     test('computePriceAxisRange ignores last-bar spear high/low', () => {
       const { computePriceAxisRange, clampBarToPeers, peerMedianRange } = chartMod;
       const now = Math.floor(Date.now() / 1000);
@@ -2306,147 +2332,69 @@ async function main() {
     assert.ok(COLLECTION_MILESTONES.length >= 7);
   });
 
-  test('getTodaysBlackMarketListing is deterministic for a given seed/day', () => {
+  test('getTodaysBlackMarketListing is retired — always empty, still deterministic', () => {
     const a = getTodaysBlackMarketListing(77, { ownedIds: [] });
     const b = getTodaysBlackMarketListing(77, { ownedIds: [] });
     assert.deepEqual(a, b);
-  });
-
-  test('legendary items appear at roughly the specified rate over simulated slots', () => {
-    let legendary = 0;
-    let totalSlots = 0;
-    for (let day = 1; day <= 2400; day++) {
+    assert.deepEqual(a.items, []);
+    assert.equal(a.day, 77);
+    assert.equal(a.expiresDay, 77 + BLACKMARKET_LISTING_TTL_DAYS - 1);
+    for (let day = 1; day <= 200; day++) {
       const listing = getTodaysBlackMarketListing(day, { ownedIds: [] });
-      totalSlots += listing.items.length;
-      legendary += listing.items.filter((item) => item.rarity === 'legendary').length;
+      assert.deepEqual(listing.items, [], `day ${day} should have no shop listings`);
     }
-    const rate = legendary / Math.max(1, totalSlots);
-    // Target is near 1/30 with wide tolerance for deterministic finite samples.
-    assert.ok(rate > 0.02 && rate < 0.05, `legendary slot rate ${rate}`);
   });
 
-  test('isBlackMarketListingExpired returns true after TTL days unpurchased', () => {
+  test('isBlackMarketListingExpired returns true on/after expiresDay', () => {
     const listing = getTodaysBlackMarketListing(20, { ownedIds: [] });
-    assert.equal(isBlackMarketListingExpired(listing, 20 + BLACKMARKET_LISTING_TTL_DAYS - 1), false);
-    assert.equal(isBlackMarketListingExpired(listing, 20 + BLACKMARKET_LISTING_TTL_DAYS), true);
+    assert.equal(listing.expiresDay, 20 + BLACKMARKET_LISTING_TTL_DAYS - 1);
+    assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay - 1), false);
+    assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay), true);
+    assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay + 1), true);
   });
 
-  test('purchased legendary item cannot reappear as purchasable for same save', () => {
+  test('legacy black market item pool still resolves owned cosmetics/relics', () => {
+    assert.ok(BLACKMARKET_ITEM_POOL.length >= 10, 'pool kept for legacy owned pieces');
     const legend = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
-    assert.ok(legend, 'expected at least one legendary item');
-    for (let day = 1; day <= 900; day++) {
-      const listing = getTodaysBlackMarketListing(day, { ownedIds: [legend.id] });
-      assert.equal(listing.items.some((item) => item.id === legend.id), false, `legendary ${legend.id} reappeared on day ${day}`);
-    }
-  });
-
-  test('getTodaysBlackMarketListing never includes an owned item regardless of rarity', () => {
-    const samples = ['common', 'rare', 'legendary'].map((rarity) => {
-      const item = BLACKMARKET_ITEM_POOL.find((row) => row.rarity === rarity);
-      assert.ok(item, `missing ${rarity} item`);
-      return item;
-    });
-    for (const item of samples) {
-      for (let day = 1; day <= 400; day++) {
-        const listing = getTodaysBlackMarketListing(day, { ownedIds: [item.id] });
-        assert.equal(
-          listing.items.some((row) => row.id === item.id),
-          false,
-          `owned ${item.rarity} ${item.id} reappeared on day ${day}`,
-        );
-      }
-    }
-  });
-
-  test('getTodaysBlackMarketListing still returns a valid listing when all-but-one common is owned', () => {
+    assert.ok(legend, 'expected at least one legendary relic/cosmetic in pool');
     const commons = BLACKMARKET_ITEM_POOL.filter((item) => item.rarity === 'common');
-    assert.ok(commons.length >= 2, 'need multiple commons');
-    const keep = commons[commons.length - 1];
-    const owned = commons.filter((item) => item.id !== keep.id).map((item) => item.id);
-    let sawKeep = false;
-    for (let day = 1; day <= 300; day++) {
-      const listing = getTodaysBlackMarketListing(day, { ownedIds: owned });
-      assert.ok(listing.items.length >= 1, `day ${day} produced an empty listing`);
-      assert.ok(
-        listing.items.every((item) => !owned.includes(item.id)),
-        `day ${day} included an owned common`,
-      );
-      if (listing.items.some((item) => item.id === keep.id)) sawKeep = true;
-    }
-    assert.ok(sawKeep, 'remaining unowned common should still appear across the sample');
+    assert.ok(commons.length >= 2, 'need multiple commons in legacy pool');
   });
 
-  test('new mid-band commons appear at rates comparable to legacy commons over 1200 days', () => {
-    const NEW_IDS = ['pitPassLanyard', 'amberTapeBackdrop', 'ledgerLineTitle'];
-    const LEGACY_IDS = ['afterHoursMonogram', 'nightWatchTitle', 'tickerVaultBackdrop', 'clockworkDeskSkin'];
-    for (const id of [...NEW_IDS, ...LEGACY_IDS]) {
-      assert.ok(BLACKMARKET_ITEM_POOL.some((item) => item.id === id), `missing pool item ${id}`);
-    }
-    const counts = new Map();
-    for (let day = 1; day <= 1200; day++) {
-      const listing = getTodaysBlackMarketListing(day, { ownedIds: [] });
-      for (const item of listing.items) {
-        if (item.rarity !== 'common') continue;
-        counts.set(item.id, (counts.get(item.id) || 0) + 1);
-      }
-    }
-    const legacyAvg = LEGACY_IDS.reduce((sum, id) => sum + (counts.get(id) || 0), 0) / LEGACY_IDS.length;
-    assert.ok(legacyAvg > 0, 'legacy commons never appeared');
-    for (const id of NEW_IDS) {
-      const n = counts.get(id) || 0;
-      assert.ok(n > 0, `new common ${id} never appeared`);
-      assert.ok(
-        n > legacyAvg * 0.35 && n < legacyAvg * 2.8,
-        `new common ${id} rate ${n} vs legacy avg ${legacyAvg.toFixed(1)} is badly skewed`,
-      );
-    }
-  });
-
-  test('blackmarket legendary coachmark fires exactly once per save', () => {
+  test('blackmarket legendary coachmark is retired and never shows', () => {
     const legend = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
     const state = {
       meta: { blackMarketLegendCoachShown: false },
       portfolio: createPortfolio(1000),
       blackMarketOwned: [],
     };
-    const listing = { items: [legend] };
     let shown = 0;
-    let saves = 0;
-    /** @type {object | null} */
-    let lastOpts = null;
-    const first = maybeShowBlackMarketLegendaryCoach(state, listing, {
-      showCoachmark: (opts) => { shown++; lastOpts = opts; },
+    const result = maybeShowBlackMarketLegendaryCoach(state, { items: [legend] }, {
+      showCoachmark: () => { shown++; },
       hideCoachmark: () => {},
       switchView: () => {},
-      saveGame: () => { saves++; },
+      saveGame: () => {},
     });
-    assert.equal(first, true);
-    assert.equal(state.meta.blackMarketLegendCoachShown, true);
-    assert.equal(shown, 1);
-    assert.equal(saves, 1);
-    assert.equal(lastOpts?.target, '.nav-item[data-view="blackmarket"]');
-    assert.equal(typeof lastOpts?.onSkip, 'function');
-    assert.equal(typeof lastOpts?.onNext, 'function');
-    assert.match(String(lastOpts?.text || ''), /Legendary Black Market/i);
-    const second = maybeShowBlackMarketLegendaryCoach(state, listing, {
-      showCoachmark: (opts) => { shown++; lastOpts = opts; },
-      saveGame: () => { saves++; },
-    });
-    assert.equal(second, false);
-    assert.equal(shown, 1);
-    assert.equal(saves, 1);
+    assert.equal(result, false);
+    assert.equal(shown, 0);
+    assert.equal(state.meta.blackMarketLegendCoachShown, false);
   });
 
-  test('collection entries include black market pool and mark unowned as false', () => {
+  test('collection entries only include owned black market pieces (shop retired)', () => {
     const ownedId = BLACKMARKET_ITEM_POOL[0].id;
     const entries = getCollectionLogEntries(
       { vaultOwned: [], blackMarketOwned: [ownedId] },
       { blackMarketPool: BLACKMARKET_ITEM_POOL },
     );
-    const ownedEntry = entries.find((entry) => entry.id === ownedId);
-    const missedEntry = entries.find((entry) => entry.source === 'blackmarket' && entry.id !== ownedId);
-    assert.equal(ownedEntry?.owned, true);
-    assert.equal(missedEntry?.owned, false);
+    const bmEntries = entries.filter((entry) => entry.source === 'blackmarket');
+    assert.equal(bmEntries.length, 1);
+    assert.equal(bmEntries[0]?.id, ownedId);
+    assert.equal(bmEntries[0]?.owned, true);
+    const empty = getCollectionLogEntries(
+      { vaultOwned: [], blackMarketOwned: [] },
+      { blackMarketPool: BLACKMARKET_ITEM_POOL },
+    );
+    assert.equal(empty.filter((e) => e.source === 'blackmarket').length, 0);
   });
 
   test('relic slot limit starts at one and seat unlocks second slot', () => {
@@ -2459,14 +2407,25 @@ async function main() {
     const {
       buildFirmRelicRowHtml, configureDashboardUi,
       getSoftOfficeStage, getNextNetWorthMilestone,
+      getDeskTapeSymbols, isVirginDesk,
     } = dashMod;
     test('dashboard Firm Snapshot shows None equipped with correct slot count when empty', () => {
       const one = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [], seatOwned: false });
       assert.match(one, /None equipped \(1 slot\)/);
-      assert.match(one, /data-goto="blackmarket"/);
+      assert.match(one, /data-goto="collection"/);
       const two = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [], seatOwned: true });
       assert.match(two, /None equipped \(2 slots\)/);
-      assert.match(two, /data-goto="blackmarket"/);
+      assert.match(two, /data-goto="collection"/);
+    });
+    test('Desk tape symbols prefer recent trades over movers; virgin desk is any save with no fills', () => {
+      assert.equal(isVirginDesk({ portfolio: { history: [] } }), true);
+      assert.equal(isVirginDesk({ portfolio: { history: [{ sym: 'AAPL', action: 'BUY', shares: 1, price: 100 }] } }), false);
+      const traded = getDeskTapeSymbols({
+        portfolio: { history: [{ sym: 'NVDA', action: 'BUY', shares: 2, price: 200 }] },
+        listings: [],
+        watchlist: [],
+      });
+      assert.deepEqual(traded, ['NVDA']);
     });
     test('getSoftOfficeStage advances with Net Worth and licenses (eligibility gates)', () => {
       const early = getSoftOfficeStage(500, ['retail']);
@@ -2504,14 +2463,15 @@ async function main() {
       assert.match(html, /Liquidity Crown/);
       assert.doesNotMatch(html, /None equipped/);
       assert.doesNotMatch(html, /data-goto="blackmarket"/);
+      assert.doesNotMatch(html, /data-goto="collection"/);
       assert.match(html, /15% less slippage|margin-call grace/i);
     });
-    test('dashboard relic empty-row data-goto targets blackmarket via configureDashboardUi', () => {
+    test('dashboard relic empty-row data-goto targets collection via configureDashboardUi', () => {
       let navigated = '';
       configureDashboardUi({ switchView: (id) => { navigated = id; } });
       const html = buildFirmRelicRowHtml({ blackMarketEquippedRelics: [] });
       const goto = /data-goto="([^"]+)"/.exec(html)?.[1];
-      assert.equal(goto, 'blackmarket');
+      assert.equal(goto, 'collection');
       // Same binding renderDashboard applies: btn.onclick = () => switchView(btn.dataset.goto)
       const fakeBtn = { dataset: { goto }, onclick: null };
       fakeBtn.onclick = () => {
@@ -2523,7 +2483,7 @@ async function main() {
       navigated = '';
       const handler = () => { navigated = fakeBtn.dataset.goto; };
       handler();
-      assert.equal(navigated, 'blackmarket');
+      assert.equal(navigated, 'collection');
     });
   }
 
@@ -3242,6 +3202,28 @@ async function main() {
     assert.equal(ownedSeat?.owned, true);
     assert.equal(missingSeat?.owned, false);
   });
+
+  // --- Hot listings soft-avoid tape / desk symbols ---
+  {
+    const listingsUiMod = await import(pathToFileURL(path.join(__dirname, '../js/ui/listings.js')).href);
+    const { buildHotListingPool, hotListingAvoidSymbols, listingDealEdge } = listingsUiMod;
+    test('Hot listings soft-rank away from top-tape and desk-tape symbols', () => {
+      const listings = [
+        { sym: 'META', price: 90, trueValue: 100, isDeal: true }, // on CONFIG tape
+        { sym: 'EL', price: 80, trueValue: 100, isDeal: true },
+        { sym: 'DDOG', price: 85, trueValue: 100, isDeal: true },
+      ];
+      const avoid = hotListingAvoidSymbols({
+        portfolio: { history: [] },
+        listings: [],
+        watchlist: [],
+      });
+      assert.ok(avoid.includes('META'), 'top tape symbols should be in avoid set');
+      const pool = buildHotListingPool(listings, 3, avoid);
+      assert.equal(pool[0].sym, 'EL', `best non-tape deal should lead, got ${pool.map((l) => l.sym)}`);
+      assert.ok(listingDealEdge(listings[0]) > 0);
+    });
+  }
 
   // --- Interactive onboarding / perk callouts ---
   const onboardMod = await import(pathToFileURL(path.join(__dirname, '../js/onboarding-walkthrough.js')).href);
@@ -4513,8 +4495,11 @@ async function main() {
     earningsVolMultiplier, processDividendsForDay, DIVIDEND_PAYERS, resetCorporateActionGuards,
     isDividendExDay, dividendExDayInQuarter,
   } = corp;
-  const { shouldTripCircuit, CIRCUIT_BREAK_PCT, isSymbolHalted, resetSessionAnchors, checkCircuitBreaker } = mkt;
-  const { defaultVol } = await import(pathToFileURL(path.join(__dirname, '../js/options-math.js')).href);
+  const {
+    shouldTripCircuit, CIRCUIT_BREAK_PCT, CIRCUIT_BREAK_PCT_MIN, CIRCUIT_BREAK_PCT_MAX,
+    isSymbolHalted, resetSessionAnchors, checkCircuitBreaker, circuitHaltThreshold,
+  } = mkt;
+  const { defaultVol, blackScholesPremium } = await import(pathToFileURL(path.join(__dirname, '../js/options-math.js')).href);
 
   test('each symbol has a stable quarterly earnings day', () => {
     const a = earningsDayInQuarter('AAPL');
@@ -4582,15 +4567,63 @@ async function main() {
     assert.equal(shouldTripCircuit(100, 106.9, CIRCUIT_BREAK_PCT).trip, false);
     assert.equal(shouldTripCircuit(100, 107, CIRCUIT_BREAK_PCT).trip, true);
     assert.equal(shouldTripCircuit(100, 93, CIRCUIT_BREAK_PCT).trip, true);
-    // Live halt path: seed session open then shock past threshold
+    // Live halt path: seed session open then shock past the max band (8.5%)
     getQuoteCache().set('HALT', { price: 100, prevClose: 100, high: 100, low: 100 });
     checkCircuitBreaker('HALT', 100); // set open
     assert.equal(isSymbolHalted('HALT'), false);
-    checkCircuitBreaker('HALT', 108);
+    checkCircuitBreaker('HALT', 109);
     assert.equal(isSymbolHalted('HALT'), true);
-    const blocked = realBuyLong(realCreatePortfolio(500), 'HALT', 1, 108);
+    const blocked = realBuyLong(realCreatePortfolio(500), 'HALT', 1, 109);
     assert.equal(blocked.ok, false);
     assert.match(blocked.msg, /HALTED/i);
+  });
+
+  test('circuitHaltThreshold is seeded per symbol/day inside 6.5–8.5%', () => {
+    const a = circuitHaltThreshold('AAPL', 12);
+    const b = circuitHaltThreshold('AAPL', 12);
+    const c = circuitHaltThreshold('MSFT', 12);
+    assert.equal(a, b);
+    assert.ok(a >= CIRCUIT_BREAK_PCT_MIN && a <= CIRCUIT_BREAK_PCT_MAX, `AAPL band ${a}`);
+    assert.ok(c >= CIRCUIT_BREAK_PCT_MIN && c <= CIRCUIT_BREAK_PCT_MAX, `MSFT band ${c}`);
+    // Not all names share the same ceiling on a given day
+    let foundDiff = a !== c;
+    for (let d = 1; d <= 40 && !foundDiff; d++) {
+      if (circuitHaltThreshold('NVDA', d) !== circuitHaltThreshold('KO', d)) foundDiff = true;
+    }
+    assert.ok(foundDiff, 'expected at least one day where two symbols differ');
+  });
+
+  test('soft free-lunch: +6.7% does not always halt when band is higher', () => {
+    resetSessionAnchors();
+    // Find a symbol/day whose threshold is above 6.7%
+    let sym = null;
+    let day = 1;
+    for (let d = 1; d <= 80; d++) {
+      for (const s of ['ZZTOP', 'SOFTA', 'SOFTB', 'SOFTC']) {
+        if (circuitHaltThreshold(s, d) >= 0.075) {
+          sym = s;
+          day = d;
+          break;
+        }
+      }
+      if (sym) break;
+    }
+    assert.ok(sym, 'expected a high-band symbol');
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: day,
+      dayStartEquity: 500,
+      dayStartCash: 500,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    resetSessionAnchors();
+    checkCircuitBreaker(sym, 100);
+    assert.equal(checkCircuitBreaker(sym, 106.7), false);
+    assert.equal(isSymbolHalted(sym), false);
   });
 
   // --- A5 Margin call / A6 Macro / A7 Slippage ---
@@ -4803,7 +4836,7 @@ async function main() {
     resetSessionAnchors();
     getQuoteCache().set('HALTX', { price: 100, prevClose: 100, high: 100, low: 100 });
     checkCircuitBreaker('HALTX', 100);
-    checkCircuitBreaker('HALTX', 108);
+    checkCircuitBreaker('HALTX', 109);
     assert.equal(isSymbolHalted('HALTX'), true);
     const p = realCreatePortfolio(5000);
     p.longs.HALTX = { shares: 5, avgPrice: 100, lots: [{ shares: 5, avgPrice: 100, openedDay: 1 }] };
@@ -4814,7 +4847,7 @@ async function main() {
     // Halt AAPL separately
     getQuoteCache().set('AAPL', { price: 100, prevClose: 100 });
     checkCircuitBreaker('AAPL', 100);
-    checkCircuitBreaker('AAPL', 108);
+    checkCircuitBreaker('AAPL', 109);
     assert.equal(isSymbolHalted('AAPL'), true);
     const covered = realCoverShort(p2, 'AAPL', 2, 108);
     assert.equal(covered.ok, true, covered.msg);
@@ -5142,7 +5175,70 @@ async function main() {
   });
 
   // --- B11 Options expiry alignment ---
-  const { estimateOptionValue, settleExpiredOptions, optionIntrinsicPerShare } = portMod;
+  const {
+    estimateOptionValue, settleExpiredOptions, optionIntrinsicPerShare, liveOptionVol,
+  } = portMod;
+  const teachMod = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
+  const { detectIvCrush, heldThroughEarnings, TEACH_MOMENTS } = teachMod;
+  const { earningsChipInfo, daysUntilEarnings } = corp;
+
+  test('earningsChipInfo shows tonight / E-N within a week only', () => {
+    const sym = 'AAPL';
+    const eDay = earningsDayInQuarter(sym);
+    // Build a game day where until === 0 (earnings day in quarter)
+    // quarterDay = ((day-1) % 63) + 1 === eDay → day = eDay for first quarter
+    const onDay = eDay;
+    const chip0 = earningsChipInfo(sym, onDay);
+    assert.ok(chip0 && chip0.label === 'E tonight' && chip0.urgent);
+    const far = earningsChipInfo(sym, onDay + 20);
+    assert.equal(far, null);
+    assert.equal(daysUntilEarnings(sym, onDay), 0);
+  });
+
+  test('heldThroughEarnings detects stock and option exposure', () => {
+    assert.equal(heldThroughEarnings([{ sym: 'NVDA' }], { longs: {}, options: [] }), false);
+    assert.equal(heldThroughEarnings([{ sym: 'NVDA' }], { longs: { NVDA: { shares: 2 } } }), true);
+    assert.equal(heldThroughEarnings(
+      [{ sym: 'TSLA' }],
+      { options: [{ sym: 'TSLA', type: 'call', qty: 1 }] },
+    ), true);
+  });
+
+  test('detectIvCrush requires favorable move, underwater mark, and cooler live IV', () => {
+    const opt = { type: 'call', premium: 5, qty: 1, entryVol: 0.55, vol: 0.55 };
+    assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 400, liveVol: 0.4 }), true);
+    assert.equal(detectIvCrush(opt, { changePct: 0.2, markedValue: 400, liveVol: 0.4 }), false);
+    assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 520, liveVol: 0.4 }), false);
+    assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 400, liveVol: 0.54 }), false);
+    assert.ok(TEACH_MOMENTS.firstIvCrush.text.includes('IV crush'));
+    assert.ok(TEACH_MOMENTS.firstEarningsHold.text.includes('earnings'));
+  });
+
+  test('estimateOptionValue uses live vol (entry vol snapshot does not freeze the mark)', () => {
+    getQuoteCache().set('LIVEV', { price: 100, prevClose: 100, changePct: 0 });
+    loadMarket({
+      marketDate: new Date().toISOString(),
+      dayCount: 1,
+      dayStartEquity: 500,
+      dayStartCash: 500,
+      dayStartDebt: 0,
+      dayTrades: 0,
+      dayRealized: 0,
+      speedMultiplier: 1,
+      marketBeta: 0,
+    });
+    const hot = {
+      sym: 'LIVEV', type: 'call', strike: 100, qty: 1, premium: 8,
+      openedDay: 1, expiryDay: 30, vol: 0.9, entryVol: 0.9,
+    };
+    const live = liveOptionVol(hot);
+    assert.ok(live < 0.5, `live vol should be calm, got ${live}`);
+    const marked = estimateOptionValue(hot);
+    const frozenMark = blackScholesPremium({
+      spot: 100, strike: 100, daysToExpiry: 29, vol: 0.9, type: 'call',
+    }) * 100;
+    assert.ok(marked < frozenMark * 0.75, `live mark ${marked} should be well below frozen-IV mark ${frozenMark}`);
+  });
 
   test('estimateOptionValue at expiry matches intrinsic settle (no fake 1-day TV)', () => {
     getQuoteCache().set('AAPL', { price: 110, prevClose: 100 });

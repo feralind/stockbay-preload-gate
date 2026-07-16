@@ -55,7 +55,7 @@ const checks = [
   ['Hot listings viewport pool', 'js/ui/listings.js', [/getHotListingPoolSymbols/, /getHotListingPrefetchCandidates|HOT_LISTING_PREFETCH_SIZE/, /getListingsViewportSymbols/]],
   ['AI locked card shared', 'js/ui/ai-advisor.js', [/export function buildAiLockedCardHtml/, /data-ai-locked-card/, /ai-locked-host/]],
   ['AI locked card wired once', 'js/ui/ai-advisor.js', [/buildAiLockedCardHtml\(\)/, /lockedHost\.innerHTML = card/, /ai-chat-log-side/]],
-  ['Dashboard relic row', 'js/ui/dashboard.js', [/export function buildFirmRelicRowHtml/, /blackMarketEquippedRelics/, /data-goto="blackmarket"/, /getRelicSlotLimit/, /getBlackMarketItem/]],
+  ['Dashboard relic row', 'js/ui/dashboard.js', [/export function buildFirmRelicRowHtml/, /blackMarketEquippedRelics/, /data-goto="collection"/, /getRelicSlotLimit/, /getBlackMarketItem/]],
   ['Vault authenticity rename', 'js/vault.js', [/Gilded Astrolabe/, /Study of the Tide/, /Master Collector/, /export function getCategoryDisplayLabel/]],
   ['Vault purchase confirms Desk Prestige', 'js/app.js', [/Desk Prestige display/, /Not buying power/, /Collectible appraisal books into Net Worth/]],
   ['Collection Log category labels', 'js/ui/collection-log.js', [/getCategoryDisplayLabel/, /VAULT_ITEMS/]],

@@ -5,7 +5,7 @@
  */
 import {
   syncQuoteToPrice, shouldRejectLiveCandleTick, LIVE_CANDLE_MAX_JUMP_PCT,
-  candleBarVolFraction, isSimulationMode, getCachedQuote,
+  candleBarVolFraction, isSimulationMode, getCachedQuote, synthTickVolume,
 } from './api.js';
 import { getMarketTime } from './market.js';
 
@@ -142,7 +142,9 @@ export function clampBarToPeers(bar, peerRange, mid) {
  * - Always keep the last close on-screen (live HUD tape).
  * - 1D: ignore forming-bar spear high/low so one bad wick doesn't own the pane.
  * - Multi-day / long: fit real H/L — never re-center with a hard maxSpan that clips ATH.
+ * - 1D: fit true completed-bar extent (spikes stay visible); ignore forming-bar spear only.
  * - Live ticks: return a locked cache when price is inside the window (axis hysteresis).
+ * - Mouse-wheel / slider zoom refits Y to whatever bars are in the visible time window.
  *
  * @param {Array<{high?:number,low?:number,close?:number}>} bars
  * @param {string} [range]
@@ -159,25 +161,44 @@ export function computePriceAxisRange(bars, range = '1D', symbol = null, isLiveT
   const cacheHit = hasPriceAxisCache()
     && lastCalculatedRange === key
     && lastCalculatedSymbol === symKey;
+  const session = isSessionRange(key);
 
   // Live hysteresis: freeze the pane while price stays inside the locked window.
+  // Expand-only on breakout (never re-center). Session ignores forming spear H/L.
   if (isLiveTick && cacheHit) {
-    if (lastClose > 0 && lastClose >= cachedAxisMin && lastClose <= cachedAxisMax) {
-      return { min: cachedAxisMin, max: cachedAxisMax };
-    }
-    // Breakout — expand only, never re-center.
     let min = cachedAxisMin;
     let max = cachedAxisMax;
     const span = Math.max(0.01, max - min);
     const pad = span * 0.02;
-    if (lastClose > max) max = lastClose + pad;
-    if (lastClose > 0 && lastClose < min) min = Math.max(0.01, lastClose - pad);
+    const lastHigh = Number(last?.high);
+    const lastLow = Number(last?.low);
+    let grew = false;
+    if (lastClose > max) {
+      max = lastClose + pad;
+      grew = true;
+    }
+    if (lastClose > 0 && lastClose < min) {
+      min = Math.max(0.01, lastClose - pad);
+      grew = true;
+    }
+    if (!session) {
+      if (Number.isFinite(lastHigh) && lastHigh > max) {
+        max = lastHigh + pad;
+        grew = true;
+      }
+      if (Number.isFinite(lastLow) && lastLow > 0 && lastLow < min) {
+        min = Math.max(0.01, lastLow - pad);
+        grew = true;
+      }
+    }
+    if (!grew && lastClose > 0 && lastClose >= cachedAxisMin && lastClose <= cachedAxisMax) {
+      return { min: cachedAxisMin, max: cachedAxisMax };
+    }
     storePriceAxisCache(min, max, symKey, key);
     return { min, max };
   }
 
-  // Symbol / TF change, refresh, or first paint — recompute from bars.
-  const session = isSessionRange(key);
+  // Symbol / TF change, refresh, zoom, or first paint — recompute from bars in view.
   const longRange = LONG_RANGES.has(key);
 
   const completed = bars.length > 1 ? bars.slice(0, -1) : bars;
@@ -185,21 +206,21 @@ export function computePriceAxisRange(bars, range = '1D', symbol = null, isLiveT
   const lows = completed.map((b) => Number(b.low)).filter((v) => Number.isFinite(v) && v > 0);
   if (!highs.length || !lows.length) return null;
 
-  const sortedHigh = [...highs].sort((a, b) => a - b);
-  const sortedLow = [...lows].sort((a, b) => a - b);
-  const pick = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.floor((arr.length - 1) * p)))];
-
-  let minV;
-  let maxV;
-  if (session && completed.length >= 16) {
-    minV = pick(sortedLow, 0.05);
-    maxV = pick(sortedHigh, 0.95);
-  } else if (longRange && completed.length >= 40) {
-    minV = pick(sortedLow, 0.01);
-    maxV = pick(sortedHigh, 0.99);
-  } else {
-    minV = sortedLow[0];
-    maxV = sortedHigh[sortedHigh.length - 1];
+  // True extent of completed bars — never percentile-trim or maxSpan-recenter.
+  // That was clipping real intraday spikes (line flat against the ceiling).
+  let minV = Math.min(...lows);
+  let maxV = Math.max(...highs);
+  for (const b of completed) {
+    const o = Number(b.open);
+    const c = Number(b.close);
+    if (Number.isFinite(o) && o > 0) {
+      minV = Math.min(minV, o);
+      maxV = Math.max(maxV, o);
+    }
+    if (Number.isFinite(c) && c > 0) {
+      minV = Math.min(minV, c);
+      maxV = Math.max(maxV, c);
+    }
   }
 
   const sessionMid = (minV + maxV) / 2 || 1;
@@ -235,22 +256,7 @@ export function computePriceAxisRange(bars, range = '1D', symbol = null, isLiveT
     span = maxV - minV;
   }
 
-  // Session only: tame absurd leftover completed-bar outliers, then re-pin last close.
-  // Never compress below the composite floor ($5 / 2.5% / legacy %).
-  if (session) {
-    const maxSpan = Math.max(mid * 0.12, minSpan);
-    if (span > maxSpan) {
-      minV = mid - maxSpan / 2;
-      maxV = mid + maxSpan / 2;
-      span = maxV - minV;
-    }
-    if (lastClose > 0) {
-      minV = Math.min(minV, lastClose);
-      maxV = Math.max(maxV, lastClose);
-    }
-  }
-
-  const padRatio = session ? 0.12 : longRange ? 0.1 : 0.12;
+  const padRatio = session ? 0.1 : longRange ? 0.1 : 0.12;
   const pad = Math.max((maxV - minV) * padRatio, mid * 0.003);
   const result = {
     min: Math.max(0.01, minV - pad),
@@ -361,7 +367,8 @@ export function maybeRollFormingBar(price) {
   const bucketStart = Math.floor(ts / bucketSec) * bucketSec;
 
   if (!lastBars.length) {
-    lastBars = [{ time: bucketStart, open: px, high: px, low: px, close: px, volume: 0 }];
+    const v0 = synthTickVolume(currentSym || 'X', px, bucketStart);
+    lastBars = [{ time: bucketStart, open: px, high: px, low: px, close: px, volume: v0 }];
     lastBarCount = 1;
     lastCandle = { ...lastBars[0] };
     return true;
@@ -378,7 +385,7 @@ export function maybeRollFormingBar(price) {
     high: px,
     low: px,
     close: px,
-    volume: 0,
+    volume: synthTickVolume(currentSym || 'X', px, bucketStart),
   });
   const maxKeep = key === '1D' ? 130 : key === '1W' || key === '5D' ? 14 : 200;
   if (lastBars.length > maxKeep) lastBars = lastBars.slice(-maxKeep);
@@ -770,6 +777,8 @@ function applyViewWindow(startPct, endPct, { markUserZoom = true, updateDataZoom
   }
   if (markUserZoom) userZoomed = true;
 
+  // Wheel / slider zoom must unlock any live hysteresis lock so Y can grow to show spikes.
+  clearPriceAxisCache();
   const axis = axisRangeForPercents(nextStart, nextEnd);
   const slice = sliceBarsForAxis(lastBars, nextStart, nextEnd);
   let volMax = 0;
@@ -1328,14 +1337,19 @@ export function setChartData(candles, showMA = true, range = '1D', showSR = fals
   const sanitized = normalizeChartCandles(candles, lastRange);
   if (!sanitized.length) return;
 
-  const formatted = sanitized.map((c) => ({
-    time: c.time,
-    open: c.open,
-    high: c.high,
-    low: c.low,
-    close: c.close,
-    volume: c.volume || 0,
-  }));
+  const formatted = sanitized.map((c) => {
+    const vol = Number(c.volume) || 0;
+    const px = Number(c.close) || Number(c.open) || 1;
+    return {
+      time: c.time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      // Sim session bars often arrive with volume 0 — fill so the bottom pane isn't empty.
+      volume: vol > 0 ? vol : synthTickVolume(currentSym || 'X', px, c.time),
+    };
+  });
 
   const lastIdx = formatted.length - 1;
   const liveQuotePx = currentSym ? Number(getCachedQuote(currentSym)?.price) : 0;
@@ -1449,13 +1463,17 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
   lastCandle.close = px;
 
   const i = lastBars.length - 1;
+  const prevVol = Number(lastBars[i]?.volume) || 0;
+  const bump = Math.max(25, Math.round(synthTickVolume(want, px, lastBars[i]?.time || 0) * 0.06));
   lastBars[i] = {
     ...lastBars[i],
     open: next.open,
     high: next.high,
     low: next.low,
     close: px,
+    volume: prevVol + bump,
   };
+  lastCandle.volume = lastBars[i].volume;
   // Do NOT peer-clamp close here â€” that was desyncing the chart from the HUD price.
 
   // Host not visible/sized yet â€” data above is still updated, just skip the
@@ -1467,8 +1485,18 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
     const isWave = chartStyle === 'wave';
     const z = readZoomPercents();
     const ws = isWave ? wavePaintStyle(lastBars, z.start, z.end) : null;
+    const t = theme();
+    const vols = lastBars.map((b) => ({
+      value: b.volume || 0,
+      itemStyle: { color: b.close >= b.open ? `${t.up}55` : `${t.down}55` },
+    }));
+    let volMax = 0;
+    for (const b of lastBars) volMax = Math.max(volMax, Number(b.volume) || 0);
     chart.setOption({
-      yAxis: [{ min: axis?.min, max: axis?.max, scale: true }],
+      yAxis: [
+        { min: axis?.min, max: axis?.max, scale: true },
+        { min: 0, max: volMax > 0 ? volMax * 1.2 : undefined, scale: false },
+      ],
       series: [
         { id: 'candles', data: isWave ? [] : toOhlc(lastBars) },
         {
@@ -1476,6 +1504,7 @@ export function updateLastCandleFromQuote(sym, price, opts = {}) {
           data: isWave ? lastBars.map((b) => b.close) : [],
           ...(ws || {}),
         },
+        { id: 'volume', data: vols },
       ],
     });
   } catch {

@@ -2,7 +2,7 @@
 /**
  * Dashboard view render — extracted from ui.js (Stage C1).
  * Section 2–4: Standing, office ladder, mega goals, luxury sinks.
- * Market overview chrome: index KPIs, movers ribbon, dual-line equity chart, discover grid.
+ * Market overview chrome: index KPIs, desk tape / movers table, dual-line equity chart, discover grid.
  * Perf: fingerprint sections and skip identical DOM writes.
  */
 
@@ -182,7 +182,7 @@ export function configureDashboardUi({ switchView: nextSwitchView } = {}) {
 }
 
 /**
- * Firm Snapshot relic row — read-only display of equipped Black Market relics.
+ * Firm Snapshot relic row — read-only display of equipped relics (legacy Black Market slots).
  * @param {{ blackMarketEquippedRelics?: string[], seatOwned?: boolean }} state
  * @returns {string}
  */
@@ -193,7 +193,7 @@ export function buildFirmRelicRowHtml(state = {}) {
   const slots = getRelicSlotLimit({ seatOwned: !!state.seatOwned });
   if (!equipped.length) {
     const slotLabel = `${slots} slot${slots === 1 ? '' : 's'}`;
-    return `<div class="dash-row dash-row-goto" data-goto="blackmarket" title="Open Black Market to equip relics">`
+    return `<div class="dash-row dash-row-goto" data-goto="collection" title="Open Collection Log">`
       + `<span>Relics</span>`
       + `<span>None equipped (${slotLabel})</span>`
       + `</div>`;
@@ -579,34 +579,67 @@ function sparkSvg(sym, price, changePct) {
   </svg>`;
 }
 
-function renderTickerRibbon(state) {
-  const el = document.getElementById('dash-ticker-ribbon');
+/**
+ * Symbols currently shown on Desk tape (trades or Today's movers).
+ * Used by Hot listings to soft-avoid overlap.
+ * @param {object} state
+ * @returns {string[]}
+ */
+export function getDeskTapeSymbols(state) {
+  const trades = (state?.portfolio?.history || []).slice(0, 8);
+  if (trades.length) {
+    return [...new Set(trades.map((t) => String(t.sym || '').toUpperCase()).filter(Boolean))];
+  }
+  return collectMovers(state).slice(0, 6).map((m) => m.sym);
+}
+
+/** Day-1 / early desk with no fills yet — steer toward first trade. */
+export function isVirginDesk(state) {
+  return !(state?.portfolio?.history?.length > 0);
+}
+
+function renderFirstTradeCta(state) {
+  const el = document.getElementById('dash-first-trade');
+  const root = document.querySelector('.dash-desk');
   if (!el) return;
-  const movers = collectMovers(state).slice(0, 8);
-  if (!movers.length) {
-    setHtmlIfChanged(el, 'ribbon', '<div class="empty">Market tape warms up as quotes load.</div>');
+  const virgin = isVirginDesk(state);
+  root?.classList.toggle('dash-virgin', virgin);
+  if (!virgin) {
+    el.innerHTML = '';
+    el.setAttribute('hidden', '');
+    el.setAttribute('aria-hidden', 'true');
+    delete dashSnap.firstTrade;
     return;
   }
-  const html = movers.map((m) => {
-    const up = m.changePct >= 0;
-    const cls = up ? 'up' : 'down';
-    const arrow = up ? '▲' : '▼';
-    return `<button type="button" class="dash-ticker-card" data-dash-sym="${escapeAttr(m.sym)}" title="Open ${escapeAttr(m.sym)}">
-      <span class="dash-ticker-trend ${cls}">${arrow}</span>
-      <span class="dash-ticker-name">${escapeHtml(m.name)}</span>
-      <span class="dash-ticker-price">${m.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-      <span class="dash-ticker-pct ${cls}">${up ? '+' : ''}${m.changePct.toFixed(2)}%</span>
-    </button>`;
-  }).join('');
-  setHtmlIfChanged(el, 'ribbon', html);
+  el.removeAttribute('hidden');
+  el.setAttribute('aria-hidden', 'false');
+  setHtmlIfChanged(el, 'firstTrade', `
+    <div class="dash-first-trade-card">
+      <div class="dash-first-trade-copy">
+        <strong>Make your first trade</strong>
+        <p>Open the Trade Desk — put your starting cash on the tape. Everything else can wait.</p>
+      </div>
+      <button type="button" class="btn btn-accent" data-goto="trade">Open Trade Desk →</button>
+    </div>`);
 }
 
 function renderDiscover(state) {
   const el = document.getElementById('dash-discover');
   if (!el) return;
+  // Virgin desk: don't clone Desk tape / movers as another ticker grid.
+  if (isVirginDesk(state)) {
+    setHtmlIfChanged(el, 'discover', `
+      <div class="dash-discover-empty">
+        <p><strong>Watchlist lives on Trade</strong></p>
+        <p class="muted-text">After your first fill, Discover picks up names from your watchlist here.</p>
+        <button type="button" class="btn btn-sm" data-goto="trade">Go to Trade</button>
+      </div>`);
+    return;
+  }
   const watch = Array.isArray(state.watchlist) ? state.watchlist : [];
   const pool = collectMovers(state);
-  const prefer = [...new Set([...watch, ...INDEX_SYMS, ...pool.map((m) => m.sym)])];
+  // Prefer watchlist + indices — movers already fill Desk tape when idle.
+  const prefer = [...new Set([...watch, ...INDEX_SYMS])];
   const cards = prefer.slice(0, 8).map((sym) => {
     const q = quoteForDisplay(sym);
     const price = q?.price || 0;
@@ -631,8 +664,15 @@ function renderAssetTable(state) {
   if (!recent) return;
   const trades = (state.portfolio.history || []).slice(0, 8);
   const movers = collectMovers(state).slice(0, 6);
+  const titleEl = document.getElementById('dash-asset-title');
+  const showingTrades = trades.length > 0;
+  if (titleEl) {
+    setTextIfChanged(titleEl, 'assetTitle', showingTrades ? 'Desk tape' : "Today's movers");
+  }
+  recent.setAttribute('aria-label', showingTrades ? 'Recent trades' : "Today's movers");
+
   let rows = '';
-  if (trades.length) {
+  if (showingTrades) {
     rows = trades.map((t) => {
       const q = quoteForDisplay(t.sym);
       const pct = q?.changePct || 0;
@@ -657,7 +697,7 @@ function renderAssetTable(state) {
         <td class="num">${m.price.toFixed(2)}</td>
         <td class="num ${up ? 'up' : 'down'}">${up ? '+' : ''}${chg.toFixed(2)}</td>
         <td><span class="dash-pct-pill ${up ? 'up' : 'down'}">${up ? '▲' : '▼'} ${up ? '+' : ''}${m.changePct.toFixed(2)}%</span></td>
-        <td class="num muted-text">Tape</td>
+        <td class="num muted-text">Mover</td>
       </tr>`;
     }).join('');
   }
@@ -933,7 +973,7 @@ export function renderDashboard(state) {
   renderMegaGoalCard(state, activeMega);
   renderDashEstates(state);
   renderDashStats(state, net, debt, meta, delta);
-  renderTickerRibbon(state);
+  renderFirstTradeCta(state);
   renderDiscover(state);
   renderAssetTable(state);
 

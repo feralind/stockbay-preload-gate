@@ -918,7 +918,8 @@ export function renderCheckpointList(slots = []) {
 }
 
 export function switchView(viewId) {
-  const next = viewId || 'dashboard';
+  // Black Market shop retired — bounce any leftover links to Collection.
+  const next = (viewId === 'blackmarket') ? 'collection' : (viewId || 'dashboard');
   const prev = activeViewId;
   activeViewId = next;
   document.querySelectorAll('.view-panel').forEach(p => p.classList.remove('active'));

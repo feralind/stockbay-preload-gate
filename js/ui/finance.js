@@ -59,7 +59,7 @@ function creditGaugeHtml(label, score, tier, util) {
   return `
     <div class="credit-gauge">
       <div class="credit-gauge-ring-wrap" style="--gauge-color:${tier.color}">
-        <svg viewBox="0 0 64 64" width="88" height="88" class="credit-gauge-ring" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="66" height="66" class="credit-gauge-ring" aria-hidden="true">
           <circle cx="32" cy="32" r="${r}" class="credit-gauge-track"></circle>
           <circle cx="32" cy="32" r="${r}" class="credit-gauge-arc"
             stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle>

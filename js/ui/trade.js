@@ -10,7 +10,8 @@ import {
 import { CONFIG } from '../config.js';
 import { estimateInsiderFairValue } from '../events.js';
 import { logoMarkHtml } from '../logos.js';
-import { getHaltInfo } from '../market.js';
+import { getHaltInfo, getDayCount } from '../market.js';
+import { earningsChipInfo } from '../corporate-actions.js';
 import { showAlert } from '../notify.js';
 import { trapFocus } from '../overlays.js';
 import {
@@ -489,6 +490,10 @@ export async function showOptionsPanel(listing, state) {
   const chain = generateOptionChain(listing.sym, spot);
   const hasAnalyst = state.perks?.includes('analyst');
   let lastExpiry = '';
+  const earn = earningsChipInfo(listing.sym, getDayCount());
+  const earnNote = earn
+    ? `<div class="opt-chain-meta earn-note" title="${earn.title}">${earn.label} — gap risk / IV crush are live on this name</div>`
+    : '';
   const anchorNote = resolved.anchored
     ? ''
     : `<div class="opt-chain-meta warn">Unanchored seed spot — premiums are provisional until live quote arrives</div>`;
@@ -513,7 +518,7 @@ export async function showOptionsPanel(listing, state) {
       <button class="btn-sm buy-opt">Buy 1</button>
     </div>`;
   }).join('');
-  panel.innerHTML = `${anchorNote}<div class="opt-chain-meta">${chain.length} contracts · Black-Scholes${hasAnalyst ? ' · greeks shown' : ' · unlock Analyst for greeks'}${resolved.anchored ? '' : ' · provisional'}</div>${rows}`;
+  panel.innerHTML = `${anchorNote}${earnNote}<div class="opt-chain-meta">${chain.length} contracts · Black-Scholes${hasAnalyst ? ' · greeks shown' : ' · unlock Analyst for greeks'}${resolved.anchored ? '' : ' · provisional'}</div>${rows}`;
   panel.classList.remove('hidden');
   panel.querySelectorAll('.buy-opt').forEach(btn => {
     btn.onclick = () => {

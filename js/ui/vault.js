@@ -43,7 +43,7 @@ const ITEM_GLYPH = {
   gutenbergFolio: '§',
   rothkoField: '▣',
   diademProvenance: '♛',
-  vermeerAttribution: '⌂',
+  vermeerAttribution: '☽',
   fabergeImperial: '◈',
 };
 
@@ -211,10 +211,10 @@ const VAULT_PRESENTATION = {
     medium: 'Platinum + stones',
   },
   vermeerAttribution: {
-    visual: 'interior',
-    provenance: 'Dutch Golden Age interior with disputed Vermeer-circle attribution.',
-    period: 'c. 1660',
-    medium: 'Oil on canvas',
+    visual: 'nocturne',
+    provenance: 'A lone cat under a violet sky and thin crescent — desk folklore in pixel nocturne.',
+    period: 'Modern',
+    medium: 'Pixel plate',
   },
   fabergeImperial: {
     visual: 'egg',
@@ -523,13 +523,22 @@ function prestigeBonusChip(item) {
   const bonus = item?.prestigeBonus;
   if (!bonus) return '';
   if (!(bonus.repPerClose > 0 || bonus.dailyCap > 0)) return '';
-  return `<span class="vault-chip vault-chip-bonus">Masterwork prestige</span>`;
+  return `<span class="vault-card__tag vault-card__tag--bonus">Masterwork prestige</span>`;
 }
 
 function rarityClass(item) {
   const r = String(item?.rarity || '').toLowerCase();
   if (r === 'masterwork' || r === 'crown') return ` rarity-${r}`;
   return '';
+}
+
+function cardStatusHtml({ owned, equipped, gate }) {
+  if (owned && equipped) return '<span class="vault-status equipped">Equipped</span>';
+  if (owned) return '<span class="vault-status owned">Owned</span>';
+  if (gate.ok) return '<span class="vault-status buy">Available</span>';
+  if (gate.code === 'license') return '<span class="vault-status locked">License</span>';
+  if (gate.code === 'cash') return '<span class="vault-status locked">Need cash</span>';
+  return '<span class="vault-status locked">Locked</span>';
 }
 
 function renderVaultCard(item, {
@@ -543,44 +552,46 @@ function renderVaultCard(item, {
   const pledged = pledgedSet.has(item.id);
   const buyDisabled = !gate.ok ? 'disabled' : '';
   const itemLic = requiredLicenseForRep(item.repRequired);
-  const repText = itemLic.id !== 'retail' ? `${itemLic.short} license` : 'No license gate';
+  const licenseFull = itemLic.id !== 'retail' ? `Requires the ${itemLic.name} license` : '';
+  const licenseShort = itemLic.id !== 'retail' ? itemLic.short : '';
   const rarityLabel = item.rarity ? String(item.rarity).charAt(0).toUpperCase() + String(item.rarity).slice(1) : '';
   const presentation = presentationForItem(item);
+  const tags = [
+    VAULT_CATEGORY_LABELS[item.category] || item.category,
+    rarityLabel,
+    presentation.period,
+  ].filter(Boolean);
+
+  const tagHtml = tags.map((tag) => `<span class="vault-card__tag">${escapeHtml(tag)}</span>`).join('')
+    + prestigeBonusChip(item)
+    + (pledged ? '<span class="vault-card__tag">Pledged</span>' : '');
+
+  const footerActions = owned
+    ? `<button type="button" class="btn ${canEquip ? 'btn-accent' : ''} vault-equip-btn vault-card__buy-btn" data-vault-equip="${item.id}" ${canEquip ? '' : 'disabled'}>${equipped ? 'Equipped' : 'Equip'}</button>
+       <button type="button" class="btn vault-pledge-btn" data-vault-pledge="${item.id}" ${pledgeLocked ? 'disabled' : ''}>${pledged ? (pledgeLocked ? 'Pledged' : 'Unpledge') : 'Pledge'}</button>`
+    : `<button type="button" class="btn btn-accent vault-buy-btn vault-card__buy-btn" data-vault-buy="${item.id}" ${buyDisabled}>Buy</button>`;
+
+  const footerMeta = owned
+    ? cardStatusHtml({ owned, equipped, gate })
+    : (licenseShort
+      ? `<span class="vault-card__license-badge" title="${escapeAttr(licenseFull)}">${escapeHtml(licenseShort)}</span>`
+      : cardStatusHtml({ owned, equipped, gate }));
+
   return `
     <article class="vault-card${rarityClass(item)} ${owned ? 'owned' : ''} ${equipped ? 'equipped' : ''} ${pledged ? 'pledged' : ''}">
-      <div class="vault-art ${owned ? 'owned' : 'locked'} ${equipped ? 'lit' : ''}" aria-hidden="true">
+      <div class="vault-card__media vault-art ${owned ? 'owned' : 'locked'} ${equipped ? 'lit' : ''}" aria-hidden="true">
         ${vaultItemArtHtml(item, `card-${item.id}`)}
-        <span>${escapeHtml(presentation.medium)}</span>
+        <span class="vault-card__material-tag">${escapeHtml(presentation.medium)}</span>
       </div>
-      <div class="vault-card-top">
-        <div>
-          <h3>${escapeHtml(item.name)}</h3>
-          <p class="vault-provenance">${escapeHtml(presentation.provenance)}</p>
+      <div class="vault-card__body">
+        <p class="vault-card__title" title="${escapeAttr(item.name)}">${escapeHtml(item.name)}</p>
+        <p class="vault-card__desc">${escapeHtml(presentation.provenance)}</p>
+        <div class="vault-card__tags">${tagHtml}</div>
+        <p class="vault-card__price">${fmt(item.cost)}</p>
+        <div class="vault-card__footer">
+          ${footerActions}
+          ${footerMeta}
         </div>
-        ${cardStatusHtml({ owned, equipped, gate })}
-      </div>
-      <div class="vault-meta">
-        <span class="vault-chip">${escapeHtml(VAULT_CATEGORY_LABELS[item.category] || item.category)}</span>
-        ${rarityLabel ? `<span class="vault-chip">${escapeHtml(rarityLabel)}</span>` : ''}
-        <span class="vault-chip">${escapeHtml(presentation.period)}</span>
-        <span class="vault-chip">${escapeHtml(repText)}</span>
-        <span class="vault-chip">Appraisal ${fmt(item.cost)}</span>
-        ${prestigeBonusChip(item)}
-        ${pledged ? '<span class="vault-chip">Pledged</span>' : ''}
-      </div>
-      <div class="vault-actions">
-        ${owned
-          ? `<button type="button" class="btn ${canEquip ? 'btn-accent' : ''} vault-equip-btn" data-vault-equip="${item.id}" ${canEquip ? '' : 'disabled'}>${equipped ? 'Equipped' : 'Equip'}</button>
-             <button type="button" class="btn vault-pledge-btn" data-vault-pledge="${item.id}" ${pledgeLocked ? 'disabled' : ''}>${pledged ? (pledgeLocked ? 'Pledged (loan)' : 'Unpledge') : 'Pledge'}</button>`
-          : `<button type="button" class="btn btn-accent vault-buy-btn" data-vault-buy="${item.id}" ${buyDisabled}>Buy</button>`
-        }
-        <span class="vault-hint">${owned
-          ? (pledgeLocked
-            ? 'Backing an active loan - pay it off to unpledge.'
-            : pledged
-              ? 'Pledged: raises Financing borrowing ceiling (50% LTV). Late default can repossess.'
-              : (equipped ? 'Active prestige slot + booked into Net Worth.' : 'Owned: equip for Desk Prestige or pledge as collateral.'))
-          : escapeHtml(gate.ok ? 'Purchases book into Net Worth immediately.' : gate.reason)}</span>
       </div>
     </article>
   `;
@@ -608,33 +619,37 @@ function salonSectionHtml(state, { day, ownedIds, licenses, cash }) {
     const slot = getVaultSlotForItem(item);
     const equipped = !!slot && profile?.cosmetics?.[slot] === item.id;
     const pledged = (state.vaultPledged || []).includes(item.id);
+    const itemLic = requiredLicenseForRep(item.repRequired);
+    const licenseFull = itemLic.id !== 'retail' ? `Requires the ${itemLic.name} license` : '';
+    const licenseShort = itemLic.id !== 'retail' ? itemLic.short : '';
     listingHtml = `
       <article class="vault-card salon-card rarity-crown ${owned ? 'owned' : ''}">
-        <div class="vault-art ${owned ? 'owned' : 'locked'} ${equipped ? 'lit' : ''}" aria-hidden="true">
+        <div class="vault-card__media vault-art ${owned ? 'owned' : 'locked'} ${equipped ? 'lit' : ''}" aria-hidden="true">
           ${vaultItemArtHtml(item, `salon-${item.id}`)}
-          <span>${escapeHtml(presentation.medium)}</span>
+          <span class="vault-card__material-tag">${escapeHtml(presentation.medium)}</span>
         </div>
-        <div class="vault-card-top">
-          <div>
-            <h3>${escapeHtml(item.name)}</h3>
-            <p class="vault-provenance">${escapeHtml(presentation.provenance)}</p>
+        <div class="vault-card__body">
+          <p class="vault-card__title" title="${escapeAttr(item.name)}">${escapeHtml(item.name)}</p>
+          <p class="vault-card__desc">${escapeHtml(presentation.provenance)}</p>
+          <div class="vault-card__tags">
+            <span class="vault-card__tag">Crown</span>
+            <span class="vault-card__tag">${escapeHtml(presentation.period)}</span>
+            ${prestigeBonusChip(item)}
+            <span class="vault-card__tag">${daysLeft}d left</span>
+            ${pledged ? '<span class="vault-card__tag">Pledged</span>' : ''}
           </div>
-          <span class="vault-status ${owned ? 'owned' : (gate.ok ? 'buy' : 'locked')}">${owned ? 'Owned' : (gate.ok ? 'Active window' : escapeHtml(gate.reason || 'Locked'))}</span>
-        </div>
-        <div class="vault-meta">
-          <span class="vault-chip">Crown</span>
-          <span class="vault-chip">${escapeHtml(presentation.period)}</span>
-          <span class="vault-chip">${escapeHtml(requiredLicenseForRep(item.repRequired).short)} license</span>
-          <span class="vault-chip">Appraisal ${fmt(item.cost)}</span>
-          ${prestigeBonusChip(item)}
-          <span class="vault-chip">${daysLeft}d left</span>
-        </div>
-        <div class="vault-actions">
-          ${owned
-            ? `<button type="button" class="btn vault-equip-btn" data-vault-equip="${item.id}" ${equipped ? 'disabled' : ''}>${equipped ? 'Equipped' : 'Equip'}</button>`
-            : `<button type="button" class="btn btn-accent" data-salon-buy="${item.id}" ${gate.ok ? '' : 'disabled'}>Acquire crown</button>`
-          }
-          <span class="vault-hint">${owned ? 'Crown booked into Net Worth — equip for flagship Desk Prestige.' : 'Miss this window and it may not return for a long time.'}</span>
+          <p class="vault-card__price">${fmt(item.cost)}</p>
+          <div class="vault-card__footer">
+            ${owned
+              ? `<button type="button" class="btn vault-equip-btn vault-card__buy-btn" data-vault-equip="${item.id}" ${equipped ? 'disabled' : ''}>${equipped ? 'Equipped' : 'Equip'}</button>
+                 <span class="vault-status ${equipped ? 'equipped' : 'owned'}">${equipped ? 'Equipped' : 'Owned'}</span>`
+              : `<button type="button" class="btn btn-accent vault-card__buy-btn" data-salon-buy="${item.id}" ${gate.ok ? '' : 'disabled'}>Acquire crown</button>
+                 ${licenseShort
+                   ? `<span class="vault-card__license-badge" title="${escapeAttr(licenseFull)}">${escapeHtml(licenseShort)}</span>`
+                   : `<span class="vault-status ${gate.ok ? 'buy' : 'locked'}">${gate.ok ? 'Active window' : 'Locked'}</span>`
+                 }`
+            }
+          </div>
         </div>
       </article>
     `;
@@ -682,18 +697,8 @@ function categoryFilterRow(ownedCount, totalCount, spentTotal, bookValue) {
   `;
 }
 
-function cardStatusHtml({ owned, equipped, gate }) {
-  if (owned && equipped) return '<span class="vault-status equipped">Equipped</span>';
-  if (owned) return '<span class="vault-status owned">Owned</span>';
-  if (gate.ok) return '<span class="vault-status buy">Available</span>';
-  if (gate.code === 'license') return `<span class="vault-status locked">${escapeHtml(gate.reason)}</span>`;
-  if (gate.code === 'cash') return '<span class="vault-status locked">Need cash</span>';
-  return `<span class="vault-status locked">${escapeHtml(gate.reason || 'Locked')}</span>`;
-}
-
 /**
  * Structure fingerprint — ownership / gates / filter. Not market-tick churn.
- * @param {object} state
  * @param {{ day: number, cash: number, licenseKey: string, ownedIds: string[], bookValue: number, pledgedValue: number, spentTotal: number, auraTier: number, auraUsed: number, cosmeticsKey: string, salonKey: string, buyGateKey: string, pledgeLockKey: string }} snap
  */
 function vaultStructureKey(snap) {

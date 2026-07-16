@@ -161,60 +161,21 @@ export const BLACKMARKET_COST_BY_ID = new Map(BLACKMARKET_ITEM_POOL.map((item) =
 export const BLACKMARKET_LISTING_TTL_DAYS = 3;
 export const BLACKMARKET_SEEN_EXPIRED_MAX = 120;
 
-export const LEGENDARY_BLACKMARKET_COACH_TEXT = 'Legendary Black Market listings are extremely rare and expire in a few in-game days. If you want it, buy it before the window closes.';
+export const LEGENDARY_BLACKMARKET_COACH_TEXT = '';
 
 export function getBlackMarketItem(itemId) {
   if (!itemId) return null;
   return BLACKMARKET_ITEM_POOL.find((item) => item.id === itemId) || null;
 }
 
-function createSeededRng(seed) {
-  let t = (Number(seed) || 1) >>> 0;
-  return () => {
-    t = (t + 0x6D2B79F5) >>> 0;
-    let x = Math.imul(t ^ (t >>> 15), 1 | t);
-    x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-function pickRarity(rng) {
-  const roll = rng();
-  if (roll < (1 / 30)) return 'legendary';
-  if (roll < (1 / 30) + (1 / 8)) return 'rare';
-  return 'common';
-}
-
-function pickFromPool(pool, rarity, usedIds, rng) {
-  const candidates = pool.filter((item) => item.rarity === rarity && !usedIds.has(item.id));
-  if (!candidates.length) return null;
-  const idx = Math.floor(rng() * candidates.length);
-  return candidates[idx] || null;
-}
-
 export function getTodaysBlackMarketListing(seedDay, { ownedIds = [] } = {}) {
+  // Black Market shop removed from the desk — keep API shape for saves/tests.
+  void ownedIds;
   const day = Math.max(1, Math.floor(Number(seedDay) || 1));
-  const owned = new Set(Array.isArray(ownedIds) ? ownedIds : []);
-  // Owned items of every rarity stay out of the rotation (no dead "Owned" re-rolls).
-  const pool = BLACKMARKET_ITEM_POOL.filter((item) => !owned.has(item.id));
-  const rng = createSeededRng(9137 + day * 97);
-  const slotCount = rng() < 0.42 ? 2 : 1;
-  const used = new Set();
-  const items = [];
-  for (let i = 0; i < slotCount; i++) {
-    const rarity = pickRarity(rng);
-    let pick = pickFromPool(pool, rarity, used, rng);
-    if (!pick) pick = pickFromPool(pool, 'rare', used, rng);
-    if (!pick) pick = pickFromPool(pool, 'common', used, rng);
-    if (!pick) pick = pool.find((item) => !used.has(item.id)) || null;
-    if (!pick) break;
-    used.add(pick.id);
-    items.push(pick);
-  }
   return {
     day,
-    expiresDay: day + BLACKMARKET_LISTING_TTL_DAYS,
-    items,
+    expiresDay: day + BLACKMARKET_LISTING_TTL_DAYS - 1,
+    items: [],
   };
 }
 
@@ -226,46 +187,16 @@ export function isBlackMarketListingExpired(listing, currentDay) {
   return day >= expiresDay;
 }
 
-export function canPurchaseBlackMarketItem(item, { cash = 0, blackMarketOwned = [], licenses = ['retail'] } = {}) {
-  if (!item?.id) return { ok: false, reason: 'Unknown listing', code: 'unknown' };
-  if (Array.isArray(blackMarketOwned) && blackMarketOwned.includes(item.id)) {
-    return { ok: false, reason: 'Already owned', code: 'owned' };
-  }
-  const licNeed = requiredLicenseForRep(item.repRequired);
-  if (!hasLicense(licenses, licNeed.id)) {
-    return { ok: false, reason: `Requires the ${licNeed.name} license`, code: 'license' };
-  }
-  if (Number(cash) < Number(item.cost || 0)) {
-    return { ok: false, reason: 'Insufficient cash', code: 'cash' };
-  }
-  return { ok: true };
+export function canPurchaseBlackMarketItem(_item, _ctx = {}) {
+  return { ok: false, reason: 'Black Market has been retired from this desk.', code: 'retired' };
 }
 
-export function purchaseBlackMarketItem(state, item) {
-  if (!item?.id) return { ok: false, msg: 'Unknown listing.' };
-  if (!Array.isArray(state.blackMarketOwned)) state.blackMarketOwned = [];
-  const gate = canPurchaseBlackMarketItem(item, {
-    cash: getSpendableCash(state.portfolio),
-    blackMarketOwned: state.blackMarketOwned,
-    licenses: state.licenses,
-  });
-  if (!gate.ok) return { ok: false, msg: gate.reason, code: gate.code };
-  state.portfolio.cash -= item.cost;
-  state.blackMarketOwned.push(item.id);
-  state.blackMarketSpentTotal = Math.max(0, Number(state.blackMarketSpentTotal) || 0) + item.cost;
-  return { ok: true, item };
+export function purchaseBlackMarketItem(_state, _item) {
+  return { ok: false, msg: 'Black Market has been retired from this desk.', code: 'retired' };
 }
 
-export function collectExpiredBlackMarketIds(currentDay, { ownedIds = [] } = {}) {
-  const day = Math.floor(Number(currentDay) || 0);
-  if (day <= BLACKMARKET_LISTING_TTL_DAYS) return [];
-  const listingDay = day - BLACKMARKET_LISTING_TTL_DAYS;
-  const listing = getTodaysBlackMarketListing(listingDay);
-  if (!isBlackMarketListingExpired(listing, day)) return [];
-  const owned = new Set(Array.isArray(ownedIds) ? ownedIds : []);
-  return listing.items
-    .filter((item) => item?.id && !owned.has(item.id))
-    .map((item) => item.id);
+export function collectExpiredBlackMarketIds(_currentDay, _opts = {}) {
+  return [];
 }
 
 export function recordExpiredBlackMarketSeen(state, currentDay) {
@@ -278,34 +209,10 @@ export function recordExpiredBlackMarketSeen(state, currentDay) {
   return expiredIds.length;
 }
 
-export function shouldShowBlackMarketLegendaryCoach(meta = {}, listing = null) {
-  if (meta?.blackMarketLegendCoachShown) return false;
-  const hasLegendary = Array.isArray(listing?.items) && listing.items.some((item) => item?.rarity === 'legendary');
-  return hasLegendary;
+export function shouldShowBlackMarketLegendaryCoach() {
+  return false;
 }
 
-export function maybeShowBlackMarketLegendaryCoach(state, listing, {
-  showCoachmark, hideCoachmark, saveGame, switchView,
-} = {}) {
-  if (!shouldShowBlackMarketLegendaryCoach(state?.meta, listing)) return false;
-  state.meta.blackMarketLegendCoachShown = true;
-  if (typeof showCoachmark === 'function') {
-    const dismiss = () => {
-      if (typeof hideCoachmark === 'function') hideCoachmark();
-    };
-    showCoachmark({
-      // Spotlight the Black Market nav — view panel is often display:none on Dashboard.
-      target: '.nav-item[data-view="blackmarket"]',
-      text: LEGENDARY_BLACKMARKET_COACH_TEXT,
-      showNext: true,
-      nextLabel: 'Open Black Market',
-      onSkip: dismiss,
-      onNext: () => {
-        dismiss();
-        if (typeof switchView === 'function') switchView('blackmarket');
-      },
-    });
-  }
-  if (typeof saveGame === 'function') saveGame({ immediate: true });
-  return true;
+export function maybeShowBlackMarketLegendaryCoach() {
+  return false;
 }

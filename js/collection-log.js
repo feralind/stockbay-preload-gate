@@ -71,7 +71,7 @@ export const COLLECTION_MILESTONES = [
     kind: 'bm_rares',
     cash: 2500,
     flair: null,
-    blurb: 'Every rare and legendary Black Market piece owned.',
+    blurb: 'Legacy rare/legendary Black Market pieces owned (shop retired).',
   },
   {
     id: 'seatTaken',
@@ -164,6 +164,8 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
 
   (Array.isArray(blackMarketPool) ? blackMarketPool : []).forEach((item) => {
     if (!item?.id) return;
+    // Shop removed — only legacy owned pieces remain in the Collection Log.
+    if (!blackOwned.has(item.id)) return;
     entries.push({
       id: item.id,
       name: item.name || item.id,
@@ -171,7 +173,7 @@ export function getCollectionLogEntries(state = {}, { blackMarketPool = [], seat
       icon: item.icon || '',
       source: 'blackmarket',
       rarity: normalizeRarity(item, 'rare'),
-      owned: blackOwned.has(item.id),
+      owned: true,
       cost: Number(item.cost) || 0,
       ...flavorFields(item.id),
     });
