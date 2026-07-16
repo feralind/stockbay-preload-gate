@@ -30,6 +30,12 @@ export const TEACH_MOMENTS = {
   firstEarningsHold: {
     text: 'You held through an earnings print. Overnight gaps are the classic options coin-flip — the premium you paid was the price of that lottery ticket.',
   },
+  firstFedEvent: {
+    text: 'A Fed headline just moved the tape. Policy rates reprice the whole desk — growth, housing, and anything that lives on cheap money feel it first.',
+  },
+  firstOilEvent: {
+    text: 'An oil shock just rotated the book. Energy can rip while transports and discretionary pay the fuel bill — sector stories matter as much as the index.',
+  },
 };
 
 /** One-shot license-earned moments use ids like license_series7. */
@@ -76,6 +82,19 @@ export function lessonLineForDay(daySummary = {}) {
   }
   if (events.some((e) => e?.type === 'paid_off')) {
     return 'Today taught: a loan paid off in full is the cheapest credit boost there is — aged, finished debt reads as trust.';
+  }
+  const majors = Array.isArray(daySummary.majorEvents) ? daySummary.majorEvents : [];
+  if (majors.some((id) => id === 'fed_hike' || id === 'fed_cut')) {
+    return 'Today taught: when the Fed speaks, duration moves first — rates are the quiet lever behind growth and housing prices.';
+  }
+  if (majors.some((id) => id === 'oil_spike' || id === 'oil_crash')) {
+    return 'Today taught: energy shocks rotate the book — winners and losers sit in different sectors of the same headline.';
+  }
+  if (majors.includes('recession_scare')) {
+    return 'Today taught: a soft-data scare can make the tape feel choppy even when the day is still a trend underneath — size down until it settles.';
+  }
+  if (majors.includes('housing_rates') || majors.includes('dollar_spike')) {
+    return 'Today taught: rate-sensitive stories hit harder when policy is already far from normal — the macro backdrop scales the punch.';
   }
   return '';
 }

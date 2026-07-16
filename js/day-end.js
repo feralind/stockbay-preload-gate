@@ -14,6 +14,7 @@ import {
 } from './meta.js';
 import { recordBestRun } from './leaderboard.js';
 import { lessonLineForDay, updateRecoveryHint } from './teach-moments.js';
+import { getMajorEventsToday } from './events.js';
 import { repossessVaultForLateLoans, getVaultSlotForItem, getVaultItem } from './vault.js';
 import { setProfileCosmetic } from './profile.js';
 import { processDailyEstates, syncEstateDerived } from './estates.js';
@@ -120,7 +121,7 @@ export function runDayEndSettlement(state, day) {
     optionsExpired: expiredOpts.length,
     repossessions,
     processWins,
-    lessonLine: lessonLineForDay({ loanEvents }),
+    lessonLine: lessonLineForDay({ loanEvents, majorEvents: getMajorEventsToday() }),
     recoveryHint: updateRecoveryHint(state, equity),
   };
 

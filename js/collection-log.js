@@ -66,14 +66,6 @@ export const COLLECTION_MILESTONES = [
     blurb: 'Every Trophy Vault item owned.',
   },
   {
-    id: 'bmRares',
-    label: 'Rare Floor',
-    kind: 'bm_rares',
-    cash: 2500,
-    flair: null,
-    blurb: 'Legacy rare/legendary Black Market pieces owned (shop retired).',
-  },
-  {
     id: 'seatTaken',
     label: 'Seat Secured',
     kind: 'seat',
@@ -264,10 +256,6 @@ function isMilestoneEarned(milestone, state, opts) {
     const vault = entries.filter((e) => e.source === 'vault');
     return vault.length > 0 && vault.every((e) => e.owned);
   }
-  if (milestone.kind === 'bm_rares') {
-    const rares = entries.filter((e) => e.source === 'blackmarket' && (e.rarity === 'rare' || e.rarity === 'legendary'));
-    return rares.length > 0 && rares.every((e) => e.owned);
-  }
   if (milestone.kind === 'seat') {
     return !!state.seatOwned;
   }
@@ -307,7 +295,7 @@ export function getCollectionMilestones(state = {}, opts = {}) {
 export function getCollectionHuntTargets(state = {}, opts = {}) {
   const limit = Math.max(1, Math.min(6, Math.floor(Number(opts.limit) || 3)));
   const rarityRank = { crown: 5, masterwork: 4, legendary: 3, rare: 2, common: 1 };
-  const sourceRank = { salon: 5, seat: 4, blackmarket: 3, vault: 2 };
+  const sourceRank = { salon: 5, seat: 4, vault: 2 };
   return getCollectionLogEntries(state, opts)
     .filter((entry) => !entry.owned)
     .slice()

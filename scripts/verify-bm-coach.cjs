@@ -1,7 +1,4 @@
 /**
- * Black Market legendary coach — retired with the shop.
- * Kept as a no-op so old docs/commands don't fail loudly.
- * Run: node scripts/verify-bm-coach.cjs
+ * Floor relic legendary coach — retired with the Black Market shop.
  */
-console.log('SKIP  Black Market legendary coach retired (shop/nav/coach removed)');
-process.exit(0);
+console.log('SKIP  Floor relic legendary coach retired (shop/nav/coach removed)');

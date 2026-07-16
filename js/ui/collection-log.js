@@ -49,7 +49,7 @@ const RARITY_LABEL = {
 const SOURCE_LABEL = {
   vault: 'Trophy Vault',
   salon: 'Private Salon',
-  blackmarket: 'Legacy Night Floor',
+  blackmarket: 'Floor Relic',
   seat: 'The Seat',
 };
 

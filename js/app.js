@@ -42,7 +42,7 @@ import { processMarginCallTick, MARGIN_CALL_GRACE_MINUTES } from './margin-call.
 import { applyRelicAwareSlippage, getDeskMarginGraceMinutes } from './desk-rules.js';
 import { getMacroState } from './macro.js';
 import { isTaxDay, settleTaxDay } from './tax.js';
-import { startEventEngine, onEvent } from './events.js';
+import { startEventEngine, onEvent, resetDayEventCounters } from './events.js';
 import { initChart, applyChartTheme, resizeChart, zoomChart, resetChartZoom, updateLastCandleFromQuote, setChartStyle, getChartStyle, scheduleFitChart } from './chart.js';
 import { initThemePanel } from './theme.js';
 import {
@@ -968,6 +968,17 @@ function maybeShowEarningsHoldTeach(earningsResults) {
   fireTeachMoment('firstEarningsHold', TEACH_MOMENTS.firstEarningsHold.text);
 }
 
+/** One-shot: first Fed or first oil world-event lesson. */
+function maybeShowWorldEventTeach(evt) {
+  if (!evt || evt.real) return;
+  const id = evt.templateId || '';
+  if ((id === 'fed_hike' || id === 'fed_cut') && TEACH_MOMENTS.firstFedEvent) {
+    fireTeachMoment('firstFedEvent', TEACH_MOMENTS.firstFedEvent.text);
+  } else if ((id === 'oil_spike' || id === 'oil_crash') && TEACH_MOMENTS.firstOilEvent) {
+    fireTeachMoment('firstOilEvent', TEACH_MOMENTS.firstOilEvent.text);
+  }
+}
+
 function applyConfirmOrderResult(result) {
   if (!result?.ok) {
     if (result?.sound === 'error') sfxError();
@@ -1025,7 +1036,7 @@ function applyCloseOptionResult(result) {
 }
 
 function syncBlackMarketForCurrentDay() {
-  // Black Market shop retired — no listings, no legendary coach spotlight.
+  // Floor relic shop retired — no listings / coach.
 }
 
 function bindState() {
@@ -1322,10 +1333,6 @@ function bindState() {
     toast(`Claimed ${bits.join(' · ')}`, { type: 'success' });
     saveGame();
     renderAll(state);
-  };
-
-  state.onBuyBlackMarketItem = async () => {
-    showAlert('Black Market has been retired from this desk.', { title: 'Desk', label: 'INFO' });
   };
 
   state.onToggleBlackMarketRelic = (itemId) => {
@@ -2089,6 +2096,7 @@ async function init() {
       }
       if (type === 'newDay') {
         const day = data?.day || getDayCount();
+        resetDayEventCounters(day);
         const earningsHits = processEarningsForDay(day);
         maybeShowEarningsHoldTeach(earningsHits);
         const divs = processDividendsForDay(state.portfolio, day);
@@ -2180,7 +2188,10 @@ async function init() {
       }
     });
 
-    onEvent(() => renderAll(state));
+    onEvent((payload) => {
+      if (payload?.type === 'world_event') maybeShowWorldEventTeach(payload.event);
+      renderAll(state);
+    });
 
     document.querySelectorAll('.nav-item').forEach(btn => {
       btn.onclick = () => {

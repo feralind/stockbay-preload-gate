@@ -118,13 +118,12 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Foil SVG art & masterworks tier
 - Private Salon — ultra-rare crown jewels ($2.5M–$5M) in scarce windows
 - The Seat — $500K once-in-a-career prestige listing (rare window; claim from Collection when active)
-- Legacy relics (Mage of the Desk · Liquidity Crown) — still equippable if owned from older saves
-- Collection Log with completion % & 9 milestones
+- Legacy floor relics (Mage of the Desk · Liquidity Crown) — effects if owned from older saves; shop removed
+- Collection Log with completion % & 8 milestones
 - Museum mode — owned gallery with short lore + immersion sets
 - Set completion claims cosmetic flair only (no REP / cash / Desk Prestige)
 - Standing flair cascade: mega → luxury → set → collection
 - Profile cosmetics applied across the desk
-- Black Market shop — retired (no nav / listings / coach); owned pieces remain in Collection
 
 ### Achievements
 - 47 achievements across 6 tiers

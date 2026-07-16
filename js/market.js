@@ -31,6 +31,49 @@ let speedMultiplier = 1;
 let marketBeta = 0;
 let tapeRegime = getTapeRegime(dayCount);
 
+/**
+ * Silent risk-off overlay from large bearish world events.
+ * Never flips the day's trend/chop identity — only nudges beta + extra noise pad.
+ * Not disclosed in HUD/events UI (player feels it through price only).
+ */
+let riskOffOverlayUntilAbsMin = 0;
+let riskOffNoisePad = 0;
+
+function absoluteMarketMinute() {
+  return dayCount * 24 * 60 + marketDate.getHours() * 60 + marketDate.getMinutes();
+}
+
+/** @returns {boolean} */
+export function isRiskOffOverlayActive() {
+  return absoluteMarketMinute() < riskOffOverlayUntilAbsMin;
+}
+
+/** Extra per-minute noise while overlay is live (0 when idle). Silent — no UI. */
+export function getRiskOffNoisePad() {
+  return isRiskOffOverlayActive() ? riskOffNoisePad : 0;
+}
+
+/**
+ * Install a temporary overlay. Does not mutate tapeRegime.
+ * @param {{ gameMinutes?: number, betaNudge?: number, noisePad?: number }} [opts]
+ */
+export function installRiskOffOverlay(opts = {}) {
+  const mins = Math.max(30, Math.min(240, Math.floor(Number(opts.gameMinutes) || 120)));
+  const nudge = Number(opts.betaNudge);
+  const pad = Number(opts.noisePad);
+  riskOffOverlayUntilAbsMin = absoluteMarketMinute() + mins;
+  riskOffNoisePad = Number.isFinite(pad) ? Math.max(0, Math.min(0.0004, pad)) : 0.00015;
+  if (Number.isFinite(nudge) && nudge !== 0) {
+    marketBeta = Math.max(-1, Math.min(1, marketBeta + nudge));
+  }
+}
+
+/** Test helper — clear overlay without touching day regime. */
+export function clearRiskOffOverlay() {
+  riskOffOverlayUntilAbsMin = 0;
+  riskOffNoisePad = 0;
+}
+
 /** Session open anchors for circuit breakers (reset each game day). */
 const sessionOpen = new Map();
 /** Active halts: sym -> { day, untilMinute, reason, movePct } */
@@ -524,6 +567,9 @@ function simulateMarketMinute() {
       drift += idiosyncratic * 0.35;
       if (Math.floor(tickSeed / 17) % 2 === 1) drift *= -0.65;
     }
+    // Silent risk-off overlay: extra noise only — does not flip tapeRegime.
+    const riskPad = getRiskOffNoisePad();
+    if (riskPad > 0) drift += (Math.random() - 0.5) * 2 * riskPad;
     // Thin sessions: small random spread pad (wider effective prints)
     if (liq.spreadPad) drift += (Math.random() - 0.5) * 2 * liq.spreadPad;
     drift = Math.max(-MAX_DRIFT_PER_MINUTE, Math.min(MAX_DRIFT_PER_MINUTE, drift));
@@ -755,6 +801,7 @@ export function resetMarketForNewRun() {
   speedMultiplier = 1;
   marketBeta = 0;
   tapeRegime = getTapeRegime(dayCount);
+  clearRiskOffOverlay();
   pausedByUser = false;
   pausedByBackground = false;
   marketRunning = true;

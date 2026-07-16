@@ -82,9 +82,9 @@ export const COLLECTION_SETS = [
   {
     id: 'floorRelics',
     name: 'Floor Relics',
-    blurb: 'Black Market legendaries that still hum after close.',
+    blurb: 'Legacy desk relics that still hum after close (ownership from older runs).',
     flair: 'Relic Floor',
-    memberIds: ['mageOfTheDesk', 'liquidityCrown', 'orbitalFloorBackdrop', 'obsidianMonolithDesk'],
+    memberIds: ['mageOfTheDesk', 'liquidityCrown'],
   },
   {
     id: 'crownWing',
@@ -111,17 +111,6 @@ export const COLLECTION_SETS = [
       'crashDayTape', 'apexBadge', 'halcyonPin', 'floorLegendTitle', 'volatilityWhisperer', 'closingBellRoyalty',
       'bronzeBullBust', 'glassTickerWall', 'auroraDeck', 'deskSovereign', 'imperialTriptych', 'augustusLaurel',
       'gutenbergFolio', 'rothkoField', 'diademProvenance',
-    ],
-  },
-  {
-    id: 'sourceBlackMarket',
-    name: 'Night Floor Set',
-    blurb: 'Legacy Black Market catalog set — shop retired; owned pieces still count.',
-    flair: 'Night Floor',
-    memberIds: [
-      'afterHoursMonogram', 'nightWatchTitle', 'tickerVaultBackdrop', 'clockworkDeskSkin', 'pitPassLanyard',
-      'amberTapeBackdrop', 'ledgerLineTitle', 'floorMythTitle', 'dragonLedgerBadge', 'stormGlassBackdrop',
-      'midnightBloomDesk', 'mageOfTheDesk', 'liquidityCrown', 'orbitalFloorBackdrop', 'obsidianMonolithDesk',
     ],
   },
   {

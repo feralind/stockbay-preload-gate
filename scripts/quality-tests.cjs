@@ -2236,18 +2236,18 @@ async function main() {
   });
 
   test('getCollectionPrestigeScore rewards rarity and seat ownership', () => {
-    const commonOwned = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'common');
-    const legendaryOwned = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
-    assert.ok(commonOwned && legendaryOwned, 'expected common + legendary black market items');
+    const relicA = BLACKMARKET_ITEM_POOL.find((item) => item.id === 'mageOfTheDesk');
+    const relicB = BLACKMARKET_ITEM_POOL.find((item) => item.id === 'liquidityCrown');
+    assert.ok(relicA && relicB, 'expected two floor relics');
     const low = getCollectionPrestigeScore({ vaultOwned: ['goldTerminal'] }, {
       blackMarketPool: BLACKMARKET_ITEM_POOL,
       seatItem: THE_SEAT,
     });
     const high = getCollectionPrestigeScore({
       vaultOwned: ['goldTerminal', 'crashDayTape'],
-      blackMarketOwned: [commonOwned.id, legendaryOwned.id],
+      blackMarketOwned: [relicA.id, relicB.id],
       seatOwned: true,
-      blackMarketEquippedRelics: [legendaryOwned.id],
+      blackMarketEquippedRelics: [relicA.id],
     }, {
       blackMarketPool: BLACKMARKET_ITEM_POOL,
       seatItem: THE_SEAT,
@@ -2353,12 +2353,12 @@ async function main() {
     assert.equal(isBlackMarketListingExpired(listing, listing.expiresDay + 1), true);
   });
 
-  test('legacy black market item pool still resolves owned cosmetics/relics', () => {
-    assert.ok(BLACKMARKET_ITEM_POOL.length >= 10, 'pool kept for legacy owned pieces');
-    const legend = BLACKMARKET_ITEM_POOL.find((item) => item.rarity === 'legendary');
-    assert.ok(legend, 'expected at least one legendary relic/cosmetic in pool');
-    const commons = BLACKMARKET_ITEM_POOL.filter((item) => item.rarity === 'common');
-    assert.ok(commons.length >= 2, 'need multiple commons in legacy pool');
+  test('legacy floor relic pool keeps two mechanical relics only', () => {
+    assert.equal(BLACKMARKET_ITEM_POOL.length, 2);
+    assert.ok(BLACKMARKET_ITEM_POOL.every((item) => item.category === 'relic'));
+    assert.ok(BLACKMARKET_ITEM_POOL.every((item) => item.rarity === 'legendary'));
+    assert.ok(BLACKMARKET_ITEM_POOL.some((item) => item.id === 'mageOfTheDesk'));
+    assert.ok(BLACKMARKET_ITEM_POOL.some((item) => item.id === 'liquidityCrown'));
   });
 
   test('blackmarket legendary coachmark is retired and never shows', () => {
@@ -2380,7 +2380,7 @@ async function main() {
     assert.equal(state.meta.blackMarketLegendCoachShown, false);
   });
 
-  test('collection entries only include owned black market pieces (shop retired)', () => {
+  test('collection entries only include owned floor relics (shop stripped)', () => {
     const ownedId = BLACKMARKET_ITEM_POOL[0].id;
     const entries = getCollectionLogEntries(
       { vaultOwned: [], blackMarketOwned: [ownedId] },
@@ -2886,10 +2886,13 @@ async function main() {
     const { getActiveFlair, createMetaState } = metaMod;
 
     test('collection set progress, claim-once flair, and forge strip', () => {
-      assert.ok(COLLECTION_SETS.length >= 8);
+      assert.ok(COLLECTION_SETS.length >= 7);
       assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceVault'));
-      assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceBlackMarket'));
+      assert.ok(COLLECTION_SETS.some((s) => s.id === 'floorRelics'));
+      assert.equal(COLLECTION_SETS.some((s) => s.id === 'sourceBlackMarket'), false);
       assert.ok(COLLECTION_SETS.some((s) => s.id === 'sourceSalon'));
+      const floorRelics = COLLECTION_SETS.find((s) => s.id === 'floorRelics');
+      assert.deepEqual(floorRelics.memberIds.slice().sort(), ['liquidityCrown', 'mageOfTheDesk'].sort());
       // Source set ids must not collide with cash/REP collection milestones.
       assert.equal(COLLECTION_SETS.some((s) => s.id === 'vaultSet'), false);
       const desk = COLLECTION_SETS.find((s) => s.id === 'deskInstruments');
@@ -4226,9 +4229,9 @@ async function main() {
       v: 2,
       portfolio: { cash: 900, longs: {}, shorts: {}, options: [], pendingOrders: [], history: [] },
       perks: [],
-      blackMarketOwned: [kept.id, 'forgedBlackMarketId'],
+      blackMarketOwned: [kept.id, 'forgedBlackMarketId', 'afterHoursMonogram'],
       blackMarketSpentTotal: kept.cost,
-      blackMarketSeenExpired: [kept.id, 'bogusExpiredId'],
+      blackMarketSeenExpired: [kept.id, 'bogusExpiredId', 'afterHoursMonogram'],
     });
     assert.deepEqual(clean.blackMarketOwned, [kept.id]);
     assert.deepEqual(clean.blackMarketSeenExpired, [kept.id]);
@@ -4635,7 +4638,7 @@ async function main() {
   const macroMod = await import(pathToFileURL(path.join(__dirname, '../js/macro.js')).href);
   const {
     applyFedPolicy, getFedFundsRate, getYield10Y, macroAprAdjustment, fedShockMultiplier,
-    resetMacroForTests, MACRO_BASE_FED, stepMacroTowardNeutral,
+    macroEventScale, resetMacroForTests, MACRO_BASE_FED, stepMacroTowardNeutral,
   } = macroMod;
   const slipMod = await import(pathToFileURL(path.join(__dirname, '../js/slippage.js')).href);
   const { applySlippage, slipFractionFromParticipation } = slipMod;
@@ -5179,8 +5182,20 @@ async function main() {
     estimateOptionValue, settleExpiredOptions, optionIntrinsicPerShare, liveOptionVol,
   } = portMod;
   const teachMod = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
-  const { detectIvCrush, heldThroughEarnings, TEACH_MOMENTS } = teachMod;
+  const {
+    detectIvCrush, heldThroughEarnings, TEACH_MOMENTS, lessonLineForDay, markTeachMoment,
+  } = teachMod;
   const { earningsChipInfo, daysUntilEarnings } = corp;
+  const {
+    getEventTemplates, pickWeightedEvent, applyEvent, triggerEvent,
+    resetEventEngineStateForTests, FED_ANTIFLIP_DAYS, eventRollChance,
+    MAX_EVENTS_PER_GAME_DAY, eventTouchesBook, getMajorEventsToday,
+    getLastSkippedHaltedSymbols,
+  } = evMod;
+  const {
+    installRiskOffOverlay, clearRiskOffOverlay, isRiskOffOverlayActive, getRiskOffNoisePad,
+    resetDailyShockAccum,
+  } = mkt;
 
   test('earningsChipInfo shows tonight / E-N within a week only', () => {
     const sym = 'AAPL';
@@ -5354,6 +5369,156 @@ async function main() {
     const wins = collectProcessWins({ portfolio: p, day: 23 });
     assert.equal(wins.some((w) => w.id === 'no_chase'), false);
     assert.equal(p.dayLastRedExit, undefined);
+  });
+
+  // --- News events depth: pacing, cooldown, overlay, halt skip, teach ---
+  test('event catalog includes coverage-gap template ids', () => {
+    const ids = new Set(getEventTemplates().map((t) => t.id));
+    for (const id of [
+      'housing_rates', 'megacap_miss', 'cyber_outage', 'ma_rumor', 'labor_strike',
+      'drought_ag', 'recession_scare', 'dollar_spike', 'guidance_raise', 'sec_probe',
+    ]) {
+      assert.ok(ids.has(id), `missing template ${id}`);
+    }
+    assert.ok(getEventTemplates().length >= 23, `expected ~23+ templates, got ${getEventTemplates().length}`);
+  });
+
+  test('Fed antiflip blocks opposite Fed template for N game days', () => {
+    resetEventEngineStateForTests();
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    const hike = getEventTemplates().find((t) => t.id === 'fed_hike');
+    triggerEvent(hike, false, 10);
+    for (let d = 10; d < 10 + FED_ANTIFLIP_DAYS; d++) {
+      for (let i = 0; i < 80; i++) {
+        const pick = pickWeightedEvent(d, () => 0.999);
+        assert.notEqual(pick.id, 'fed_cut', `fed_cut should be blocked on day ${d}`);
+      }
+    }
+    let sawCut = false;
+    for (let i = 0; i < 200; i++) {
+      if (pickWeightedEvent(10 + FED_ANTIFLIP_DAYS, Math.random).id === 'fed_cut') {
+        sawCut = true;
+        break;
+      }
+    }
+    assert.ok(sawCut, 'fed_cut should return after antiflip window');
+    resetEventEngineStateForTests();
+  });
+
+  test('recently fired templates are down-weighted vs unused', () => {
+    resetEventEngineStateForTests();
+    const all = getEventTemplates();
+    const keep = all.find((t) => t.id === 'guidance_raise');
+    assert.ok(keep);
+    for (const t of all) {
+      if (t.id !== keep.id) triggerEvent(t, false, 5);
+    }
+    const counts = {};
+    for (let i = 0; i < 120; i++) {
+      const id = pickWeightedEvent(6, Math.random).id;
+      counts[id] = (counts[id] || 0) + 1;
+    }
+    assert.ok((counts.guidance_raise || 0) >= 8, `fresh template should win often: ${JSON.stringify(counts)}`);
+    resetEventEngineStateForTests();
+  });
+
+  test('eventRollChance soft-caps at MAX_EVENTS_PER_GAME_DAY', () => {
+    resetEventEngineStateForTests();
+    assert.ok(eventRollChance('Morning', 1) > 0);
+    const tmpl = getEventTemplates()[0];
+    for (let i = 0; i < MAX_EVENTS_PER_GAME_DAY; i++) triggerEvent(tmpl, false, 1);
+    assert.equal(eventRollChance('Morning', 1), 0);
+    resetEventEngineStateForTests();
+  });
+
+  test('macroEventScale amplifies housing/dollar when Fed is extreme', () => {
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    assert.equal(macroEventScale('cyber_outage'), 1);
+    assert.equal(macroEventScale('housing_rates'), 0.85);
+    resetMacroForTests(6.5, 5.5);
+    assert.ok(macroEventScale('housing_rates') > 1);
+    assert.ok(macroEventScale('dollar_spike') > 1);
+    assert.ok(fedShockMultiplier('fed_hike') > 0.85);
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+  });
+
+  test('halted symbols are skipped and never deferred after lift', () => {
+    resetEventEngineStateForTests();
+    resetSessionAnchors();
+    resetDailyShockAccum();
+    clearRiskOffOverlay();
+    getQuoteCache().set('META', { price: 100, prevClose: 100, high: 100, low: 100 });
+    getQuoteCache().set('AMZN', { price: 100, prevClose: 100, high: 100, low: 100 });
+    checkCircuitBreaker('META', 100);
+    checkCircuitBreaker('META', 109);
+    assert.equal(isSymbolHalted('META'), true);
+    const cyber = getEventTemplates().find((t) => t.id === 'cyber_outage');
+    const beforeMeta = getQuoteCache().get('META').price;
+    const beforeAmzn = getQuoteCache().get('AMZN').price;
+    const result = applyEvent({ ...cyber, templateId: 'cyber_outage' });
+    assert.ok(result.skippedHalted.includes('META'));
+    assert.ok(!result.applied.includes('META'));
+    assert.equal(getQuoteCache().get('META').price, beforeMeta);
+    assert.ok(result.applied.includes('AMZN') || getQuoteCache().get('AMZN').price !== beforeAmzn);
+    assert.deepEqual(getLastSkippedHaltedSymbols(), result.skippedHalted);
+    // Lift halt — no queued retry: price must stay put until a new shock
+    resetSessionAnchors();
+    assert.equal(isSymbolHalted('META'), false);
+    assert.equal(getQuoteCache().get('META').price, beforeMeta);
+    resetEventEngineStateForTests();
+  });
+
+  test('risk-off overlay does not flip getTapeRegime and stays silent', () => {
+    clearRiskOffOverlay();
+    const day = 42;
+    const before = mkt.getTapeRegime(day);
+    const regimeBefore = mkt.serializeMarket().tapeRegime;
+    installRiskOffOverlay({ gameMinutes: 90, betaNudge: -0.2, noisePad: 0.0002 });
+    assert.equal(isRiskOffOverlayActive(), true);
+    assert.ok(getRiskOffNoisePad() > 0);
+    assert.equal(mkt.getTapeRegime(day), before);
+    assert.equal(mkt.serializeMarket().tapeRegime, regimeBefore);
+    const recession = getEventTemplates().find((t) => t.id === 'recession_scare');
+    const playerCopy = [
+      recession.headline, recession.teaser, recession.body, recession.whyItMatters, recession.deskTake,
+    ].join('\n');
+    assert.ok(!/overlay|noise pad|tapeRegime|marketBeta/i.test(playerCopy), 'player copy must not disclose overlay internals');
+    clearRiskOffOverlay();
+    assert.equal(isRiskOffOverlayActive(), false);
+    assert.equal(getRiskOffNoisePad(), 0);
+  });
+
+  test('recession_scare installs overlay without changing day regime identity', () => {
+    resetEventEngineStateForTests();
+    clearRiskOffOverlay();
+    resetMacroForTests(MACRO_BASE_FED, 4.2);
+    const day = typeof mkt.getDayCount === 'function' ? mkt.getDayCount() : 1;
+    const regime = mkt.getTapeRegime(day);
+    const scare = getEventTemplates().find((t) => t.id === 'recession_scare');
+    triggerEvent(scare, false, day);
+    assert.equal(isRiskOffOverlayActive(), true);
+    assert.equal(mkt.getTapeRegime(day), regime);
+    assert.ok(getMajorEventsToday().includes('recession_scare'));
+    clearRiskOffOverlay();
+    resetEventEngineStateForTests();
+  });
+
+  test('eventTouchesBook flags held names', () => {
+    const cyber = getEventTemplates().find((t) => t.id === 'cyber_outage');
+    assert.equal(eventTouchesBook(cyber, { longs: {}, shorts: {}, options: [] }), false);
+    assert.equal(eventTouchesBook(cyber, { longs: { META: { shares: 1 } }, shorts: {}, options: [] }), true);
+    assert.equal(eventTouchesBook(cyber, { longs: {}, shorts: {}, options: [{ sym: 'AMZN', qty: 1 }] }), true);
+  });
+
+  test('Fed/oil teach moments and day-end lesson lines exist', () => {
+    assert.ok(TEACH_MOMENTS.firstFedEvent?.text);
+    assert.ok(TEACH_MOMENTS.firstOilEvent?.text);
+    const meta = { teachMomentsShown: {} };
+    assert.equal(markTeachMoment(meta, 'firstFedEvent'), true);
+    assert.equal(markTeachMoment(meta, 'firstFedEvent'), false);
+    assert.match(lessonLineForDay({ majorEvents: ['fed_hike'] }), /Fed|rates/i);
+    assert.match(lessonLineForDay({ majorEvents: ['oil_spike'] }), /energy|sector/i);
+    assert.match(lessonLineForDay({ majorEvents: ['housing_rates'] }), /rate-sensitive|macro/i);
   });
 
   // --- Phase B tape regime / listings constants / AI cap ---

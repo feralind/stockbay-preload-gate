@@ -38,7 +38,6 @@ import { renderPerks } from './ui/perks.js';
 import { renderVault } from './ui/vault.js';
 import { renderEstates } from './ui/estates.js';
 import { renderCollectionLog } from './ui/collection-log.js';
-import { renderBlackMarket } from './ui/blackmarket.js';
 import {
   bindAiChat, configureAiAdvisor, getAiChatHistory, loadAiChatHistory,
   refreshAiAnalysis, renderAi, renderAiChatLog, sendAiChat,
@@ -143,7 +142,6 @@ export function renderAll(state) {
     renderEstates(state, { netWorth });
   }
   renderCollectionLog(state);
-  renderBlackMarket(state);
   renderTradePanel(state);
   renderTicker(state);
   renderLog(state);
@@ -918,7 +916,7 @@ export function renderCheckpointList(slots = []) {
 }
 
 export function switchView(viewId) {
-  // Black Market shop retired — bounce any leftover links to Collection.
+  // Retired blackmarket view id — bounce leftover links to Collection.
   const next = (viewId === 'blackmarket') ? 'collection' : (viewId || 'dashboard');
   const prev = activeViewId;
   activeViewId = next;

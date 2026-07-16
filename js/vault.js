@@ -222,7 +222,7 @@ export function getCategoryDisplayLabel(category) {
   const key = String(category || '');
   if (VAULT_CATEGORY_LABELS[key]) return VAULT_CATEGORY_LABELS[key];
   if (key === 'seat') return 'The Seat';
-  if (key === 'blackmarket') return 'Black Market';
+  if (key === 'blackmarket' || key === 'relic') return 'Floor Relic';
   if (!key) return '';
   return key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }

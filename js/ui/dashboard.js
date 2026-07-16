@@ -182,7 +182,7 @@ export function configureDashboardUi({ switchView: nextSwitchView } = {}) {
 }
 
 /**
- * Firm Snapshot relic row — read-only display of equipped relics (legacy Black Market slots).
+ * Firm Snapshot relic row — read-only display of equipped floor relics (legacy).
  * @param {{ blackMarketEquippedRelics?: string[], seatOwned?: boolean }} state
  * @returns {string}
  */

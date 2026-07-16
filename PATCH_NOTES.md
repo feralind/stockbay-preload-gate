@@ -43,7 +43,7 @@ Four days on the desk. The firm got real estate, real licenses, and charts that 
 - **1D session seed** — Thin morning stubs no longer block a real session chart on names you haven’t babysat.
 - **Vault / Collection media** — Photos and art refresh; Collection Log shows what you own.
 - **Firm equity HUD** — Stutter cleaned up when NW moves.
-- **Black Market retired** — Shop, nav, legendary coach, and daily listings removed. Owned relics/cosmetics still load from saves; empty relic row goes to Collection. The Seat rare window claims from Collection when active (GM all-collectibles still grants it).
+- **Black Market catalog stripped** — Shop/nav/coach already gone. Unreachable cosmetics removed from the pool and Collection chase/sets. Only two legacy floor relics remain for old saves (effects still apply if owned/equipped). The Seat claims from Collection.
 
 ---
 

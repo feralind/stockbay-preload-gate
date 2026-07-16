@@ -68,6 +68,21 @@ export function fedShockMultiplier(templateId) {
   return 1;
 }
 
+/**
+ * Shared magnitude scale for scripted events.
+ * Fed hike/cut: directional distance (existing). Housing/dollar: absolute distance from 4.5%.
+ * Macro-blind templates return 1.
+ */
+export function macroEventScale(templateId) {
+  const id = String(templateId || '');
+  if (id === 'fed_hike' || id === 'fed_cut') return fedShockMultiplier(id);
+  if (id === 'housing_rates' || id === 'dollar_spike') {
+    const dist = Math.abs(fedFundsRate - MACRO_BASE_FED);
+    return +(0.85 + Math.min(0.55, dist * 0.14)).toFixed(3);
+  }
+  return 1;
+}
+
 /** APR add-on in percentage points vs policy baseline. */
 export function macroAprAdjustment() {
   return Math.round((fedFundsRate - MACRO_BASE_FED) * 0.65 * 100) / 100;

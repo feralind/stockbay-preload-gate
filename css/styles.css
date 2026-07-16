@@ -2523,6 +2523,17 @@ body.is-resizing-right * { cursor: col-resize !important; }
   font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--orange);
 }
+.event-book-flag {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--accent);
+  padding: 2px 7px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg3));
+}
+.event-card.touches-book,
+.event-item.touches-book {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
 .event-expand-btn {
   margin-top: 8px; padding: 4px 10px; font-size: 11px; font-weight: 600;
   border-radius: 6px; border: 1px solid var(--border); background: var(--bg2);
