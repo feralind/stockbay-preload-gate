@@ -142,6 +142,7 @@ function firmNetWorth(mods, state) {
     debt: firmDebt(mods, state),
     vaultBook: 0,
     estateEquity: state.estateEquity || 0,
+    bankDeposits: mods.finance.getTotalBankDeposits(state.finance),
   });
 }
 
@@ -292,18 +293,19 @@ function syntheticTradingPnl(style, day, state, rand) {
   const autoCount = (state.staff || []).filter((member) => member.autopilot).length;
   const scale = 0.55 + Math.min(1.35, day / 430);
   // Credit-scaled Available Buying Power: dampen synthetic size when personal
-  // credit falls below Good (670). Fair (580–669) → 1.5×; Poor (<580) → 1.0×.
-  // Mirrors desk-rules marginBuyingPowerMultiplier — prevents headless bankruptcy
-  // when aggressive paths trash the file while Margin is still unlocked.
+  // credit falls below Good (670). Fair (580–669) → 1.5×; Poor (<580) → 0.70×
+  // (mirrors marginBuyingPowerMultiplier × personalCreditOpenScale).
   const personalCredit = Number(state.finance?.personalCredit);
   let bpMult = 1;
+  const openScale = (Number.isFinite(personalCredit) && personalCredit < 580) ? 0.7 : 1;
   if (hasMargin) {
     if (Number.isFinite(personalCredit) && personalCredit >= 670) bpMult = 2;
     else if (Number.isFinite(personalCredit) && personalCredit >= 580) bpMult = 1.5;
     else bpMult = 1;
   }
+  bpMult *= openScale;
   // Relative to classic Good 2× baseline so Good play keeps prior feel.
-  const bpScale = hasMargin ? (bpMult / 2) : 1;
+  const bpScale = hasMargin ? (bpMult / 2) : openScale;
   const marginBoost = hasMargin ? (1 + 0.18 * bpScale) : 1;
   const staffBoost = 1 + Math.min(0.28, staffCount * 0.025 + autoCount * 0.02);
   const cashDampen = Math.max(0.65, Math.min(1.4, Math.sqrt(Math.max(250, cash) / 1800)));
@@ -378,6 +380,17 @@ function maybeUseEstateCredit(mods, state, style) {
   const available = mods.estates.getEstateCreditAvailable(state);
   if (available < 500) return null;
   return mods.estates.drawEstateCredit(state, Math.min(2000, available));
+}
+
+/** Careful desks park a little excess cash in house/Chase savings (BP leaves desk). */
+function maybeParkSavings(mods, state, style, day) {
+  if (style !== 'careful' || day < 400) return null;
+  const cash = Number(state.portfolio.cash) || 0;
+  if (cash < 8000) return null;
+  const house = mods.finance.getHouseBankId(state.finance) || 'chase';
+  const park = Math.min(1500, Math.floor(cash - 5000));
+  if (park < 250) return null;
+  return mods.finance.depositToBank(state.finance, state.portfolio, house, 'savings', park, day);
 }
 
 function setSyntheticDayCounters(mods, state, style, pnl, rand) {
@@ -490,6 +503,7 @@ async function runScenario(mods, style) {
       if (borrowed?.ok) borrows += 1;
       if (maybeBuyEstate(mods, state, style, day)) estatePurchases += 1;
       maybeUseEstateCredit(mods, state, style);
+      maybeParkSavings(mods, state, style, day);
       setSyntheticDayCounters(mods, state, style, pnl, rand);
 
       // Subprime personal credit: track restriction; held licenses must persist (no crash).

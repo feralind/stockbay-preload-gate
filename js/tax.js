@@ -17,6 +17,7 @@ export function createTaxAccrual() {
     longTermGain: 0,
     shortTermLoss: 0,
     longTermLoss: 0,
+    interestIncome: 0,
   };
 }
 
@@ -24,8 +25,21 @@ export function ensureTaxState(portfolio) {
   if (!portfolio.taxAccrual || typeof portfolio.taxAccrual !== 'object') {
     portfolio.taxAccrual = createTaxAccrual();
   }
+  if (!Number.isFinite(Number(portfolio.taxAccrual.interestIncome))) {
+    portfolio.taxAccrual.interestIncome = 0;
+  }
   if (!Number.isFinite(Number(portfolio.taxOwed))) portfolio.taxOwed = 0;
   return portfolio;
+}
+
+/** Record savings (or other) interest as ordinary income for Tax Day. */
+export function accrueInterestIncome(portfolio, amount) {
+  ensureTaxState(portfolio);
+  const n = Number(amount) || 0;
+  if (!(n > 0)) return;
+  portfolio.taxAccrual.interestIncome = Math.round(
+    ((Number(portfolio.taxAccrual.interestIncome) || 0) + n) * 100,
+  ) / 100;
 }
 
 export function isLongTermHold(openedDay, sellDay = getDayCount()) {
@@ -58,11 +72,15 @@ export function computeTaxBill(accrual, taxOwed = 0) {
   const a = accrual || createTaxAccrual();
   const netST = Math.max(0, (a.shortTermGain || 0) - (a.shortTermLoss || 0));
   const netLT = Math.max(0, (a.longTermGain || 0) - (a.longTermLoss || 0));
-  const periodTax = netST * SHORT_TERM_TAX_RATE + netLT * LONG_TERM_TAX_RATE;
+  const interest = Math.max(0, Number(a.interestIncome) || 0);
+  const periodTax = netST * SHORT_TERM_TAX_RATE
+    + netLT * LONG_TERM_TAX_RATE
+    + interest * SHORT_TERM_TAX_RATE;
   const prior = Math.max(0, Number(taxOwed) || 0);
   return {
     netST,
     netLT,
+    interestIncome: +interest.toFixed(2),
     periodTax: +periodTax.toFixed(2),
     priorOwed: +prior.toFixed(2),
     totalDue: +(periodTax + prior).toFixed(2),

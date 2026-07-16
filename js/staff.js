@@ -741,7 +741,15 @@ export function tickStaff(state) {
             });
             if (shares >= 1) {
               const conv = listingConviction(deal);
-              const r = buyLong(pf, deal.sym, shares, staffFill(deal.sym, 'buy', shares, deal.price, perks));
+              const r = buyLong(
+                pf,
+                deal.sym,
+                shares,
+                staffFill(deal.sym, 'buy', shares, deal.price, perks),
+                {},
+                perks,
+                state.finance?.personalCredit,
+              );
               if (r.ok) {
                 member.status = `Sniping ${deal.sym}`;
                 actions.push({
@@ -839,7 +847,15 @@ export function tickStaff(state) {
               hardCapShares: staffHardCapShares(member, 8),
             });
             if (shares >= 1) {
-              const r = buyLong(pf, sym, shares, staffFill(sym, 'buy', shares, q.price, perks));
+              const r = buyLong(
+                pf,
+                sym,
+                shares,
+                staffFill(sym, 'buy', shares, q.price, perks),
+                {},
+                perks,
+                state.finance?.personalCredit,
+              );
               if (r.ok) {
                 member.status = `Buying ${sym}`;
                 actions.push({
@@ -924,7 +940,15 @@ export function tickStaff(state) {
               hardCapShares: staffHardCapShares(member, 5),
             });
             if (shares >= 1) {
-              const r = openShort(pf, sym, shares, staffFill(sym, 'short', shares, q.price, perks), true);
+              const r = openShort(
+                pf,
+                sym,
+                shares,
+                staffFill(sym, 'short', shares, q.price, perks),
+                true,
+                {},
+                state.finance?.personalCredit,
+              );
               if (r.ok) {
                 state.stats = state.stats || {};
                 state.stats.shortsOpened = (state.stats.shortsOpened || 0) + 1;
@@ -968,7 +992,15 @@ export function tickStaff(state) {
                 hardCapShares: staffHardCapShares(member, 4),
               });
               if (shares >= 1) {
-                const r = buyLong(pf, breakout, shares, staffFill(breakout, 'buy', shares, q.price, perks));
+                const r = buyLong(
+                  pf,
+                  breakout,
+                  shares,
+                  staffFill(breakout, 'buy', shares, q.price, perks),
+                  {},
+                  perks,
+                  state.finance?.personalCredit,
+                );
                 if (r.ok) {
                   member.status = `Momentum ${breakout}`;
                   actions.push({ staff: member.name, action: `Momentum buy ${shares} ${breakout} (size-capped)` });

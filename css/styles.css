@@ -3494,6 +3494,18 @@ body.is-resizing-right * { cursor: col-resize !important; }
 }
 .settings-block .muted-text { margin-bottom: 12px; }
 .settings-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.settings-share-url {
+  display: block;
+  width: 100%;
+  margin: 12px 0 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
 .save-io-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
 .hotkey-grid { display: flex; flex-direction: column; gap: 8px; }
 .hotkey-row {
@@ -6534,52 +6546,97 @@ body.is-resizing-right * { cursor: col-resize !important; }
     var(--bg);
 }
 .finance-hero {
-  display: flex; justify-content: space-between; align-items: flex-end;
-  gap: 16px; flex-wrap: wrap; margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 .finance-title {
-  font-size: 26px; font-weight: 700; letter-spacing: -0.04em; line-height: 1.1;
+  font-size: 24px; font-weight: 700; letter-spacing: -0.04em; line-height: 1.1;
 }
 .finance-sub {
-  margin-top: 6px; max-width: 48ch;
-  color: var(--muted); font-size: 13px; line-height: 1.45;
+  margin-top: 5px; max-width: 52ch;
+  color: var(--muted); font-size: 13px; line-height: 1.4;
 }
 
-/* ===== Credit gauges (dual ring widgets) — sized down so APR chips lead ===== */
-.finance-gauges { display: flex; gap: 18px; flex-wrap: wrap; }
-.credit-gauge { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 72px; }
-.credit-gauge-ring-wrap { position: relative; width: 66px; height: 66px; }
-.credit-gauge-ring { transform: rotate(-90deg); display: block; }
-.credit-gauge-track { fill: none; stroke: var(--border); stroke-width: 5; }
-.credit-gauge-arc {
-  fill: none; stroke: var(--gauge-color, var(--accent)); stroke-width: 5; stroke-linecap: round;
-  transition: stroke-dashoffset 0.5s ease;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--gauge-color, var(--accent)) 55%, transparent));
+/* ===== Compact banking bar (metrics + credit spectrum) ===== */
+.finance-banking-bar {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-bottom: 14px;
 }
-.credit-gauge-score {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 15px; font-weight: 800; letter-spacing: -0.03em; font-variant-numeric: tabular-nums;
+.fin-metric-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
-.credit-gauge-lbl {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
-}
-.credit-gauge-tier { font-size: 11px; font-weight: 600; }
-
-.credit-pills { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
-.credit-pill {
+.fin-metric-card {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 12px;
-  padding: 12px 14px; min-width: 128px;
-  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
 }
-.credit-pill-lbl {
+.fin-metric-lbl {
   font-size: 10px; font-weight: 600; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--muted);
 }
-.credit-pill-val {
-  font-size: 22px; font-weight: 700; letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums; line-height: 1.1;
+.fin-metric-val {
+  font-size: 20px; font-weight: 700; letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums; line-height: 1.15;
+  color: var(--text);
 }
-.credit-tier { font-size: 11px; color: var(--muted); font-weight: 500; }
+.fin-metric-val.is-debt { color: #f85149; }
+.fin-metric-sub {
+  font-size: 11px; color: var(--muted); font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fin-credit-report {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 12px 12px;
+}
+.fin-credit-report-lbl {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--muted);
+  margin-bottom: 8px;
+}
+.fin-credit-lanes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 20px;
+}
+.fin-credit-lane { min-width: 0; }
+.fin-credit-lane-top {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 8px; margin-bottom: 6px;
+}
+.fin-credit-lane-lbl { font-size: 13px; font-weight: 600; color: var(--text); }
+.fin-credit-lane-score {
+  font-size: 15px; font-weight: 700; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.fin-credit-track {
+  position: relative;
+  height: 6px; border-radius: 999px;
+  background: linear-gradient(90deg, #f85149 0%, #e3b341 48%, #3fb950 100%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 18%, transparent);
+}
+.fin-credit-marker {
+  position: absolute; top: 50%;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: #fff;
+  border: 2px solid color-mix(in srgb, #fff 40%, #0d1117);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 1px 4px rgba(0,0,0,0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.fin-credit-meta {
+  margin-top: 5px;
+  font-size: 11px; font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .fin-metric-row { grid-template-columns: 1fr; }
+  .fin-credit-lanes { grid-template-columns: 1fr; gap: 12px; }
+}
+
+/* Legacy gauge/pill hooks kept inert if old markup appears */
+.finance-gauges, .credit-gauge, .credit-pills { display: none; }
 
 /* ===== Financing Desk sub-nav ===== */
 .fin-tabs {
@@ -6595,6 +6652,37 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .fin-tab-panel { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .fin-tab-panel.hidden, .fin-tab-panel[hidden] { display: none !important; }
 
+.accounts-atm-lede { margin: 0 0 12px; max-width: 52rem; }
+.accounts-atm { display: flex; flex-direction: column; gap: 14px; }
+.atm-summary {
+  display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 10px;
+}
+.atm-metric {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.atm-metric-lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.atm-bank-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px;
+}
+.atm-bank-chip {
+  text-align: left; cursor: pointer; font-family: var(--font);
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
+  color: var(--text); display: flex; flex-direction: column; gap: 2px;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+.atm-bank-chip:hover { border-color: var(--accent-finance); }
+.atm-bank-chip.is-selected { border-color: var(--accent-finance); box-shadow: inset 0 0 0 1px var(--accent-finance); }
+.atm-bank-chip.is-house-lender { border-color: #c9a227; }
+.atm-bank-name { font-weight: 700; font-size: 13px; }
+.atm-bank-bal, .atm-bank-sav { font-size: 11px; color: var(--muted); }
+.atm-bank-tier { font-size: 10px; font-weight: 700; color: var(--accent-finance); }
+.atm-desk { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.atm-desk-head { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; justify-content: space-between; }
+.atm-balances { display: flex; flex-wrap: wrap; gap: 12px 20px; font-size: 13px; }
+.atm-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.atm-radio { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
+
 .finance-col-title {
   font-size: 11px; font-weight: 700; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.07em; margin: 0 0 10px;
@@ -6606,50 +6694,51 @@ body.is-resizing-right * { cursor: col-resize !important; }
   text-transform: uppercase; margin-top: 2px;
 }
 .bank-section-grid {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
+  display: grid; grid-template-columns: repeat(3, minmax(280px, 1fr)); gap: 18px;
+  align-items: stretch;
 }
 .bank-card, .loan-card {
   background: var(--bg3); border: 1px solid var(--border);
   border-left: 3px solid var(--bank, var(--accent));
-  border-radius: 14px; padding: 14px;
+  border-radius: 16px; padding: 18px;
 }
 .bank-card {
   position: relative; isolation: isolate; overflow: hidden;
-  display: flex; flex-direction: column; gap: 10px;
-  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  display: flex; flex-direction: column; gap: 12px;
+  min-height: 100%;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 .bank-card:hover {
   border-color: color-mix(in srgb, var(--bank, var(--accent)) 45%, var(--border));
-  box-shadow: 0 8px 24px rgba(0,0,0,0.22);
-  transform: translateY(-1px);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.24);
 }
 /* Ambient corner glow, themed per-bank via --bank-glow/--bank-glow2 — same recipe as
    .dash-discover-card / .hr-card, blended two-tone so each lender reads as distinct. */
 .fin-lender-card::before {
   content: '';
   position: absolute; z-index: 0; top: -38px; right: -34px;
-  width: 110px; height: 110px; border-radius: 50%;
+  width: 120px; height: 120px; border-radius: 50%;
   background: var(--bank-glow, var(--accent));
   opacity: 0.22; filter: blur(24px); pointer-events: none;
-  transition: opacity 0.25s ease, transform 0.25s ease;
+  transition: opacity 0.25s ease;
 }
 .fin-lender-card::after {
   content: '';
   position: absolute; z-index: 0; bottom: -30px; left: -26px;
-  width: 84px; height: 84px; border-radius: 50%;
+  width: 92px; height: 92px; border-radius: 50%;
   background: var(--bank-glow2, var(--bank-glow, var(--accent)));
   opacity: 0.16; filter: blur(22px); pointer-events: none;
   transition: opacity 0.25s ease;
 }
-.fin-lender-card:hover::before { opacity: 0.34; transform: scale(1.1); }
+.fin-lender-card:hover::before { opacity: 0.34; }
 .fin-lender-card:hover::after { opacity: 0.26; }
 .fin-lender-card > * { position: relative; z-index: 1; }
-.fin-lender-top { display: flex; gap: 12px; align-items: flex-start; }
+.fin-lender-top { display: flex; gap: 14px; align-items: flex-start; }
 .fin-lender-id { flex: 1; min-width: 0; }
 .fin-lender-name-row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .bank-body { flex: 1; min-width: 0; }
 .bank-logo {
-  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  width: 52px; height: 52px; border-radius: 14px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--bank) 22%, var(--bg2));
   border: 1px solid color-mix(in srgb, var(--bank) 40%, var(--border));
@@ -6661,29 +6750,42 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .bank-logo.has-logo img { display: block; }
 .bank-logo.has-logo img.is-ready,
 .bank-logo.has-logo img[data-ready="1"] { opacity: 1; }
-.bank-name { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+.bank-name { font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
 .bank-short {
   font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--muted); padding: 3px 7px; border-radius: 6px; flex-shrink: 0;
+  color: var(--muted); padding: 3px 8px; border-radius: 6px; flex-shrink: 0;
   background: var(--bg2); border: 1px solid var(--border);
 }
-.bank-domain { display: block; color: var(--muted); font-size: 11px; font-weight: 500; margin-top: 2px; }
-.bank-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.bank-domain { display: block; color: var(--muted); font-size: 12px; font-weight: 500; margin-top: 3px; }
+.bank-desc {
+  font-size: 13px; color: var(--muted); line-height: 1.45;
+  min-height: 2.9em;
+}
+.bank-card-status {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 4.6em;
+}
+.bank-card-status > .bank-debt-hint,
+.bank-card-status > .bank-teach {
+  flex: 1 1 auto;
+}
 .bank-rates { display: flex; gap: 6px; flex-wrap: wrap; }
 .bank-debt-hint {
-  font-size: 11px; color: var(--text); line-height: 1.45;
-  padding: 8px 10px; border-radius: 8px;
+  font-size: 12px; color: var(--text); line-height: 1.45;
+  padding: 10px 12px; border-radius: 10px;
   background: color-mix(in srgb, var(--accent) 6%, var(--bg2));
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
 }
 .bank-debt-hint.muted-text { color: var(--muted); }
 /* Locked-bank teaching card — requirement vs current score + one rebuild hint */
 .bank-teach {
-  font-size: 11px; line-height: 1.5;
-  padding: 8px 10px; border-radius: 8px;
+  font-size: 12px; line-height: 1.5;
+  padding: 10px 12px; border-radius: 10px;
   background: color-mix(in srgb, var(--orange, #e8a145) 7%, var(--bg2));
   border: 1px solid color-mix(in srgb, var(--orange, #e8a145) 24%, transparent);
-  display: flex; flex-direction: column; gap: 3px;
+  display: flex; flex-direction: column; gap: 4px;
 }
 .bank-teach-row { color: var(--text); }
 .bank-teach-row strong { color: var(--orange, #e8a145); }
@@ -6696,21 +6798,22 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .rate-chip.muted { color: var(--muted); font-weight: 500; }
 
 .bank-actions {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  gap: 10px;
-  align-items: end;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 4px;
 }
 .loan-amt-field {
-  display: flex; flex-direction: column; gap: 5px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  display: flex; flex-direction: column; gap: 7px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--muted);
 }
 .loan-amt-field.compact { min-width: 90px; }
 .loan-amt, .pay-amt {
-  width: 100%; padding: 10px 12px; border-radius: 10px;
+  width: 100%; padding: 12px 14px; border-radius: 12px;
   border: 1px solid var(--border); background: var(--bg);
-  color: var(--text); font-size: 14px; font-weight: 600;
+  color: var(--text); font-size: 15px; font-weight: 600;
   font-family: var(--font); font-variant-numeric: tabular-nums;
 }
 .loan-amt:focus, .pay-amt:focus {
@@ -6718,20 +6821,45 @@ body.is-resizing-right * { cursor: col-resize !important; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .loan-type-btns {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.loan-term-field {
+  display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px;
+}
+.loan-term-lbl {
+  font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em;
+}
+.loan-term-seg {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.loan-term-btn {
+  min-height: 38px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--bg2); color: var(--text); font-family: var(--font);
+  font-size: 14px; font-weight: 700; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.loan-term-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.loan-term-btn.is-active {
+  background: color-mix(in srgb, var(--accent) 88%, #fff);
+  border-color: color-mix(in srgb, var(--accent) 70%, #fff);
+  color: #041018;
 }
 .loan-btn {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
-  cursor: pointer; font-family: var(--font); text-align: left;
-  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; min-height: 64px;
+  padding: 12px 10px; border-radius: 12px; border: 1px solid var(--border);
+  cursor: pointer; font-family: var(--font); text-align: center;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
-.loan-btn:hover { transform: translateY(-1px); }
+.loan-btn:hover { opacity: 0.92; }
 .loan-btn-kicker {
-  font-size: 12px; font-weight: 700; letter-spacing: -0.01em;
+  font-size: 13px; font-weight: 700; letter-spacing: -0.01em;
 }
 .loan-btn-apr {
-  font-size: 10px; font-weight: 500; opacity: 0.85;
+  font-size: 12px; font-weight: 600; opacity: 0.9;
+  font-variant-numeric: tabular-nums;
 }
 .loan-btn-personal {
   background: color-mix(in srgb, var(--accent) 18%, var(--bg2));
@@ -6754,9 +6882,54 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .loan-btn-ghost {
   background: var(--bg2); color: var(--text); border-color: var(--border);
   flex-direction: row; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 700; padding: 10px 14px;
+  font-size: 12px; font-weight: 700; padding: 10px 14px; min-height: 42px;
 }
 .loan-btn-ghost:hover { border-color: var(--muted); background: var(--surface); }
+
+/* Loan confirm modal — term lives here */
+.loan-confirm-modal {
+  max-width: 420px; width: 92%;
+  padding: 22px 22px 18px;
+}
+.loan-confirm-sub {
+  margin: 0 0 4px;
+  font-size: 13px; color: var(--muted); line-height: 1.4;
+}
+.loan-confirm-body { margin-top: 4px; }
+.loan-confirm-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  font-size: 13px;
+}
+.loan-confirm-row > span:first-child { color: var(--muted); flex-shrink: 0; }
+.loan-confirm-row strong {
+  font-size: 14px; font-weight: 600; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.loan-confirm-muted {
+  font-size: 12px; color: var(--muted); font-weight: 400;
+}
+.loan-confirm-term {
+  padding: 12px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+.loan-confirm-term-lbl {
+  display: block; margin-bottom: 8px;
+  font-size: 13px; color: var(--muted);
+}
+.loan-confirm-est {
+  margin: 8px 0 0;
+  font-size: 12px; color: var(--muted); line-height: 1.4;
+}
+.loan-confirm-footnote {
+  margin: 14px 0 18px;
+  font-size: 12px; color: var(--muted); line-height: 1.5;
+}
+.loan-confirm-actions {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.loan-confirm-actions .btn { margin: 0; }
 
 .loan-card-top {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -6791,6 +6964,49 @@ body.is-resizing-right * { cursor: col-resize !important; }
 }
 .bank-best-badge.is-combined {
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent-finance) 88%, #fff), color-mix(in srgb, var(--accent-finance) 70%, #a7f3d0));
+}
+.bank-badge-row {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; align-items: center;
+}
+.bank-rel-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--muted);
+}
+.bank-rel-badge.is-known {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent-finance) 35%, var(--border));
+}
+.bank-rel-badge.is-preferred {
+  color: color-mix(in srgb, var(--accent-finance) 80%, #fff);
+  border-color: color-mix(in srgb, var(--accent-finance) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-finance) 14%, var(--bg3));
+}
+.bank-rel-badge.is-house {
+  color: #042f1e;
+  background: color-mix(in srgb, var(--accent-finance) 78%, #fff);
+  border-color: color-mix(in srgb, var(--accent-finance) 55%, #fff);
+}
+.fin-lender-card.is-house-lender {
+  border-color: color-mix(in srgb, var(--accent-finance) 40%, var(--border));
+}
+.bank-personality {
+  font-size: 11px;
+  margin: 4px 0 0;
+  line-height: 1.35;
+}
+.bank-house-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent-finance) 85%, var(--text));
 }
 .finance-empty {
   padding: 18px 14px; border-radius: 12px; border: 1px dashed var(--border);
@@ -6836,11 +7052,9 @@ body.is-resizing-right * { cursor: col-resize !important; }
 .builder-tip strong { color: var(--text); }
 
 @media (max-width: 1100px) {
-  .bank-section-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bank-section-grid { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
 }
 @media (max-width: 900px) {
-  .bank-actions { grid-template-columns: 1fr; }
-  .loan-type-btns { grid-template-columns: 1fr 1fr; }
   .bank-section-grid { grid-template-columns: 1fr; }
   .builder-tier-row { grid-template-columns: 90px 1fr; }
   .builder-tier-apr, .builder-tier-you { grid-column: 1 / -1; text-align: left; }
@@ -7200,7 +7414,7 @@ body.is-resizing-right * { cursor: col-resize !important; }
   border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-stroke));
 }
 
-.onboard-modal, .help-modal, .day-summary-modal, .app-dialog-modal {
+.onboard-modal, .help-modal, .day-summary-modal, .app-dialog-modal, .loan-confirm-modal {
   border: 1px solid var(--glass-stroke);
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
@@ -9054,7 +9268,8 @@ body[data-luxury="dynastyWing"] .dashboard-view {
 .onboard-modal,
 .help-modal,
 .day-summary-modal,
-.app-dialog-modal {
+.app-dialog-modal,
+.loan-confirm-modal {
   background: var(--glass-bg) !important;
   border: 1px solid var(--glass-stroke) !important;
   backdrop-filter: var(--glass-blur) !important;
@@ -9481,9 +9696,14 @@ body[data-luxury="dynastyWing"] .dashboard-view {
   contain: paint;
 }
 .estate-option-media {
+  /* Explicit box (like .estate-detail-media / .vault-art). Flex+min-height alone
+     collapses absolute <img> paint inside <button> tiles → blank dark cards. */
   position: relative;
-  flex: 1 1 auto;
-  min-height: 148px;
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  min-height: 0;
+  height: auto;
   overflow: hidden;
   contain: paint;
   background: #0b1220;
@@ -9641,7 +9861,8 @@ body[data-luxury="dynastyWing"] .dashboard-view {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 236px;
+  /* Height comes from aspect-ratio media + footer — avoid flex-only image frames */
+  min-height: 0;
   overflow: hidden;
   contain: layout paint style;
   border: 1px solid color-mix(in srgb, #67e8f9 14%, rgba(255, 255, 255, 0.08));
@@ -9901,7 +10122,6 @@ body[data-luxury="dynastyWing"] .dashboard-view {
     grid-template-rows: none;
   }
   .estate-ledger-grid { grid-template-columns: 1fr; }
-  .estate-option-tile { min-height: 200px; }
 }
 @media (max-width: 720px) {
   .estate-ledger-grid { grid-template-columns: 1fr; }

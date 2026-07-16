@@ -5,8 +5,12 @@
 
 import {
   BANKS, APR_CREDIT_TIERS, DAILY_CREDIT_GAIN_CAP, creditTier, getActiveLoans, getFirmDebt,
-  projectLoanPayoff, maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers,
+  projectLoanPayoff, maxBorrowableAmount, maxBorrowableForBank, quoteBankOffers, quoteLoan,
   utilizationRatio, bankDebt, otherBanksDebt, firmStrengthBoostPct,
+  LOAN_TERM_CHOICES, defaultLoanTermDays, normalizeLoanTermDays,
+  getBankRelationshipTier, getHouseBankId, REL_TIER_LABEL, bankPersonalityLine,
+  getBankAccount, getSavingsApy, getTotalBankDeposits, depositToBank, withdrawFromBank,
+  transferBankInternal, BANK_DAILY_CAPS,
 } from '../finance.js';
 import { getVaultPledgedAppraisal, getVaultBookValue } from '../vault.js';
 import { syncEstateDerived } from '../estates.js';
@@ -18,10 +22,22 @@ import { fmt } from './shared.js';
 
 /** Draft loan amounts per bank — survives renderFinance rebuilds so wheel scroll doesn't snap to 250 */
 const loanDraftAmounts = new Map();
+/** Draft term (30/60/90) per bank — shared across personal/company until user picks in modal */
+const loanDraftTerms = new Map();
 
-/** @type {'lenders' | 'loans' | 'history' | 'builder'} */
+/** @type {((result: { confirmed: boolean, termDays?: number }) => void) | null} */
+let loanConfirmResolve = null;
+let loanConfirmBound = false;
+/** @type {{ bankId: string, type: string, amount: number, finance: object, gameDay: number, collateralOpts: object } | null} */
+let loanConfirmCtx = null;
+
+/** @type {'lenders' | 'accounts' | 'loans' | 'history' | 'builder'} */
 let activeFinTab = 'lenders';
 let finTabsBound = false;
+/** Selected bank on Accounts ATM tab. */
+let accountsSelectedBankId = 'chase';
+let accountsAtmBound = false;
+let accountsStructureKey = '';
 
 function setFinanceTab(tab) {
   activeFinTab = tab;
@@ -50,37 +66,195 @@ function bindFinanceTabsOnce() {
   });
 }
 
-/** Circular ring gauge for a 300–850 FICO-style score — thin arc, color follows credit tier. */
-function creditGaugeHtml(label, score, tier, util) {
-  const r = 27;
-  const circumference = 2 * Math.PI * r;
-  const pct = Math.max(0, Math.min(1, (Number(score) - 300) / (850 - 300)));
-  const offset = circumference * (1 - pct);
+/** Score position on the 300–850 FICO-style spectrum (0–100%). */
+function creditScorePct(score) {
+  return Math.max(0, Math.min(100, ((Number(score) - 300) / 550) * 100));
+}
+
+function creditLaneHtml(label, score, tier, util) {
+  const pct = creditScorePct(score).toFixed(1);
   return `
-    <div class="credit-gauge">
-      <div class="credit-gauge-ring-wrap" style="--gauge-color:${tier.color}">
-        <svg viewBox="0 0 64 64" width="66" height="66" class="credit-gauge-ring" aria-hidden="true">
-          <circle cx="32" cy="32" r="${r}" class="credit-gauge-track"></circle>
-          <circle cx="32" cy="32" r="${r}" class="credit-gauge-arc"
-            stroke-dasharray="${circumference.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}"></circle>
-        </svg>
-        <div class="credit-gauge-score">${score}</div>
+    <div class="fin-credit-lane">
+      <div class="fin-credit-lane-top">
+        <span class="fin-credit-lane-lbl">${label}</span>
+        <strong class="fin-credit-lane-score">${score}</strong>
       </div>
-      <div class="credit-gauge-lbl">${label}</div>
-      <div class="credit-gauge-tier" style="color:${tier.color}">${tier.label} · ${util}% util</div>
+      <div class="fin-credit-track" aria-hidden="true">
+        <span class="fin-credit-marker" style="left:${pct}%"></span>
+      </div>
+      <div class="fin-credit-meta" style="color:${tier.color}">${tier.label} · ${util}% utilization</div>
     </div>`;
 }
 
-function financeGaugesHtml(finance, firmStrength = 0) {
+/**
+ * Compact banking bar — metric pills + dual credit spectrum (replaces ring gauges).
+ * @param {object} finance
+ * @param {{ firmDebt?: number, pledged?: number, strengthPct?: number, firmStrength?: number, estateCredit?: number }} extras
+ */
+function financeBankingBarHtml(finance, extras = {}) {
+  const firmStrength = extras.firmStrength || 0;
   const p = creditTier(finance.personalCredit);
   const b = creditTier(finance.businessCredit);
   const pUtil = Math.round(utilizationRatio(finance, 'personal', firmStrength) * 100);
   const bUtil = Math.round(utilizationRatio(finance, 'company', firmStrength) * 100);
-  return creditGaugeHtml('Personal credit', finance.personalCredit, p, pUtil)
-    + creditGaugeHtml('Company credit', finance.businessCredit, b, bUtil);
+  const firmDebt = Number(extras.firmDebt) || 0;
+  const pledged = Number(extras.pledged) || 0;
+  const strengthPct = Number(extras.strengthPct) || 0;
+  const estateNote = (extras.estateCredit || 0) > 0 ? 'Loans + property credit' : 'Loans';
+
+  return `
+    <div class="fin-metric-row">
+      <div class="fin-metric-card" data-gloss="total-debt">
+        <span class="fin-metric-lbl">Total debt</span>
+        <span class="fin-metric-val is-debt">${fmt(firmDebt)}</span>
+        <span class="fin-metric-sub">${estateNote}</span>
+      </div>
+      <div class="fin-metric-card" data-gloss="vault-pledged">
+        <span class="fin-metric-lbl">Vault pledged</span>
+        <span class="fin-metric-val">${fmt(pledged)}</span>
+        <span class="fin-metric-sub">50% LTV collateral</span>
+      </div>
+      <div class="fin-metric-card" data-gloss="firm-strength">
+        <span class="fin-metric-lbl">Firm strength</span>
+        <span class="fin-metric-val">+${strengthPct}%</span>
+        <span class="fin-metric-sub">NW facility boost</span>
+      </div>
+    </div>
+    <div class="fin-credit-report" data-gloss="credit-score">
+      <div class="fin-credit-report-lbl">Credit report</div>
+      <div class="fin-credit-lanes">
+        ${creditLaneHtml('Personal', finance.personalCredit, p, pUtil)}
+        ${creditLaneHtml('Company', finance.businessCredit, b, bUtil)}
+      </div>
+    </div>`;
 }
 
-/** Credit Builder tab — tier ladder + the score-building rules baked into finance.js. */
+function accountsStructureSnap(finance, selectedId) {
+  const map = finance?.bankAccounts && typeof finance.bankAccounts === 'object'
+    ? finance.bankAccounts
+    : {};
+  const ids = Object.keys(map).sort().join(',');
+  const house = getHouseBankId(finance) || '';
+  return `${selectedId}|${house}|${ids}|${activeFinTab}`;
+}
+
+function patchAccountsLive(root, state, finance) {
+  if (!root) return;
+  const desk = Math.max(0, Number(state?.portfolio?.cash) || 0);
+  const deskEl = root.querySelector('[data-atm-desk]');
+  if (deskEl) deskEl.textContent = fmt(desk);
+  const totalEl = root.querySelector('[data-atm-total]');
+  if (totalEl) totalEl.textContent = fmt(getTotalBankDeposits(finance));
+  for (const bank of BANKS) {
+    const acct = getBankAccount(finance, bank.id);
+    const chk = root.querySelector(`[data-atm-checking="${bank.id}"]`);
+    const sav = root.querySelector(`[data-atm-savings="${bank.id}"]`);
+    if (chk) chk.textContent = fmt(acct.checking);
+    if (sav) sav.textContent = fmt(acct.savings);
+  }
+  const sel = accountsSelectedBankId;
+  const apy = getSavingsApy(finance, sel);
+  const apyEl = root.querySelector('[data-atm-apy]');
+  if (apyEl) apyEl.textContent = `${(apy * 100).toFixed(2)}% APY`;
+  const tier = getBankRelationshipTier(finance, sel);
+  const capChk = BANK_DAILY_CAPS.checking[tier] ?? BANK_DAILY_CAPS.checking[0];
+  const capSav = BANK_DAILY_CAPS.savingsWithdraw[tier] ?? BANK_DAILY_CAPS.savingsWithdraw[0];
+  const capsEl = root.querySelector('[data-atm-caps]');
+  if (capsEl) {
+    capsEl.textContent = `Daily caps · checking $${capChk.toLocaleString()} · savings withdraw $${capSav.toLocaleString()}`;
+  }
+}
+
+function bindAccountsAtmOnce(root, state) {
+  if (accountsAtmBound || !root) return;
+  accountsAtmBound = true;
+  root.addEventListener('click', (e) => {
+    const pick = e.target?.closest?.('[data-atm-pick]');
+    if (pick) {
+      accountsSelectedBankId = pick.getAttribute('data-atm-pick') || accountsSelectedBankId;
+      accountsStructureKey = '';
+      renderFinance(state);
+      return;
+    }
+    const action = e.target?.closest?.('[data-atm-action]');
+    if (!action) return;
+    const kind = action.getAttribute('data-atm-action');
+    const amount = parseFloat(root.querySelector('[data-atm-amount]')?.value) || 0;
+    const bucket = root.querySelector('[data-atm-bucket]:checked')?.value || 'checking';
+    if (kind === 'deposit') state.onBankDeposit?.(accountsSelectedBankId, bucket, amount);
+    else if (kind === 'withdraw') state.onBankWithdraw?.(accountsSelectedBankId, bucket, amount);
+    else if (kind === 'toSavings') state.onBankInternal?.(accountsSelectedBankId, 'toSavings', amount);
+    else if (kind === 'toChecking') state.onBankInternal?.(accountsSelectedBankId, 'toChecking', amount);
+  });
+}
+
+function renderAccountsAtm(state, finance) {
+  const root = document.getElementById('accounts-atm');
+  if (!root) return;
+  if (!BANKS.some((b) => b.id === accountsSelectedBankId)) {
+    accountsSelectedBankId = BANKS[0]?.id || 'chase';
+  }
+  const structureKey = accountsStructureSnap(finance, accountsSelectedBankId);
+  if (structureKey === accountsStructureKey && root.childElementCount) {
+    patchAccountsLive(root, state, finance);
+    return;
+  }
+  accountsStructureKey = structureKey;
+
+  const houseId = getHouseBankId(finance);
+  const bankRows = BANKS.map((bank) => {
+    const acct = getBankAccount(finance, bank.id);
+    const tier = getBankRelationshipTier(finance, bank.id);
+    const label = REL_TIER_LABEL[tier] || '';
+    const selected = bank.id === accountsSelectedBankId ? ' is-selected' : '';
+    const house = houseId === bank.id ? ' is-house-lender' : '';
+    return `<button type="button" class="atm-bank-chip${selected}${house}" data-atm-pick="${bank.id}">
+      <span class="atm-bank-name">${bank.short}</span>
+      <span class="atm-bank-bal" data-atm-checking="${bank.id}">${fmt(acct.checking)}</span>
+      <span class="atm-bank-sav" data-atm-savings="${bank.id}">${fmt(acct.savings)}</span>
+      ${label ? `<span class="atm-bank-tier">${label}</span>` : ''}
+    </button>`;
+  }).join('');
+
+  const sel = BANKS.find((b) => b.id === accountsSelectedBankId) || BANKS[0];
+  const acct = getBankAccount(finance, sel.id);
+  const apy = getSavingsApy(finance, sel.id);
+  const tier = getBankRelationshipTier(finance, sel.id);
+  const capChk = BANK_DAILY_CAPS.checking[tier] ?? BANK_DAILY_CAPS.checking[0];
+  const capSav = BANK_DAILY_CAPS.savingsWithdraw[tier] ?? BANK_DAILY_CAPS.savingsWithdraw[0];
+  const desk = Math.max(0, Number(state?.portfolio?.cash) || 0);
+
+  root.innerHTML = `
+    <div class="atm-summary">
+      <div class="atm-metric"><span class="atm-metric-lbl">Desk cash</span><strong data-atm-desk>${fmt(desk)}</strong></div>
+      <div class="atm-metric"><span class="atm-metric-lbl">Bank total</span><strong data-atm-total>${fmt(getTotalBankDeposits(finance))}</strong></div>
+      <div class="atm-metric"><span class="atm-metric-lbl">Selected APY</span><strong data-atm-apy>${(apy * 100).toFixed(2)}% APY</strong></div>
+    </div>
+    <div class="atm-bank-grid">${bankRows}</div>
+    <div class="atm-desk interactive-card">
+      <div class="atm-desk-head">
+        <strong>${sel.name}</strong>
+        <span class="muted-text" data-atm-caps>Daily caps · checking $${capChk.toLocaleString()} · savings withdraw $${capSav.toLocaleString()}</span>
+      </div>
+      <div class="atm-balances">
+        <div>Checking <strong data-atm-checking="${sel.id}">${fmt(acct.checking)}</strong> · 0% APY</div>
+        <div>Savings <strong data-atm-savings="${sel.id}">${fmt(acct.savings)}</strong> · ${(apy * 100).toFixed(2)}% APY</div>
+      </div>
+      <div class="atm-controls">
+        <label class="loan-amt-field compact"><span>Amount</span>
+          <input type="number" data-atm-amount value="250" min="1" step="50">
+        </label>
+        <label class="atm-radio"><input type="radio" name="atm-bucket" data-atm-bucket value="checking" checked> Checking</label>
+        <label class="atm-radio"><input type="radio" name="atm-bucket" data-atm-bucket value="savings"> Savings</label>
+        <button type="button" class="loan-btn loan-btn-personal" data-atm-action="deposit">Deposit</button>
+        <button type="button" class="loan-btn loan-btn-ghost" data-atm-action="withdraw">Withdraw</button>
+        <button type="button" class="loan-btn loan-btn-ghost" data-atm-action="toSavings">Checking → Savings</button>
+        <button type="button" class="loan-btn loan-btn-ghost" data-atm-action="toChecking">Savings → Checking</button>
+      </div>
+    </div>`;
+  bindAccountsAtmOnce(root, state);
+}
+
 function creditBuilderHtml(finance) {
   const ascending = APR_CREDIT_TIERS.slice().reverse();
   const rows = ascending.map((tier, i) => {
@@ -119,6 +293,7 @@ function vaultCollateralOpts(state) {
     debt,
     vaultBook: getVaultBookValue(state || {}),
     estateEquity: state?.estateEquity || 0,
+    bankDeposits: getTotalBankDeposits(state?.finance),
   });
   return {
     collateralValue: getVaultPledgedAppraisal(state || {}),
@@ -133,6 +308,183 @@ export function setLoanDraftAmount(bankId, val) {
 
 export function getLoanDraftAmount(bankId) {
   return loanDraftAmounts.get(bankId);
+}
+
+/** @param {string} bankId @param {number} termDays @param {'personal'|'company'} [typeHint] */
+export function setLoanDraftTerm(bankId, termDays, typeHint = 'personal') {
+  if (!bankId) return;
+  loanDraftTerms.set(bankId, normalizeLoanTermDays(termDays, typeHint));
+}
+
+/** @param {string} bankId @param {'personal'|'company'} [typeHint] */
+export function getLoanDraftTerm(bankId, typeHint = 'personal') {
+  if (!loanDraftTerms.has(bankId)) return defaultLoanTermDays(typeHint);
+  return normalizeLoanTermDays(loanDraftTerms.get(bankId), typeHint);
+}
+
+function bankStatusHtml(offers, finance, debtHintInner) {
+  const teach = bankTeachHtml(offers, finance);
+  if (teach) return `<div class="bank-card-status">${teach}</div>`;
+  return `<div class="bank-card-status">${debtHintInner}</div>`;
+}
+
+function closeLoanConfirm(result) {
+  const overlay = document.getElementById('loan-confirm-overlay');
+  overlay?.classList.add('hidden');
+  const resolve = loanConfirmResolve;
+  loanConfirmResolve = null;
+  loanConfirmCtx = null;
+  resolve?.(result || { confirmed: false });
+}
+
+function paintLoanConfirmBody() {
+  const ctx = loanConfirmCtx;
+  if (!ctx) return;
+  const body = document.getElementById('loan-confirm-body');
+  const sub = document.getElementById('loan-confirm-sub');
+  const footnote = document.getElementById('loan-confirm-footnote');
+  const okBtn = document.getElementById('loan-confirm-ok');
+  if (!body) return;
+
+  const termDays = getLoanDraftTerm(ctx.bankId, /** @type {'personal'|'company'} */ (ctx.type));
+  const opts = { ...ctx.collateralOpts, termDays };
+  const preview = quoteLoan(ctx.bankId, ctx.type, ctx.amount, ctx.finance, ctx.gameDay, opts);
+  const bankLabel = preview.bank?.name || BANKS.find((b) => b.id === ctx.bankId)?.name || 'Bank';
+  const typeLabel = ctx.type === 'company' ? 'company loan' : 'personal loan';
+  if (sub) sub.textContent = `${bankLabel} — ${typeLabel}`;
+
+  const debtHere = preview.debtHere ?? bankDebt(ctx.finance, ctx.bankId, ctx.type);
+  const debtElsewhere = preview.debtElsewhere ?? otherBanksDebt(ctx.finance, ctx.bankId, ctx.type);
+  const totalType = preview.totalTypeDebt ?? (Number(debtHere) + Number(debtElsewhere));
+  const strengthPct = preview.strengthPct ?? 0;
+  const strengthVal = strengthPct > 0
+    ? `+${strengthPct}% facility room`
+    : 'Base facility';
+
+  const aprLine = preview.ok
+    ? `${preview.apr}% <span class="loan-confirm-muted">(${preview.tier}, credit ${preview.credit})</span>`
+    : 'Pending underwriting';
+
+  const estLine = preview.ok
+    ? `Est. interest ~$${Math.round(preview.estimatedInterest || 0).toLocaleString()} · min auto-pay ~$${Number(preview.minDailyPayment || 0).toFixed(2)}/day`
+    : 'Submit to see if underwriting approves this loan.';
+
+  body.innerHTML = `
+    <div class="loan-confirm-row">
+      <span>Amount</span>
+      <strong>$${ctx.amount.toLocaleString()}</strong>
+    </div>
+    <div class="loan-confirm-row">
+      <span>Your APR</span>
+      <strong>${aprLine}</strong>
+    </div>
+    <div class="loan-confirm-term">
+      <span class="loan-confirm-term-lbl">Term</span>
+      <div class="loan-term-seg" role="group" aria-label="Loan term">
+        ${LOAN_TERM_CHOICES.map((d) => `
+          <button type="button" class="loan-term-btn${d === termDays ? ' is-active' : ''}" data-term="${d}">${d}</button>
+        `).join('')}
+      </div>
+      <p class="loan-confirm-est">${estLine}</p>
+    </div>
+    <div class="loan-confirm-row">
+      <span>Firm strength (net worth)</span>
+      <strong>${strengthVal}</strong>
+    </div>
+    <div class="loan-confirm-row">
+      <span>Your ${ctx.type} debt</span>
+      <strong>here $${Math.round(debtHere).toLocaleString()} · other $${Math.round(debtElsewhere).toLocaleString()} · total $${Math.round(totalType).toLocaleString()}</strong>
+    </div>
+  `;
+
+  if (footnote) {
+    footnote.textContent = preview.ok
+      ? 'Underwriting uses credit score, utilization, firm strength, and collateral — like a small-business loan review. Auto-pay runs every game day.'
+      : 'Underwriting will run when you submit. Credit floors, utilization, and total debt can still deny the application.';
+  }
+  if (okBtn) okBtn.textContent = preview.ok ? 'Confirm borrow' : 'Submit application';
+
+  body.querySelectorAll('.loan-term-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = normalizeLoanTermDays(btn.getAttribute('data-term'), /** @type {'personal'|'company'} */ (ctx.type));
+      setLoanDraftTerm(ctx.bankId, next, /** @type {'personal'|'company'} */ (ctx.type));
+      paintLoanConfirmBody();
+    });
+  });
+}
+
+function bindLoanConfirmOnce() {
+  if (loanConfirmBound) return;
+  const overlay = document.getElementById('loan-confirm-overlay');
+  const cancel = document.getElementById('loan-confirm-cancel');
+  const ok = document.getElementById('loan-confirm-ok');
+  if (!overlay || !cancel || !ok) return;
+  loanConfirmBound = true;
+  cancel.addEventListener('click', () => closeLoanConfirm({ confirmed: false }));
+  ok.addEventListener('click', () => {
+    const ctx = loanConfirmCtx;
+    if (!ctx) {
+      closeLoanConfirm({ confirmed: false });
+      return;
+    }
+    const termDays = getLoanDraftTerm(ctx.bankId, /** @type {'personal'|'company'} */ (ctx.type));
+    closeLoanConfirm({ confirmed: true, termDays });
+  });
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeLoanConfirm({ confirmed: false });
+  });
+}
+
+/**
+ * Interactive loan confirm — term lives here (not on bank cards).
+ * @param {{
+ *   bankId: string,
+ *   type: 'personal'|'company',
+ *   amount: number,
+ *   finance: object,
+ *   gameDay?: number,
+ *   collateralOpts?: object,
+ * }} opts
+ * @returns {Promise<{ confirmed: boolean, termDays?: number }>}
+ */
+export function showLoanConfirm(opts) {
+  bindLoanConfirmOnce();
+  const overlay = document.getElementById('loan-confirm-overlay');
+  if (!overlay) return Promise.resolve({ confirmed: false });
+
+  if (loanConfirmResolve) closeLoanConfirm({ confirmed: false });
+
+  const type = opts.type === 'company' ? 'company' : 'personal';
+  const amount = Math.max(100, Math.round(Number(opts.amount) || 0));
+  if (!loanDraftTerms.has(opts.bankId)) {
+    setLoanDraftTerm(opts.bankId, defaultLoanTermDays(type), type);
+  }
+
+  loanConfirmCtx = {
+    bankId: opts.bankId,
+    type,
+    amount,
+    finance: opts.finance,
+    gameDay: opts.gameDay || 1,
+    collateralOpts: opts.collateralOpts || {},
+  };
+
+  paintLoanConfirmBody();
+  overlay.classList.remove('hidden');
+  document.getElementById('loan-confirm-ok')?.focus();
+
+  return new Promise((resolve) => {
+    loanConfirmResolve = resolve;
+  });
+}
+
+export function closeLoanConfirmOverlay() {
+  closeLoanConfirm({ confirmed: false });
+}
+
+export function isLoanConfirmOpen() {
+  const overlay = document.getElementById('loan-confirm-overlay');
+  return !!(overlay && !overlay.classList.contains('hidden'));
 }
 
 /**
@@ -179,6 +531,14 @@ function bankBadgeHtml(bankId, badges) {
   return bits.map((label) => `<span class="bank-best-badge">${label}</span>`).join('');
 }
 
+function relationshipBadgeHtml(finance, bankId) {
+  const tier = getBankRelationshipTier(finance, bankId);
+  const label = REL_TIER_LABEL[tier];
+  if (!label) return '';
+  const cls = tier === 3 ? 'is-house' : tier === 2 ? 'is-preferred' : 'is-known';
+  return `<span class="bank-rel-badge ${cls}">${label}</span>`;
+}
+
 function bankLogoHtml(bank) {
   return domainLogoHtml(bank.domain, {
     letter: bank.short.slice(0, 1),
@@ -207,15 +567,10 @@ function bankTeachHtml(offers, finance) {
   </div>`;
 }
 
-function bankRateChipsHtml(bank, offers) {
-  return `
-    <span class="rate-chip">Your personal ${offers?.personalApr ?? bank.personalApr}% APR</span>
-    <span class="rate-chip">Your company ${offers?.companyApr ?? bank.companyApr}% APR</span>
-    <span class="rate-chip muted">Min personal ${offers?.personalMinCredit ?? bank.minCredit} · company ${offers?.companyMinCredit ?? bank.minCredit}</span>`;
-}
-
 /** Rebuild bank cards only when approval structure changes (no tick thrash). */
 let bankListStructureKey = '';
+/** Skip banking-bar remount when metrics/credit HTML unchanged. */
+let bankingBarSnap = '';
 
 function snapLoanDrafts(bankList) {
   bankList?.querySelectorAll('.loan-amt').forEach(input => {
@@ -245,7 +600,6 @@ function liveLoanAmtInput(bankList) {
 function syncLiveLoanInputs(bankList, finance, gameDay = 1, collatOpts = {}) {
   bankList.querySelectorAll('.loan-amt').forEach(input => {
     const bankId = input.dataset.bank;
-    const bank = BANKS.find(b => b.id === bankId);
     const offers = quoteBankOffers(bankId, finance, gameDay, collatOpts);
     const ceil = maxBorrowableForBank(bankId, finance, 50, gameDay, collatOpts);
     const eligible = ceil >= 100;
@@ -266,34 +620,21 @@ function syncLiveLoanInputs(bankList, finance, gameDay = 1, collatOpts = {}) {
     setLoanDraftAmount(bankId, Math.round(v));
     const card = input.closest('.bank-card');
     if (card && offers) {
-      const chips = card.querySelector('.bank-rates');
-      if (chips) {
-        const chipsHtml = bankRateChipsHtml(bank, offers);
-        if (chips.innerHTML !== chipsHtml) chips.innerHTML = chipsHtml;
-      }
-      const teach = card.querySelector('.bank-teach');
-      if (teach) {
-        const teachHtml = bankTeachHtml(offers, finance);
-        if (teachHtml) {
-          if (teach.outerHTML !== teachHtml) teach.outerHTML = teachHtml;
-        } else {
-          teach.remove();
-        }
-      }
-      const hint = card.querySelector('.bank-debt-hint');
-      if (hint) {
-        const oweHere = bankDebt(finance, bankId);
-        const oweP = otherBanksDebt(finance, bankId, 'personal');
-        const oweC = otherBanksDebt(finance, bankId, 'company');
-        hint.innerHTML = (oweHere > 0 || oweP > 0 || oweC > 0)
-          ? `Here: <strong>${fmt(oweHere)}</strong> · Other banks personal: <strong>${fmt(oweP)}</strong> · company: <strong>${fmt(oweC)}</strong>`
-          : `No outstanding debt on file — lenders still share your credit picture.`;
-        hint.classList.toggle('muted-text', !(oweHere > 0 || oweP > 0 || oweC > 0));
-      }
       const pBtn = card.querySelector('.loan-btn-personal .loan-btn-apr');
       const cBtn = card.querySelector('.loan-btn-company .loan-btn-apr');
       if (pBtn) pBtn.textContent = `${offers.personalApr}% APR`;
       if (cBtn) cBtn.textContent = `${offers.companyApr}% APR`;
+      const status = card.querySelector('.bank-card-status');
+      if (status) {
+        const oweHere = bankDebt(finance, bankId);
+        const oweP = otherBanksDebt(finance, bankId, 'personal');
+        const oweC = otherBanksDebt(finance, bankId, 'company');
+        const debtInner = (oweHere > 0 || oweP > 0 || oweC > 0)
+          ? `<div class="bank-debt-hint">Here: <strong>${fmt(oweHere)}</strong> · Other banks personal: <strong>${fmt(oweP)}</strong> · company: <strong>${fmt(oweC)}</strong></div>`
+          : `<div class="bank-debt-hint muted-text">No outstanding debt on file — lenders still share your credit picture.</div>`;
+        const nextStatus = bankStatusHtml(offers, finance, debtInner);
+        if (status.outerHTML !== nextStatus) status.outerHTML = nextStatus;
+      }
     }
     bankList.querySelectorAll(`.borrow-btn[data-bank="${bankId}"]`).forEach(btn => {
       const typeMax = maxBorrowableAmount(bankId, btn.dataset.type, finance, 50, gameDay, collatOpts);
@@ -319,7 +660,7 @@ function bindBankListActions(bankList, state, finance) {
   });
 
   bankList.querySelectorAll('.borrow-btn').forEach(btn => {
-    // Always clickable — confirm first, then approve or deny with a reason
+    // Always clickable — confirm modal picks term, then underwrite
     btn.disabled = false;
     btn.onclick = () => {
       const input = bankList.querySelector(`.loan-amt[data-bank="${btn.dataset.bank}"]`);
@@ -327,7 +668,6 @@ function bindBankListActions(bankList, state, finance) {
       setLoanDraftAmount(input?.dataset.bank, amount);
       const typeMax = maxBorrowableAmount(btn.dataset.bank, btn.dataset.type, finance, 50, gameDay, collatOpts);
       if (typeMax >= 100 && amount > typeMax) {
-        // Soft hint only — final underwriting still runs after confirm
         toast(`Heads up: ${btn.dataset.type} max here is about $${typeMax.toLocaleString()}`, { type: 'info' });
       }
       if (!(amount >= 100)) amount = 100;
@@ -344,48 +684,45 @@ export function renderFinance(state) {
   const collatOpts = vaultCollateralOpts(state);
   const pledged = getVaultPledgedAppraisal(state);
   const strengthPct = firmStrengthBoostPct(collatOpts.firmStrength || 0);
+  syncEstateDerived(state);
+  const estateCredit = Math.max(0, Number(state.estateCreditUsed) || 0);
+  const firmDebt = getFirmDebt(finance, estateCredit);
 
-  const gauges = document.getElementById('finance-gauges');
-  if (gauges) gauges.innerHTML = financeGaugesHtml(finance, collatOpts.firmStrength || 0);
-
-  const pills = document.getElementById('credit-pills');
-  if (pills) {
-    syncEstateDerived(state);
-    const estateCredit = Math.max(0, Number(state.estateCreditUsed) || 0);
-    const firmDebt = getFirmDebt(finance, estateCredit);
-    pills.innerHTML = `
-      <div class="credit-pill" data-gloss="credit-score">
-        <span class="credit-pill-lbl">Total debt</span>
-        <span class="credit-pill-val down">${fmt(firmDebt)}</span>
-        <span class="credit-tier">Loans${estateCredit > 0 ? ' + property credit' : ''}</span>
-      </div>
-      <div class="credit-pill" data-gloss="net-worth">
-        <span class="credit-pill-lbl">Vault pledged</span>
-        <span class="credit-pill-val">${fmt(pledged)}</span>
-        <span class="credit-tier">50% LTV collateral</span>
-      </div>
-      <div class="credit-pill" data-gloss="net-worth">
-        <span class="credit-pill-lbl">Firm strength</span>
-        <span class="credit-pill-val">+${strengthPct}%</span>
-        <span class="credit-tier">NW facility boost</span>
-      </div>`;
+  const bankingBar = document.getElementById('finance-banking-bar');
+  if (bankingBar) {
+    const barHtml = financeBankingBarHtml(finance, {
+      firmDebt,
+      pledged,
+      strengthPct,
+      firmStrength: collatOpts.firmStrength || 0,
+      estateCredit,
+    });
+    if (bankingBarSnap !== barHtml) {
+      bankingBarSnap = barHtml;
+      bankingBar.innerHTML = barHtml;
+    }
   }
 
   const builder = document.getElementById('credit-builder');
   if (builder) builder.innerHTML = creditBuilderHtml(finance);
 
+  renderAccountsAtm(state, finance);
+
   const bankList = document.getElementById('bank-list');
   if (bankList) {
     const live = liveLoanAmtInput(bankList);
-    // Structure key: approval/lock flags + debt presence only. Live APRs, ceilings,
-    // and scores patch in place via syncLiveLoanInputs (no per-tick remount).
-    const structureKey = BANKS.map((bank) => {
-      const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
-      const owed = bankDebt(finance, bank.id) > 0
-        || otherBanksDebt(finance, bank.id, 'personal') > 0
-        || otherBanksDebt(finance, bank.id, 'company') > 0;
-      return `${bank.id}:${offers?.personalOk ? 1 : 0}${offers?.companyOk ? 1 : 0}:${owed ? 1 : 0}`;
-    }).join('|');
+    // Structure key: approval/lock + debt + loyalty tier (not live cash/NW/APR).
+    const structureKey = [
+      getHouseBankId(finance) || '',
+      ...BANKS.map((bank) => {
+        const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
+        const owed = bankDebt(finance, bank.id) > 0
+          || otherBanksDebt(finance, bank.id, 'personal') > 0
+          || otherBanksDebt(finance, bank.id, 'company') > 0;
+        const rel = getBankRelationshipTier(finance, bank.id);
+        return `${bank.id}:${offers?.personalOk ? 1 : 0}${offers?.companyOk ? 1 : 0}:${owed ? 1 : 0}:r${rel}`;
+      }),
+    ].join('|');
     if (bankList.childElementCount && (live || bankListStructureKey === structureKey)) {
       // Keep the focused/hovered input alive so wheel scroll isn't wiped by tick re-renders
       syncLiveLoanInputs(bankList, finance, gameDay, collatOpts);
@@ -393,7 +730,7 @@ export function renderFinance(state) {
     } else {
       bankListStructureKey = structureKey;
       snapLoanDrafts(bankList);
-      const groups = ['National banks', 'Online lenders', 'Credit union'];
+      const groups = ['National banks', 'Online lenders', 'Credit unions'];
       const lenderRows = BANKS.map((bank) => {
         const offers = quoteBankOffers(bank.id, finance, gameDay, collatOpts);
         return {
@@ -404,7 +741,11 @@ export function renderFinance(state) {
       });
       const rateBadges = getBestRateLenderBadges(lenderRows);
       bankList.innerHTML = groups.map(group => {
-        const banks = BANKS.filter(bank => (bank.category || 'National banks') === group);
+        const banks = BANKS.filter(bank => {
+          const cat = bank.category || 'National banks';
+          if (group === 'Credit unions') return cat === 'Credit unions' || cat === 'Credit union';
+          return cat === group;
+        });
         if (!banks.length) return '';
         return `<div class="bank-section">
           <div class="bank-section-label">${group}</div>
@@ -428,8 +769,13 @@ export function renderFinance(state) {
               : `<div class="bank-debt-hint muted-text">No outstanding debt on file — lenders still share your credit picture.</div>`;
             const glow = bank.glow || bank.color;
             const glow2 = bank.glow2 || glow;
+            const isHouse = getHouseBankId(finance) === bank.id;
+            const houseNote = isHouse
+              ? '<p class="bank-house-note">Your house lender — better APR and a bit more room here.</p>'
+              : '';
+            const personality = bankPersonalityLine(bank);
             return `
-            <div class="bank-card fin-lender-card" style="--bank:${bank.color}; --bank-glow:${glow}; --bank-glow2:${glow2}">
+            <div class="bank-card fin-lender-card${isHouse ? ' is-house-lender' : ''}" data-bank-id="${bank.id}" style="--bank:${bank.color}; --bank-glow:${glow}; --bank-glow2:${glow2}">
               <div class="fin-lender-top">
                 ${bankLogoHtml(bank)}
                 <div class="fin-lender-id">
@@ -438,13 +784,16 @@ export function renderFinance(state) {
                     <span class="bank-short">${bank.short}</span>
                   </div>
                   <span class="bank-domain">${bank.domain}</span>
-                  ${bankBadgeHtml(bank.id, rateBadges)}
+                  <div class="bank-badge-row">
+                    ${relationshipBadgeHtml(finance, bank.id)}
+                    ${bankBadgeHtml(bank.id, rateBadges)}
+                  </div>
                 </div>
               </div>
               <div class="bank-desc">${bank.desc}</div>
-              <div class="bank-rates">${bankRateChipsHtml(bank, offers)}</div>
-              ${bankTeachHtml(offers, finance)}
-              ${debtHint}
+              ${personality ? `<div class="bank-personality muted-text">${personality}</div>` : ''}
+              ${houseNote}
+              ${bankStatusHtml(offers, finance, debtHint)}
               <div class="bank-actions">
                 <label class="loan-amt-field">
                   <span>${eligible ? `Amount · max $${ceil.toLocaleString()}` : 'Amount · apply anyway'}</span>
@@ -504,7 +853,7 @@ export function renderFinance(state) {
   if (loanList) {
     const active = getActiveLoans(finance);
     loanList.innerHTML = active.length ? active.map(l => `
-      <div class="loan-card" data-gloss="credit-score">
+      <div class="loan-card" data-gloss="total-debt">
         <div class="loan-card-top">
           <strong>${l.bankName}</strong>
           <span class="loan-type-tag">${l.type}</span>

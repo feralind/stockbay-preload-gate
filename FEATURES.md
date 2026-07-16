@@ -110,14 +110,19 @@ StockWay is a single-player trading desk RPG. Build a firm from a bare desk into
 - Floor activity log
 
 ### Financing
-- 6 banks with live APR quotes
+- 18 banks with live APR quotes (national / online / credit unions)
+- Soft house-lender loyalty — Known → Preferred → House from aged on-time cycles
+- House bank: modest APR + limit edge at that lender only (others stay open)
+- Checking & savings ATM (Finance → Accounts) — parked cash leaves Available Buying Power; savings earns game-scaled APY by bank category + loyalty (capped); interest taxed on Tax Day
 - Personal & company loans
 - Credit scores (personal + business, 300–850)
 - Interest-hold rule (no same-day credit farm)
 - Loan confirm modal & payoff calculator
 - Partial / full payoff with payment history
 - Vault collateral at 50% LTV
-- Late payment REP hit & repossession
+- Late payment credit hit, loyalty demote & vault repossession
+- Property HELOC: Fair+ business credit to buy or draw; interest settles before rental net; unpaid interest → foreclosure after a short miss streak (distressed recovery toward the line)
+- Poor personal credit open-risk scale (0.70× deployable desk cash on longs/shorts)
 
 ### Collectibles
 - Trophy Vault (~21 cosmetics) — dashboard, background, trophy, title slots

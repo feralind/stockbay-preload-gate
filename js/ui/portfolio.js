@@ -7,7 +7,7 @@ import { logoMarkHtml } from '../logos.js';
 import {
   getFirmNetWorth, getPositionValue, getUnrealizedPnL, estimateOptionValue,
 } from '../portfolio.js';
-import { getFirmDebt } from '../finance.js';
+import { getFirmDebt, getTotalBankDeposits } from '../finance.js';
 import { getEstateCategoryBookValues, syncEstateDerived } from '../estates.js';
 import { getVaultBookValue } from '../vault.js';
 import { getSymbolMeta, getSymbolName } from '../symbols.js';
@@ -173,6 +173,7 @@ function firmNetWorthFromState(state) {
       debt,
       vaultBook: getVaultBookValue(state),
       estateEquity,
+      bankDeposits: getTotalBankDeposits(state.finance),
     }),
   };
 }

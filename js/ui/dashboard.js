@@ -25,7 +25,7 @@ import {
   getNextNetWorthMilestone,
 } from '../mega-goals.js';
 import { PRIVATE_SALON_POOL } from '../private-salon.js';
-import { getFirmDebt } from '../finance.js';
+import { getFirmDebt, getTotalBankDeposits, getNextLoanPaymentDue } from '../finance.js';
 import { getLeaderboard } from '../leaderboard.js';
 import { getPlayerStanding } from '../meta.js';
 import { getHighestLicense } from '../licenses.js';
@@ -393,8 +393,8 @@ function renderMegaGoalCard(state, active) {
 function ensureDashStatsShell(stats) {
   if (!stats) return false;
   const cards = stats.querySelectorAll('.dash-index-card');
-  const wired = stats.querySelector('[data-gloss="net-worth"]') && stats.querySelector('[data-gloss="credit-score"]');
-  if (cards.length === 5 && wired && dashSnap.statsShell === '3') return true;
+  const wired = stats.querySelector('[data-gloss="net-worth"]') && stats.querySelector('[data-gloss="total-debt"]');
+  if (cards.length === 5 && wired && dashSnap.statsShell === '5') return true;
   stats.innerHTML = `
     <div class="dash-stat-card dash-index-card interactive-card" data-gloss="cash">
       <span class="stat-lbl">Cash</span>
@@ -406,12 +406,12 @@ function ensureDashStatsShell(stats) {
       <span class="stat-num" data-stat="nw"></span>
       <span class="dash-index-delta" data-stat-delta="nw"></span>
     </div>
-    <div class="dash-stat-card dash-index-card interactive-card" data-index-sym="SPY">
-      <span class="stat-lbl">S&amp;P 500</span>
-      <span class="stat-num" data-stat="spy"></span>
-      <span class="dash-index-delta" data-stat-delta="spy"></span>
+    <div class="dash-stat-card dash-index-card interactive-card" data-goto="finance" data-gloss="next-payment" title="Open Financing">
+      <span class="stat-lbl">Next payment</span>
+      <span class="stat-num" data-stat="nextpay"></span>
+      <span class="dash-index-delta muted" data-stat-delta="nextpay"></span>
     </div>
-    <div class="dash-stat-card dash-index-card interactive-card" data-gloss="credit-score">
+    <div class="dash-stat-card dash-index-card interactive-card" data-gloss="total-debt">
       <span class="stat-lbl">Debt</span>
       <span class="stat-num" data-stat="debt"></span>
       <span class="dash-index-delta muted" data-stat-delta="debt">Outstanding</span>
@@ -422,10 +422,11 @@ function ensureDashStatsShell(stats) {
       <span class="dash-index-delta muted" data-stat-delta="rep">Accreditation</span>
     </div>
   `;
-  dashSnap.statsShell = '3';
+  dashSnap.statsShell = '5';
   dashSnap.statCash = '';
   dashSnap.statNw = '';
-  dashSnap.statSpy = '';
+  dashSnap.statNextPay = '';
+  dashSnap.statNextPayDelta = '';
   dashSnap.statDebt = '';
   dashSnap.statRep = '';
   return true;
@@ -440,24 +441,24 @@ function renderDashStats(state, net, debt, meta, delta) {
   const nw = fmt(net);
   const debtTxt = fmt(debt);
   const rep = getHighestLicense(state.licenses).short;
-  const spyQ = quoteForDisplay('SPY');
-  const spyPx = spyQ?.price > 0
-    ? spyQ.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    : '—';
-  const spyChg = spyQ?.change ?? 0;
-  const spyPct = spyQ?.changePct ?? 0;
+  const nextPay = getNextLoanPaymentDue(state.finance);
+  const nextPayTxt = nextPay.loanCount ? fmt(nextPay.due) : '—';
 
   const cashEl = stats.querySelector('[data-stat="cash"]');
   const nwEl = stats.querySelector('[data-stat="nw"]');
-  const spyEl = stats.querySelector('[data-stat="spy"]');
+  const nextPayEl = stats.querySelector('[data-stat="nextpay"]');
   const debtEl = stats.querySelector('[data-stat="debt"]');
   const repEl = stats.querySelector('[data-stat="rep"]');
   const nwDelta = stats.querySelector('[data-stat-delta="nw"]');
-  const spyDelta = stats.querySelector('[data-stat-delta="spy"]');
+  const nextPayDelta = stats.querySelector('[data-stat-delta="nextpay"]');
 
   if (cashEl && dashSnap.statCash !== cash) { dashSnap.statCash = cash; cashEl.textContent = cash; }
   if (nwEl && dashSnap.statNw !== nw) { dashSnap.statNw = nw; nwEl.textContent = nw; }
-  if (spyEl && dashSnap.statSpy !== spyPx) { dashSnap.statSpy = spyPx; spyEl.textContent = spyPx; }
+  if (nextPayEl && dashSnap.statNextPay !== nextPayTxt) {
+    dashSnap.statNextPay = nextPayTxt;
+    nextPayEl.textContent = nextPayTxt;
+    nextPayEl.classList.toggle('down', nextPay.due > 0);
+  }
   if (debtEl && dashSnap.statDebt !== debtTxt) {
     dashSnap.statDebt = debtTxt;
     debtEl.textContent = debtTxt;
@@ -475,13 +476,10 @@ function renderDashStats(state, net, debt, meta, delta) {
       nwDelta.innerHTML = html;
     }
   }
-  if (spyDelta && spyQ?.price > 0) {
-    const html = `${spyChg >= 0 ? '▲' : '▼'} ${spyChg >= 0 ? '+' : ''}${Number(spyChg).toFixed(2)} <em>${spyPct >= 0 ? '+' : ''}${Number(spyPct).toFixed(2)}%</em>`;
-    if (dashSnap.statSpyDelta !== html) {
-      dashSnap.statSpyDelta = html;
-      spyDelta.className = `dash-index-delta ${spyPct >= 0 ? 'up' : 'down'}`;
-      spyDelta.innerHTML = html;
-    }
+  if (nextPayDelta && dashSnap.statNextPayDelta !== nextPay.dueLabel) {
+    dashSnap.statNextPayDelta = nextPay.dueLabel;
+    nextPayDelta.textContent = nextPay.dueLabel;
+    nextPayDelta.className = `dash-index-delta muted`;
   }
 }
 
@@ -937,7 +935,12 @@ export function renderDashboard(state) {
   syncEstateDerived(state);
   const vaultBook = getVaultBookValue(state);
   const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
-  const net = getFirmNetWorth(state.portfolio, { debt, vaultBook, estateEquity });
+  const net = getFirmNetWorth(state.portfolio, {
+    debt,
+    vaultBook,
+    estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
+  });
   const tradingEquity = equity - debt;
   const hist = meta.equityHistory || [];
   lastEquityHist = hist;

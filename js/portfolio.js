@@ -7,7 +7,7 @@ import { earningsVolMultiplier } from './corporate-actions.js';
 import { accrueTaxablePnL, consumeLotsFifo, ensureTaxState } from './tax.js';
 import { applySlippage } from './slippage.js';
 import { maybeRecordPatienceWin, normalizeExitReason } from './process-wins.js';
-import { marginBuyingPowerMultiplier } from './desk-rules.js';
+import { marginBuyingPowerMultiplier, personalCreditOpenScale } from './desk-rules.js';
 
 export { optionGreeks, defaultVol };
 
@@ -68,19 +68,22 @@ export function getPendingOrderCommitment(portfolio) {
   return { cash, margin };
 }
 
-/** Spendable cash for new longs (margin perk scales buying power by personal credit). */
+/** Deployable capital for new longs (margin + Poor open-risk scale). */
 export function getAvailableForLong(portfolio, perks = [], personalCredit) {
   const pending = getPendingOrderCommitment(portfolio);
-  const base = perks.includes('margin')
-    ? getBuyingPower(portfolio, perks, personalCredit)
-    : getSpendableCash(portfolio);
-  return Math.max(0, base - pending.cash);
+  return Math.max(0, getBuyingPower(portfolio, perks, personalCredit) - pending.cash);
 }
 
-/** Spendable cash for new shorts after pending margin. */
-export function getAvailableForShort(portfolio) {
+/**
+ * Deployable capital for new shorts after pending margin.
+ * Poor personal credit quietly scales open size (same 0.70 as longs).
+ * @param {object} portfolio
+ * @param {number} [personalCredit]
+ */
+export function getAvailableForShort(portfolio, personalCredit) {
   const pending = getPendingOrderCommitment(portfolio);
-  return Math.max(0, getSpendableCash(portfolio) - pending.margin);
+  const desk = getSpendableCash(portfolio) * personalCreditOpenScale(personalCredit);
+  return Math.max(0, desk - pending.margin);
 }
 
 export function createPortfolio(cash = CONFIG.STARTING_CASH) {
@@ -94,7 +97,7 @@ export function createPortfolio(cash = CONFIG.STARTING_CASH) {
     history: [],
     totalTrades: 0,
     realizedPnL: 0,
-    taxAccrual: { shortTermGain: 0, longTermGain: 0, shortTermLoss: 0, longTermLoss: 0 },
+    taxAccrual: { shortTermGain: 0, longTermGain: 0, shortTermLoss: 0, longTermLoss: 0, interestIncome: 0 },
     taxOwed: 0,
   };
 }
@@ -107,14 +110,15 @@ export function getSpendableCash(portfolio) {
 /**
  * Available buying power for new long risk.
  * With margin perk: spendable cash × credit-scaled multiplier (Good 2× / Fair 1.5× / Poor 1×).
+ * Always × personalCreditOpenScale (Poor 0.70) so ruined files cannot deploy full desk cash.
  * @param {object} portfolio
  * @param {string[]} [perks]
  * @param {number} [personalCredit]
  */
 export function getBuyingPower(portfolio, perks = [], personalCredit) {
   const cash = getSpendableCash(portfolio);
-  if (!perks?.includes('margin')) return cash;
-  return cash * marginBuyingPowerMultiplier(personalCredit);
+  const marginMult = perks?.includes('margin') ? marginBuyingPowerMultiplier(personalCredit) : 1;
+  return cash * marginMult * personalCreditOpenScale(personalCredit);
 }
 
 /** @param {object} portfolio @param {number} [now] */
@@ -202,17 +206,17 @@ export function getNetEquity(portfolio, debt = 0) {
 
 /**
  * Firm Total Equity / net worth used by HUD, Portfolio, mega-goals, and estate gates.
- * Trading book (cash + positions MTM) − loans/estate credit + vault book + estate equity.
- * Estate equity is syncEstateDerived's base (owned prices) minus cash-outs; credit drawn
- * is subtracted via `debt` (getFirmDebt), not by shrinking estateEquity.
+ * Trading book (cash + positions MTM) − loans/estate credit + vault book + estate equity
+ * + bank deposits (checking/savings). Bank cash is wealth, not Available Buying Power.
  * @param {object} portfolio
- * @param {{ debt?: number, vaultBook?: number, estateEquity?: number }} [extras]
+ * @param {{ debt?: number, vaultBook?: number, estateEquity?: number, bankDeposits?: number }} [extras]
  */
 export function getFirmNetWorth(portfolio, extras = {}) {
   const debt = Number(extras.debt) || 0;
   const vaultBook = Math.max(0, Number(extras.vaultBook) || 0);
   const estateEquity = Math.max(0, Number(extras.estateEquity) || 0);
-  return getNetEquity(portfolio, debt) + vaultBook + estateEquity;
+  const bankDeposits = Math.max(0, Number(extras.bankDeposits) || 0);
+  return getNetEquity(portfolio, debt) + vaultBook + estateEquity + bankDeposits;
 }
 
 export function getUnrealizedPnL(portfolio) {
@@ -420,7 +424,7 @@ export function sellLong(portfolio, sym, shares, price, opts = {}) {
  * Shorts lock margin only — short proceeds are NOT spendable cash.
  * Equity stays ~flat at open via marginHeld + unrealized in getPositionValue.
  */
-export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {}) {
+export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {}, personalCredit) {
   if (!hasMarginPerk) return { ok: false, msg: 'Unlock Margin Account perk to short' };
   const qty = normalizeTradeShares(shares);
   const px = normalizeTradePrice(price);
@@ -433,7 +437,7 @@ export function openShort(portfolio, sym, shares, price, hasMarginPerk, risk = {
     return { ok: false, msg: 'MARGIN CALL — cover before opening new shorts' };
   }
   const margin = qty * px * CONFIG.MARGIN_REQUIREMENT;
-  if (getAvailableForShort(portfolio) < margin) return { ok: false, msg: 'Insufficient margin' };
+  if (getAvailableForShort(portfolio, personalCredit) < margin) return { ok: false, msg: 'Insufficient margin' };
   const wasNew = !portfolio.shorts[symbol];
   const equityBefore = wasNew ? Math.max(0, getEquity(portfolio)) : 0;
   portfolio.cash -= margin;
@@ -731,7 +735,7 @@ export function placeLimitOrder(portfolio, order, { perks = [], personalCredit }
   if (side === 'short') {
     if (!perks.includes('margin')) return { ok: false, msg: 'Unlock Margin Account perk to short' };
     const margin = shares * limitPrice * CONFIG.MARGIN_REQUIREMENT;
-    if (getAvailableForShort(portfolio) < margin) return { ok: false, msg: 'Insufficient margin for limit short' };
+    if (getAvailableForShort(portfolio, personalCredit) < margin) return { ok: false, msg: 'Insufficient margin for limit short' };
   }
   if (side === 'sell') {
     const p = portfolio.longs[symbol];
@@ -824,10 +828,26 @@ export function tryFillPendingOrder(portfolio, order, fillFns) {
   const risk = { stopLoss: order.stopLoss, takeProfit: order.takeProfit };
   let result;
   if (order.side === 'long') {
-    result = fillFns.buyLong(portfolio, order.sym, order.shares, fillPx, risk, fillFns.perks || []);
+    result = fillFns.buyLong(
+      portfolio,
+      order.sym,
+      order.shares,
+      fillPx,
+      risk,
+      fillFns.perks || [],
+      fillFns.personalCredit,
+    );
   }
   else if (order.side === 'short') {
-    result = fillFns.openShort(portfolio, order.sym, order.shares, fillPx, fillFns.hasMargin, risk);
+    result = fillFns.openShort(
+      portfolio,
+      order.sym,
+      order.shares,
+      fillPx,
+      fillFns.hasMargin,
+      risk,
+      fillFns.personalCredit,
+    );
   } else if (order.side === 'sell') {
     result = fillFns.sellLong(portfolio, order.sym, order.shares, fillPx);
   } else if (order.side === 'cover') {

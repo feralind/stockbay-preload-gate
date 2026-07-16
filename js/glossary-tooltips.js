@@ -5,11 +5,32 @@
  * Force-hide on switchView (see .cursor/rules/stockway-cursor-tips.mdc).
  */
 import { getHaltInfo, CIRCUIT_BREAK_PCT, CIRCUIT_HALT_MINUTES } from './market.js';
+import {
+  getActiveLoans, getFirmDebt, getNextLoanPaymentDue, minPaymentForLoan,
+} from './finance.js';
 
 /** First-open dwell only — retargets while a tip is already showing are instant. */
 const HOVER_MS = 500;
 /** Grace so DOM re-renders (market ticks) don't flash the tip off between siblings. */
 const HIDE_GRACE_MS = 120;
+
+/**
+ * Live desk snapshot for dynamic tips (debt ledger, etc.).
+ * @type {null | (() => { finance?: object, estateCreditUsed?: number, vaultPledgedValue?: number, firmStrengthPct?: number })}
+ */
+let glossLiveContext = null;
+
+/**
+ * @param {null | (() => { finance?: object, estateCreditUsed?: number, vaultPledgedValue?: number, firmStrengthPct?: number })} fn
+ */
+export function setGlossLiveContext(fn) {
+  glossLiveContext = typeof fn === 'function' ? fn : null;
+}
+
+function fmtMoney(n) {
+  const v = Math.round(Number(n) || 0);
+  return `$${v.toLocaleString()}`;
+}
 
 /**
  * @typedef {{
@@ -26,26 +47,26 @@ const HIDE_GRACE_MS = 120;
 export const GLOSS_TIPS = {
   'buying-power': {
     title: 'Available Buying Power',
-    blurb: 'Cash you can still put into new long trades right now — scaled quietly by personal credit when Margin is unlocked.',
+    blurb: 'Desk cash you can still put into new long trades — scaled by personal credit. Bank deposits do not add buying power.',
     rows: [
-      { label: 'Without Margin', value: 'Equals spendable cash' },
-      { label: 'Margin + Good credit (670+)', value: '2× cash on longs' },
-      { label: 'Margin + Fair (580–669)', value: '1.5× cash on longs' },
-      { label: 'Margin + Poor (<580)', value: '1× — no leverage boost' },
-      { label: 'Options / shorts', value: 'Cash or separate margin — not this BP line' },
+      { label: 'Without Margin + Fair+', value: 'Equals desk cash' },
+      { label: 'Margin + Good credit (670+)', value: '2× desk cash on longs' },
+      { label: 'Margin + Fair (580–669)', value: '1.5× desk cash on longs' },
+      { label: 'Poor (<580)', value: '0.70× desk cash (opens dampened)' },
+      { label: 'Options', value: 'Cash-only premiums — not this BP line' },
     ],
-    note: 'Vault book value does not add buying power. Thin cushion + shorts can trigger margin stress.',
+    note: 'Vault book and bank checking/savings count toward net worth, not Available Buying Power.',
     arcane: 'Pros size risk from buying power first — cash is oxygen; leverage is borrowed breath.',
   },
   'net-worth': {
     title: 'Net Worth vs Trading Equity',
     blurb: 'Two ledgers: the trading book vs the firm statement.',
     rows: [
-      { label: 'Trading equity', value: 'Cash + positions − debt' },
-      { label: 'Net Worth', value: 'Trading equity + Vault book' },
-      { label: 'Buying power', value: 'Spendable cash — not NW' },
+      { label: 'Trading equity', value: 'Desk cash + positions − debt' },
+      { label: 'Net Worth', value: 'Trading equity + Vault + estates + bank deposits' },
+      { label: 'Buying power', value: 'Desk cash only — not parked bank cash' },
     ],
-    note: 'Vault appraisal books into NW; it does not fund trades.',
+    note: 'Vault appraisal and bank reserves book into NW; only desk cash funds trades.',
     arcane: 'Equity trades. Net Worth states.',
   },
   'credit-score': {
@@ -58,6 +79,50 @@ export const GLOSS_TIPS = {
     ],
     note: 'Utilization = open debt ÷ available limits.',
     arcane: 'Credit is rented trust.',
+  },
+  'total-debt': {
+    title: 'Total Debt',
+    blurb: 'Who you owe, how much, and what auto-pay needs at day end.',
+    rows: [
+      { label: 'Sources', value: 'Bank loans + property credit' },
+      { label: 'Minimum', value: 'Per-loan auto-pay each game day' },
+      { label: 'Next payment', value: 'Sum of tonight’s minimums' },
+    ],
+    note: 'Missed auto-pay damages credit harder than on-time pays rebuild it.',
+    arcane: 'Debt is a tool until it becomes the desk.',
+  },
+  'vault-pledged': {
+    title: 'Vault Pledged',
+    blurb: 'Collectibles marked as collateral — lenders count about 50% LTV toward borrow ceilings.',
+    rows: [
+      { label: 'LTV', value: '50% of pledged appraisal' },
+      { label: 'Effect', value: 'Raises facility room at underwriting' },
+      { label: 'Buying power', value: 'Does not fund trades' },
+    ],
+    note: 'Pledge from the Vault tab. Appraisal books into NW; cash still comes from the trading book.',
+    arcane: 'Collateral is trust you can point at.',
+  },
+  'firm-strength': {
+    title: 'Firm Strength',
+    blurb: 'Net-worth facility boost — a stronger book unlocks larger underwriting lines.',
+    rows: [
+      { label: 'Source', value: 'Firm net worth (equity + vault − debt)' },
+      { label: 'Effect', value: '+% to bank facility ceilings' },
+      { label: 'Credit', value: 'Still gates approval — strength sizes the line' },
+    ],
+    note: 'Grow NW to expand how much each lender will underwrite.',
+    arcane: 'Banks lend to the statement, not the story.',
+  },
+  'next-payment': {
+    title: 'Next Payment',
+    blurb: 'Cash auto-pulled at day end for every active loan — keep this much free or take a late hit.',
+    rows: [
+      { label: 'Cadence', value: 'Every game day (not monthly)' },
+      { label: 'Minimum', value: 'About 2× daily interest or half of balance ÷ days left' },
+      { label: 'Term', value: '30 / 60 / 90 game days — pick when you borrow' },
+    ],
+    note: 'Missed auto-pay damages credit harder than on-time pays rebuild it.',
+    arcane: 'Liquidity is the real collateral.',
   },
   'office-progress': {
     title: 'Office Progression',
@@ -335,6 +400,89 @@ export function resolveGlossTip(id, el) {
       arcane: base.arcane,
     };
   }
+
+  if (id === 'total-debt') {
+    const base = GLOSS_TIPS['total-debt'];
+    const ctx = glossLiveContext?.() || {};
+    const finance = ctx.finance || { loans: [] };
+    const estateCredit = Math.max(0, Number(ctx.estateCreditUsed) || 0);
+    const loans = getActiveLoans(finance);
+    const total = getFirmDebt(finance, estateCredit);
+    const next = getNextLoanPaymentDue(finance);
+
+    if (!loans.length && estateCredit <= 0) {
+      return {
+        title: base.title,
+        blurb: base.blurb,
+        rows: [
+          { label: 'Balance', value: '$0' },
+          { label: 'Creditors', value: 'None — no open loans' },
+          { label: 'Next payment', value: next.dueLabel },
+        ],
+        note: 'Borrow from Lenders to leverage the desk. Auto-pay runs every game day.',
+        arcane: base.arcane,
+      };
+    }
+
+    /** @type {Array<{ label: string, value: string }>} */
+    const rows = loans.slice(0, 6).map((loan) => {
+      const min = minPaymentForLoan(loan);
+      const bank = loan.bankName || loan.bankId || 'Lender';
+      const type = loan.type === 'company' ? 'company' : 'personal';
+      return {
+        label: `${bank} · ${type}`,
+        value: `${fmtMoney(loan.balance)} · min $${min.toFixed(2)}/day · ${Math.max(0, Math.floor(Number(loan.daysLeft) || 0))}d left`,
+      };
+    });
+    if (loans.length > 6) {
+      rows.push({ label: 'More loans', value: `+${loans.length - 6} not shown` });
+    }
+    if (estateCredit > 0) {
+      rows.push({ label: 'Property credit', value: fmtMoney(estateCredit) });
+    }
+    rows.push({ label: 'Total owed', value: fmtMoney(total) });
+    rows.push({
+      label: 'Next payment',
+      value: next.loanCount
+        ? `${fmtMoney(next.due)} · ${next.dueLabel}`
+        : next.dueLabel,
+    });
+
+    return {
+      title: base.title,
+      blurb: base.blurb,
+      rows,
+      note: base.note,
+      arcane: base.arcane,
+    };
+  }
+
+  if (id === 'vault-pledged') {
+    const base = GLOSS_TIPS['vault-pledged'];
+    const ctx = glossLiveContext?.() || {};
+    const pledged = Math.max(0, Number(ctx.vaultPledgedValue) || 0);
+    return {
+      ...base,
+      rows: [
+        { label: 'Pledged now', value: fmtMoney(pledged) },
+        ...(base.rows || []),
+      ],
+    };
+  }
+
+  if (id === 'firm-strength') {
+    const base = GLOSS_TIPS['firm-strength'];
+    const ctx = glossLiveContext?.() || {};
+    const pct = Math.max(0, Number(ctx.firmStrengthPct) || 0);
+    return {
+      ...base,
+      rows: [
+        { label: 'Boost now', value: `+${pct}% facility room` },
+        ...(base.rows || []),
+      ],
+    };
+  }
+
   return GLOSS_TIPS[id] || null;
 }
 
@@ -523,11 +671,11 @@ function showTip(el, id) {
   tipOpenId = id;
   pendingId = id;
   const root = ensureTipEl();
-  if (root.dataset.glossId !== id || root.hidden) {
-    root.innerHTML = buildGlossTipHtml(tip);
+  const html = buildGlossTipHtml(tip);
+  const dynamic = id === 'total-debt' || id === 'vault-pledged' || id === 'firm-strength' || id === 'trading-halted';
+  if (root.dataset.glossId !== id || root.hidden || dynamic) {
+    root.innerHTML = html;
     root.dataset.glossId = id;
-  } else if (id === 'trading-halted') {
-    root.innerHTML = buildGlossTipHtml(tip);
   }
   root.setAttribute('aria-hidden', 'false');
   placeTipAtCursor(root);

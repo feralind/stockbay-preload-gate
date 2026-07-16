@@ -25,6 +25,10 @@ Four days on the desk. The firm got real estate, real licenses, and charts that 
 - **Buying Power** — Scales with personal credit band. Margin still stacks; cool-downs stop tilt spam.
 - **Estates & firm NW** — Property equity counts. Firm snapshot and portfolio allocation stay honest.
 - **Finance credit lessons** — The bank side teaches utilization, APR, and aging — not same-day farm loops.
+- **House lender loyalty** — Soft preference: aged on-time cycles earn Known → Preferred → House at one bank. Modest APR/limit edge there only; other lenders stay open. Late demotes.
+- **Estate foreclosure** — Drawn property credit that misses interest for several days can foreclose the cheapest estate (distressed recovery toward the HELOC). Fair+ business credit required to buy property or draw the line.
+- **Poor open-risk dampen** — Personal credit below Fair quietly scales deployable desk cash to **0.70×** on new longs and shorts (Margin leverage already gone at Poor).
+- **Checking & savings ATM** — Park reserves at lenders (Finance → Accounts). Bank cash counts in net worth but not Available Buying Power. Savings earns a soft game-scaled APY (category + loyalty, capped); interest settles on Tax Day. Checking is float only.
 - **World Events depth** — Bigger sim catalog (~25 briefs), game-day pacing + Fed antiflip, rate-sensitive scale with Fed distance, halt-safe shocks, and a quiet “Your book” flag when a print hits what you hold. First Fed/oil teach + day-end lesson lines. Risk-off nastiness is felt on the tape only — no second HUD tell.
 
 ---

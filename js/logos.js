@@ -103,8 +103,19 @@ export const LOGO_DOMAINS = {
   'bank:wells': 'wellsfargo.com',
   'bank:citi': 'citi.com',
   'bank:capitalone': 'capitalone.com',
+  'bank:usbank': 'usbank.com',
+  'bank:pnc': 'pnc.com',
+  'bank:td': 'td.com',
   'bank:sofi': 'sofi.com',
+  'bank:ally': 'ally.com',
+  'bank:marcus': 'marcus.com',
+  'bank:lightstream': 'lightstream.com',
+  'bank:lendingclub': 'lendingclub.com',
   'bank:local': 'navyfederal.org',
+  'bank:premieramerica': 'premieramerica.com',
+  'bank:penfed': 'penfed.org',
+  'bank:alliant': 'alliantcreditunion.com',
+  'bank:schoolsfirst': 'schoolsfirstfcu.org',
 };
 
 const failedLogos = new Set();

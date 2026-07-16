@@ -182,8 +182,102 @@ async function main() {
     DAILY_CREDIT_GAIN_CAP, quoteLoan, BANKS, priceApr, maxBorrowableAmount,
     bankDebt, otherBanksDebt, underwriteMaxAmount, firmStrengthMultiplier,
     firmStrengthBoostPct, PERSONAL_LOAN_TERM_DAYS, COMPANY_LOAN_TERM_DAYS,
-    creditTier,
+    LOAN_TERM_CHOICES, normalizeLoanTermDays, loanTermAprBump, getNextLoanPaymentDue,
+    minPaymentForLoan, creditTier,
+    getBankRelationshipTier, getHouseBankId, getBankRelationship, awardRelationshipCycle,
+    demoteBankRelationship, typeCreditLimit, sanitizeBankRelationships, recomputeHouseBank,
+    REL_TIER, relationshipLimitMult,
   } = fin;
+
+  test('house loyalty: aged on-time cycle earns Known; same-day pay does not', () => {
+    const finance = createFinanceState();
+    const portfolio = { cash: 5000 };
+    const sameDay = takeLoan('chase', 'personal', 200, finance, portfolio, 1);
+    assert.equal(sameDay.ok, true);
+    const loan = finance.loans.find((l) => l.id === sameDay.loan.id);
+    makeLoanPayment(loan.id, loan.balance, finance, portfolio, 1);
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.NONE);
+
+    const aged = takeLoan('chase', 'personal', 200, finance, portfolio, 2);
+    assert.equal(aged.ok, true);
+    const loan2 = finance.loans.find((l) => l.id === aged.loan.id);
+    loan2.interestTicks = 1;
+    const pay = makeLoanPayment(loan2.id, loan2.balance, finance, portfolio, 3);
+    assert.equal(pay.ok, true);
+    assert.equal(pay.relationship?.awarded, true);
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.KNOWN);
+  });
+
+  test('house loyalty: Preferred then House edges; util denom unchanged', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 700;
+    finance.firstCreditDay = 1;
+    const utilBefore = typeCreditLimit(finance, 'personal', 0);
+    const apr0 = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 10);
+    const max0 = underwriteMaxAmount('chase', 'personal', finance).bankMax;
+
+    finance.bankRelationships = {
+      chase: { cycles: 2, preferredSinceDay: 5 },
+    };
+    recomputeHouseBank(finance);
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.PREFERRED);
+    const aprPref = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 10);
+    assert.ok(aprPref < apr0 - 0.2, `preferred APR ${aprPref} vs ${apr0}`);
+    assert.equal(typeCreditLimit(finance, 'personal', 0), utilBefore);
+
+    finance.bankRelationships.chase.cycles = 3;
+    recomputeHouseBank(finance);
+    assert.equal(getHouseBankId(finance), 'chase');
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.HOUSE);
+    const aprHouse = priceApr(BANKS.find((b) => b.id === 'chase'), 'personal', finance, 10);
+    assert.ok(aprHouse < aprPref - 0.1);
+    const maxHouse = underwriteMaxAmount('chase', 'personal', finance).bankMax;
+    assert.ok(maxHouse > max0, `house limit ${maxHouse} > ${max0}`);
+    assert.equal(typeCreditLimit(finance, 'personal', 0), utilBefore);
+    assert.ok(Math.abs(relationshipLimitMult(finance, 'chase') - 1.1) < 1e-9);
+  });
+
+  test('house loyalty: late demotes; second bank can steal House', () => {
+    const finance = createFinanceState();
+    finance.bankRelationships = {
+      chase: { cycles: 3, preferredSinceDay: 2 },
+      boa: { cycles: 3, preferredSinceDay: 8 },
+    };
+    recomputeHouseBank(finance);
+    assert.equal(getHouseBankId(finance), 'chase');
+    demoteBankRelationship(finance, 'chase');
+    assert.equal(getBankRelationshipTier(finance, 'chase'), REL_TIER.PREFERRED);
+    assert.equal(getHouseBankId(finance), 'boa');
+
+    finance.bankRelationships.boa.cycles = 4;
+    finance.bankRelationships.chase = { cycles: 5, preferredSinceDay: 20 };
+    recomputeHouseBank(finance);
+    assert.equal(getHouseBankId(finance), 'chase');
+  });
+
+  test('house loyalty: sanitize drops unknown banks; CU first cycle jumps', () => {
+    const finance = createFinanceState();
+    finance.bankRelationships = {
+      chase: { cycles: 2, preferredSinceDay: 1 },
+      fakeBank: { cycles: 9, preferredSinceDay: 1 },
+    };
+    finance.houseBankId = 'fakeBank';
+    sanitizeBankRelationships(finance);
+    assert.equal(finance.bankRelationships.fakeBank, undefined);
+    assert.equal(getHouseBankId(finance), null);
+
+    const portfolio = { cash: 5000 };
+    const cu = BANKS.find((b) => b.category === 'Credit unions');
+    assert.ok(cu);
+    finance.personalCredit = Math.max(finance.personalCredit, cu.minPersonalCredit || 650);
+    const r = takeLoan(cu.id, 'personal', 200, finance, portfolio, 1);
+    assert.equal(r.ok, true, r.msg);
+    const loan = finance.loans.find((l) => l.id === r.loan.id);
+    loan.interestTicks = 1;
+    awardRelationshipCycle(finance, loan, 2);
+    assert.ok(getBankRelationship(finance, cu.id).cycles >= 2);
+    assert.equal(getBankRelationshipTier(finance, cu.id), REL_TIER.PREFERRED);
+  });
 
   test('firm strength multiplier scales with NW and caps', () => {
     assert.equal(firmStrengthMultiplier(0), 1);
@@ -202,9 +296,10 @@ async function main() {
     assert.ok(strong.strengthPct >= 100);
   });
 
-  test('company loans use 90-day term; personal stays 30', () => {
+  test('company loans default to 90-day term; personal stays 30', () => {
     const finance = createFinanceState();
     const portfolio = createPortfolio(20000);
+    void portfolio;
     const personal = quoteLoan('chase', 'personal', 200, finance, 1);
     const company = quoteLoan('chase', 'company', 500, finance, 1);
     assert.equal(personal.ok, true, personal.msg);
@@ -213,6 +308,48 @@ async function main() {
     assert.equal(company.termDays, COMPANY_LOAN_TERM_DAYS);
     assert.equal(COMPANY_LOAN_TERM_DAYS, 90);
     assert.ok(company.minDailyPayment > 0);
+  });
+
+  test('borrower can pick 30 / 60 / 90; longer term raises APR and lowers daily min', () => {
+    const finance = createFinanceState();
+    finance.personalCredit = 720;
+    const t30 = quoteLoan('chase', 'personal', 500, finance, 1, { termDays: 30 });
+    const t60 = quoteLoan('chase', 'personal', 500, finance, 1, { termDays: 60 });
+    const t90 = quoteLoan('chase', 'personal', 500, finance, 1, { termDays: 90 });
+    assert.equal(t30.ok && t60.ok && t90.ok, true);
+    assert.deepEqual(LOAN_TERM_CHOICES, [30, 60, 90]);
+    assert.equal(normalizeLoanTermDays(45, 'personal'), PERSONAL_LOAN_TERM_DAYS);
+    assert.equal(t30.termDays, 30);
+    assert.equal(t60.termDays, 60);
+    assert.equal(t90.termDays, 90);
+    assert.ok(t60.apr > t30.apr, '60d should bump APR');
+    assert.ok(t90.apr > t60.apr, '90d should bump APR more');
+    assert.equal(loanTermAprBump(60), 0.5);
+    assert.equal(loanTermAprBump(90), 1);
+    assert.ok(t90.minDailyPayment < t30.minDailyPayment, 'longer term lowers daily min');
+    assert.ok(t90.estimatedInterest > t30.estimatedInterest, 'longer term costs more interest');
+    const taken = takeLoan('chase', 'personal', 500, finance, { cash: 0 }, 1, { termDays: 60 });
+    assert.equal(taken.ok, true);
+    assert.equal(taken.loan.termDays, 60);
+    assert.equal(taken.loan.daysLeft, 60);
+  });
+
+  test('getNextLoanPaymentDue sums tonight min auto-pay across active loans', () => {
+    const finance = createFinanceState();
+    finance.loans = [{
+      id: 'l1', bankId: 'chase', bankName: 'Chase', type: 'personal',
+      principal: 600, balance: 600, apr: 12, dailyRate: 12 / 100 / 365,
+      termDays: 30, daysLeft: 30, openedDay: 1, interestTicks: 0, status: 'active',
+    }];
+    const one = getNextLoanPaymentDue(finance);
+    assert.equal(one.loanCount, 1);
+    assert.ok(one.due > 0);
+    assert.equal(one.due, minPaymentForLoan(finance.loans[0]));
+    assert.match(one.dueLabel, /Due today/);
+    const empty = getNextLoanPaymentDue(createFinanceState());
+    assert.equal(empty.loanCount, 0);
+    assert.equal(empty.due, 0);
+    assert.match(empty.dueLabel, /No active/);
   });
 
   test('rapid same-day borrow→repay does not raise credit', () => {
@@ -2706,12 +2843,14 @@ async function main() {
       // Category prereq: cars unlock after any residence
       const carGate = canPurchaseEstate({
         portfolio: { cash: 500_000 },
+        finance: { businessCredit: 700 },
         estateOwned: ['coastalResidence'],
         licenses: ['retail', 'series7', 'research'],
       }, 'performanceGt', { netWorth: 500_000 });
       assert.equal(carGate.ok, true);
       const carLocked = canPurchaseEstate({
         portfolio: { cash: 500_000 },
+        finance: { businessCredit: 700 },
         estateOwned: [],
         licenses: ['retail', 'series7', 'research'],
       }, 'performanceGt', { netWorth: 500_000 });
@@ -2720,6 +2859,7 @@ async function main() {
       // License gate: high-tier estates stay locked on a retail-only account
       const licLocked = canPurchaseEstate({
         portfolio: { cash: 500_000 },
+        finance: { businessCredit: 700 },
         estateOwned: [],
         licenses: ['retail'],
       }, 'coastalResidence', { netWorth: 500_000 });
@@ -2727,7 +2867,7 @@ async function main() {
       assert.equal(licLocked.code, 'license');
     });
 
-    test('property credit draw requires Fair+ business credit; cash buy still allowed', () => {
+    test('property credit draw and cash buy both require Fair+ business credit', () => {
       const state = {
         portfolio: { cash: 200_000 },
         finance: { businessCredit: 300, personalCredit: 300 },
@@ -2736,8 +2876,13 @@ async function main() {
         licenses: ['retail', 'series7'],
         meta: {},
       };
+      const buyDenied = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
+      assert.equal(buyDenied.ok, false);
+      assert.equal(buyDenied.code, 'credit');
+      state.finance.businessCredit = 580;
       const buy = purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 });
-      assert.equal(buy.ok, true, 'cash house still OK on trash credit');
+      assert.equal(buy.ok, true);
+      state.finance.businessCredit = 300;
       const denied = drawEstateCredit(state, 5_000);
       assert.equal(denied.ok, false);
       assert.equal(denied.code, 'credit');
@@ -2745,6 +2890,93 @@ async function main() {
       state.finance.businessCredit = 580;
       const ok = drawEstateCredit(state, 5_000);
       assert.equal(ok.ok, true);
+    });
+
+    test('unpaid property credit interest forecloses cheapest estate after miss streak', () => {
+      const {
+        processDailyEstates, ESTATE_FORECLOSE_MISS_DAYS, ESTATE_FORECLOSE_RECOVERY,
+      } = estateMod;
+      const state = {
+        portfolio: { cash: 200_000 },
+        finance: { businessCredit: 700, personalCredit: 680 },
+        estateOwned: [],
+        estateSpentTotal: 0,
+        estateCreditMissDays: 0,
+        licenses: ['retail', 'series7'],
+        meta: {},
+      };
+      assert.equal(purchaseEstate(state, 'coastalResidence', { netWorth: 150_000 }).ok, true);
+      assert.equal(drawEstateCredit(state, 20_000).ok, true);
+      let foreclosed = null;
+      for (let d = 0; d < ESTATE_FORECLOSE_MISS_DAYS + 2; d++) {
+        // Estate income can refill cash — force a dry HELOC miss each day.
+        state.portfolio.cash = 0;
+        const day = processDailyEstates(state);
+        const hit = (day.events || []).find((e) => e.type === 'estate_foreclosure');
+        if (hit) {
+          foreclosed = hit;
+          break;
+        }
+      }
+      assert.ok(foreclosed, 'expected foreclosure event');
+      assert.equal(state.estateOwned.includes('coastalResidence'), false);
+      assert.equal(state.estateCreditUsed, 0);
+      // Recovery applied to the HELOC is capped at drawn credit; scrap goes to cash.
+      assert.ok(foreclosed.recovered >= 20_000 - 50);
+      assert.ok(state.portfolio.cash >= Math.floor(125_000 * ESTATE_FORECLOSE_RECOVERY) - 20_050);
+      assert.ok(state.finance.businessCredit < 700);
+      assert.equal(state.estateCreditMissDays, 0);
+    });
+
+    test('checking/savings ATM: BP excludes deposits; NW includes; savings interest + tax accrual', async () => {
+      const finMod = await import(pathToFileURL(path.join(__dirname, '../js/finance.js')).href);
+      const portMod = await import(pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href);
+      const taxMod = await import(pathToFileURL(path.join(__dirname, '../js/tax.js')).href);
+      const {
+        createFinanceState, depositToBank, withdrawFromBank, transferBankInternal,
+        processDailyBankAccounts, getTotalBankDeposits, getSavingsApy, SAVINGS_APY_CAP,
+      } = finMod;
+      const { getBuyingPower, getFirmNetWorth, createPortfolio } = portMod;
+      const { accrueInterestIncome, computeTaxBill } = taxMod;
+
+      const portfolio = createPortfolio(10_000);
+      const finance = createFinanceState();
+      const bpBefore = getBuyingPower(portfolio, [], 700);
+      assert.equal(bpBefore, 10_000);
+
+      const dep = depositToBank(finance, portfolio, 'chase', 'savings', 2000, 1);
+      assert.equal(dep.ok, true);
+      assert.equal(portfolio.cash, 8000);
+      assert.equal(getTotalBankDeposits(finance), 2000);
+      assert.equal(getBuyingPower(portfolio, [], 700), 8000);
+      const nw = getFirmNetWorth(portfolio, {
+        debt: 0,
+        bankDeposits: getTotalBankDeposits(finance),
+      });
+      assert.equal(nw, 10_000);
+
+      const move = transferBankInternal(finance, 'chase', 'toChecking', 500);
+      assert.equal(move.ok, true);
+      const w = withdrawFromBank(finance, portfolio, 'chase', 'checking', 500, 1);
+      assert.equal(w.ok, true);
+      assert.equal(portfolio.cash, 8500);
+
+      // Force larger savings + House tier for APY bump still under cap
+      finance.bankAccounts.chase.savings = 5000;
+      finance.bankRelationships.local = { cycles: 3, preferredSinceDay: 1 };
+      finance.houseBankId = 'local';
+      depositToBank(finance, portfolio, 'local', 'savings', 1000, 2);
+      const apy = getSavingsApy(finance, 'local');
+      assert.ok(apy > 0 && apy <= SAVINGS_APY_CAP);
+
+      const day = processDailyBankAccounts(finance, portfolio, 10);
+      assert.ok(day.interestTotal >= 0);
+      if (day.interestTotal > 0) {
+        accrueInterestIncome(portfolio, day.interestTotal);
+        const bill = computeTaxBill(portfolio.taxAccrual, 0);
+        assert.ok(bill.interestIncome >= day.interestTotal - 0.01);
+        assert.ok(bill.periodTax > 0);
+      }
     });
 
     test('firm net worth includes estate equity; cash-out and credit keep NW consistent', async () => {
@@ -2763,12 +2995,15 @@ async function main() {
         licenses: ['retail', 'series7'],
         meta: {},
       };
+      state.finance.businessCredit = 700;
+      state.finance.personalCredit = 700;
       const nwParts = () => {
         syncEstateDerived(state);
         return getFirmNetWorth(state.portfolio, {
           debt: getFirmDebt(state.finance, state.estateCreditUsed),
           vaultBook: 0,
           estateEquity: state.estateEquity,
+          bankDeposits: finMod.getTotalBankDeposits(state.finance),
         });
       };
       const before = nwParts();
@@ -3984,16 +4219,19 @@ async function main() {
 
   test('credit-scaled Available Buying Power multipliers by personal credit band', async () => {
     const desk = await import(pathToFileURL(path.join(__dirname, '../js/desk-rules.js')).href);
-    const { getBuyingPower, getAvailableForLong, createPortfolio } = await import(
+    const { getBuyingPower, getAvailableForLong, getAvailableForShort, createPortfolio } = await import(
       pathToFileURL(path.join(__dirname, '../js/portfolio.js')).href
     );
     const { CONFIG: cfg } = await import(pathToFileURL(path.join(__dirname, '../js/config.js')).href);
     const { STAFF_ROLES } = await import(pathToFileURL(path.join(__dirname, '../js/staff.js')).href);
-    const { marginBuyingPowerMultiplier } = desk;
+    const { marginBuyingPowerMultiplier, personalCreditOpenScale, POOR_OPEN_RISK_SCALE } = desk;
 
     // Day-1 Intern / cash anchors untouched
     assert.equal(cfg.STARTING_CASH, 500);
     assert.equal(STAFF_ROLES.intern.hireCost, 550);
+    assert.equal(POOR_OPEN_RISK_SCALE, 0.7);
+    assert.equal(personalCreditOpenScale(600), 1);
+    assert.equal(personalCreditOpenScale(500), 0.7);
 
     // Multiplier table (Margin unlocked)
     assert.equal(marginBuyingPowerMultiplier(720), 2.0); // Good/Exceptional
@@ -4011,12 +4249,15 @@ async function main() {
     assert.equal(getBuyingPower(p, ['margin'], 720), 20000);
     assert.equal(getBuyingPower(p, ['margin'], 850), 20000);
     assert.equal(getBuyingPower(p, ['margin'], 600), 15000);
-    assert.equal(getBuyingPower(p, ['margin'], 500), 10000);
-    // Margin locked → flat 1.0× across all credit levels
-    for (const score of [450, 600, 850]) {
-      assert.equal(getBuyingPower(p, [], score), 10000);
-      assert.equal(getAvailableForLong(p, [], score), 10000);
-    }
+    assert.equal(getBuyingPower(p, ['margin'], 500), 7000); // Poor 1.0× × 0.70
+    // Margin locked → Fair+ flat 1.0×; Poor still 0.70×
+    assert.equal(getBuyingPower(p, [], 600), 10000);
+    assert.equal(getAvailableForLong(p, [], 600), 10000);
+    assert.equal(getBuyingPower(p, [], 850), 10000);
+    assert.equal(getBuyingPower(p, [], 450), 7000);
+    assert.equal(getAvailableForLong(p, [], 450), 7000);
+    assert.equal(getAvailableForShort(p, 450), 7000);
+    assert.equal(getAvailableForShort(p, 600), 10000);
   });
 
   test('revenge cool-down arms on blowup close; blocks opens; allows sells/covers', async () => {
@@ -5184,6 +5425,7 @@ async function main() {
   const teachMod = await import(pathToFileURL(path.join(__dirname, '../js/teach-moments.js')).href);
   const {
     detectIvCrush, heldThroughEarnings, TEACH_MOMENTS, lessonLineForDay, markTeachMoment,
+    resolveCoachTarget,
   } = teachMod;
   const { earningsChipInfo, daysUntilEarnings } = corp;
   const {
@@ -5227,6 +5469,26 @@ async function main() {
     assert.equal(detectIvCrush(opt, { changePct: 3, markedValue: 400, liveVol: 0.54 }), false);
     assert.ok(TEACH_MOMENTS.firstIvCrush.text.includes('IV crush'));
     assert.ok(TEACH_MOMENTS.firstEarningsHold.text.includes('earnings'));
+  });
+
+  test('TEACH_MOMENTS targets are non-empty and simple #ids exist in index.html', () => {
+    const fs = require('fs');
+    const indexHtml = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+    const dashboardSrc = fs.readFileSync(path.join(__dirname, '../js/ui/dashboard.js'), 'utf8');
+    assert.ok(dashboardSrc.includes('data-gloss="next-payment"'), 'next-payment gloss in dashboard.js');
+    assert.equal(resolveCoachTarget('body'), null, 'body is never a coach target');
+    assert.equal(resolveCoachTarget('html'), null, 'html is never a coach target');
+    for (const [id, moment] of Object.entries(TEACH_MOMENTS)) {
+      assert.ok(typeof moment.target === 'string' && moment.target.trim(), `${id} needs a target`);
+      const t = moment.target.trim();
+      if (/^#[A-Za-z][\w-]*$/.test(t)) {
+        const domId = t.slice(1);
+        assert.ok(
+          indexHtml.includes(`id="${domId}"`) || indexHtml.includes(`id='${domId}'`),
+          `${id} target ${t} missing from index.html`,
+        );
+      }
+    }
   });
 
   test('estimateOptionValue uses live vol (entry vol snapshot does not freeze the mark)', () => {

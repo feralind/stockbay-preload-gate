@@ -55,5 +55,8 @@
       ],
       "signAndEditExecutable": false
     }
+  },
+  "dependencies": {
+    "localtunnel": "^2.0.2"
   }
 }

@@ -4,7 +4,8 @@
  * UI (toasts, day-summary modal, clock/pause) stays in app.js.
  */
 import { getNetEquity, settleExpiredOptions } from './portfolio.js';
-import { getFirmDebt, processDailyLoans } from './finance.js';
+import { getFirmDebt, processDailyLoans, processDailyBankAccounts } from './finance.js';
+import { accrueInterestIncome } from './tax.js';
 import { getDayStats } from './market.js';
 import { payDailySalaries, tickStaffTenureDay } from './staff.js';
 import { collectProcessWins } from './process-wins.js';
@@ -64,8 +65,13 @@ export function runDayEndSettlement(state, day) {
   }
 
   const loanEvents = processDailyLoans(state.finance, state.portfolio, day);
+  const bankDay = processDailyBankAccounts(state.finance, state.portfolio, day);
+  if (bankDay.interestTotal > 0) {
+    accrueInterestIncome(state.portfolio, bankDay.interestTotal);
+  }
+  const loanEventsAll = loanEvents.concat(bankDay.events || []);
   const estateDay = processDailyEstates(state);
-  const repossessions = repossessVaultForLateLoans(state, loanEvents);
+  const repossessions = repossessVaultForLateLoans(state, loanEventsAll);
   for (const repo of repossessions) {
     for (const id of repo.seized) {
       const item = getVaultItem(id);
@@ -115,13 +121,18 @@ export function runDayEndSettlement(state, day) {
     worstTrade: state.meta.dayWorstTrade || 0,
     challengeDone,
     challengeReward,
-    loanEvents,
+    loanEvents: loanEventsAll,
+    bankEvents: bankDay.events,
     estateEvents: estateDay.events,
     estateNetIncome: estateDay.netIncome,
     optionsExpired: expiredOpts.length,
     repossessions,
     processWins,
-    lessonLine: lessonLineForDay({ loanEvents, majorEvents: getMajorEventsToday() }),
+    lessonLine: lessonLineForDay({
+      loanEvents: loanEventsAll,
+      estateEvents: estateDay.events,
+      majorEvents: getMajorEventsToday(),
+    }),
     recoveryHint: updateRecoveryHint(state, equity),
   };
 
@@ -132,7 +143,7 @@ export function runDayEndSettlement(state, day) {
     staffActions,
     challengeDone,
     challengeReward,
-    loanEvents,
+    loanEvents: loanEventsAll,
     estateEvents: estateDay.events,
     repossessions,
     payroll,

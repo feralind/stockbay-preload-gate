@@ -5,36 +5,73 @@
  * Pattern mirrors the margin-call coachmark: each moment fires once per save
  * (flagged in meta.teachMomentsShown), stays to 1–2 plain sentences, and never
  * repeats. Day-end lessons surface as a single recap chip, not a popup barrage.
+ *
+ * Every moment should declare `target` (CSS selector or #id) so coachmarks do
+ * not fall back to <body> and stick in the top-left corner.
  */
 
-/** @type {Record<string, { text: string }>} */
+/**
+ * @typedef {{ text: string, target: string, preferView?: string }} TeachMoment
+ */
+
+/** @type {Record<string, TeachMoment>} */
 export const TEACH_MOMENTS = {
   firstLoss: {
     text: 'First loss booked. Losses are tuition, not failure — what matters is that one loss stays small enough that the next good trade pays it back.',
+    target: '#pnl',
   },
   firstInterest: {
     text: 'Your loan just accrued its first interest at day-end. Debt quietly charges you every day you hold it — that daily drip is why cheap borrowing still needs a plan.',
+    target: '[data-gloss="next-payment"]',
+    preferView: 'dashboard',
   },
   firstLate: {
     text: 'A loan payment went out late because cash ran dry. Payment history is the heaviest part of a credit score — keep enough cash for the daily auto-pay before sizing new trades.',
+    target: '[data-gloss="next-payment"]',
+    preferView: 'dashboard',
   },
   firstOversized: {
     text: 'That position is more than half your equity in one name. Pros size so one bad trade cannot end the run — consider smaller entries until the account can absorb a miss.',
+    target: '#equity-stat-cell',
   },
   firstRevengeCooloff: {
     text: 'Trading desk suspended for 30 seconds — cool-down from risk management. After a blowup loss, pause before revenge sizing. Watch the tape; do not chase the hole.',
+    target: '#btn-quick-long',
+    preferView: 'trade',
   },
   firstIvCrush: {
     text: 'Your option fell while the stock went your way? The market calmed down, and calm is cheap. You just felt IV crush — when implied volatility drops, option premiums deflate fast.',
+    target: '#btn-options',
+    preferView: 'trade',
   },
   firstEarningsHold: {
     text: 'You held through an earnings print. Overnight gaps are the classic options coin-flip — the premium you paid was the price of that lottery ticket.',
+    target: '#chart-meta-row',
+    preferView: 'trade',
   },
   firstFedEvent: {
     text: 'A Fed headline just moved the tape. Policy rates reprice the whole desk — growth, housing, and anything that lives on cheap money feel it first.',
+    target: '#macro-fed',
   },
   firstOilEvent: {
     text: 'An oil shock just rotated the book. Energy can rip while transports and discretionary pay the fuel bill — sector stories matter as much as the index.',
+    target: '#news-panel',
+    preferView: 'trade',
+  },
+  firstPreferredLender: {
+    text: 'A lender just marked you Preferred. Relationship beats rate-shopping spam — your house bank will quietly offer better APR and a bit more room if you keep paying on time.',
+    target: '#bank-list',
+    preferView: 'finance',
+  },
+  firstBankDeposit: {
+    text: 'Desk cash is risk capital (Available Buying Power). Bank checking and savings are reserves — they still count toward net worth, but not buying power. Savings earns a quiet APY; interest shows up on Tax Day.',
+    target: '#accounts-atm',
+    preferView: 'finance',
+  },
+  firstForeclosure: {
+    text: 'The property credit line went unpaid and the lender foreclosed. Drawn HELOC is real leverage — miss interest long enough and the house is gone, not just a fee.',
+    target: '#estates-root',
+    preferView: 'estates',
   },
 };
 
@@ -64,6 +101,29 @@ export function markTeachMoment(meta, id) {
 }
 
 /**
+ * Resolve a coachmark target from a CSS selector / #id. Never returns body/html.
+ * @param {string|Element|null|undefined} spec
+ * @param {Document} [doc]
+ * @returns {Element|null}
+ */
+export function resolveCoachTarget(spec, doc = (typeof document !== 'undefined' ? document : null)) {
+  if (!doc || !spec) return null;
+  let el = null;
+  if (typeof spec === 'string') {
+    const s = spec.trim();
+    if (!s || s === 'body' || s === 'html') return null;
+    el = (s.startsWith('#') && !s.includes(' ') && !s.includes('[') && !s.includes('.'))
+      ? doc.getElementById(s.slice(1))
+      : (doc.getElementById(s) || doc.querySelector(s));
+  } else if (typeof Element !== 'undefined' && spec instanceof Element) {
+    el = spec;
+  }
+  if (!el) return null;
+  if (el === doc.body || el === doc.documentElement) return null;
+  return el;
+}
+
+/**
  * One "what today taught" sentence for the day summary — only when a lesson
  * event actually fired today. Priority: late pay > thin reserves > utilization.
  * @param {{ loanEvents?: Array<{type?: string}> }} daySummary
@@ -74,6 +134,10 @@ export function lessonLineForDay(daySummary = {}) {
   if (events.some((e) => e?.type === 'late')) {
     return 'Today taught: a missed payment costs more than the fee — the credit hit follows you to every future loan quote.';
   }
+  if (events.some((e) => e?.type === 'estate_foreclosure')
+    || (Array.isArray(daySummary.estateEvents) && daySummary.estateEvents.some((e) => e?.type === 'estate_foreclosure'))) {
+    return 'Today taught: unpaid property credit ends in foreclosure — leverage on a residence is a loan with teeth, not free cash.';
+  }
   if (events.some((e) => e?.type === 'reserve')) {
     return 'Today taught: lenders read company debt above cash as thin reserves — hold a cash cushion against what you owe.';
   }
@@ -82,6 +146,12 @@ export function lessonLineForDay(daySummary = {}) {
   }
   if (events.some((e) => e?.type === 'paid_off')) {
     return 'Today taught: a loan paid off in full is the cheapest credit boost there is — aged, finished debt reads as trust.';
+  }
+  if (events.some((e) => e?.type === 'house_bank_used')) {
+    return 'Today taught: sticking with a house lender compounds — loyalty shows up as quieter APR and a little more room, not a locked door.';
+  }
+  if (events.some((e) => e?.type === 'relationship_preferred')) {
+    return 'Today taught: Preferred status is earned by aging debt on time — relationship is a rate you build, not a button you click.';
   }
   const majors = Array.isArray(daySummary.majorEvents) ? daySummary.majorEvents : [];
   if (majors.some((id) => id === 'fed_hike' || id === 'fed_cut')) {
@@ -134,6 +204,26 @@ export function pendingLoanTeachMoments(loanEvents = [], meta = {}) {
   }
   if (events.some((e) => e?.type === 'payment') && !teachMomentShown(meta, 'firstInterest')) {
     ids.push('firstInterest');
+  }
+  if (events.some((e) => e?.type === 'relationship_preferred')
+    && !teachMomentShown(meta, 'firstPreferredLender')) {
+    ids.push('firstPreferredLender');
+  }
+  return ids;
+}
+
+/**
+ * Estate-day teach moments (foreclosure, etc.) — merge with loan queue at day end.
+ * @param {Array<{type?: string}>} estateEvents
+ * @param {object} meta
+ * @returns {string[]}
+ */
+export function pendingEstateTeachMoments(estateEvents = [], meta = {}) {
+  const ids = [];
+  const events = Array.isArray(estateEvents) ? estateEvents : [];
+  if (events.some((e) => e?.type === 'estate_foreclosure')
+    && !teachMomentShown(meta, 'firstForeclosure')) {
+    ids.push('firstForeclosure');
   }
   return ids;
 }

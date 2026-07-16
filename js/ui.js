@@ -33,7 +33,7 @@ export {
 } from './ui/listings.js';
 export { showStaffHistory };
 import { renderAchievements } from './ui/achievements.js';
-import { renderFinance, setLoanDraftAmount } from './ui/finance.js';
+import { renderFinance, setLoanDraftAmount, closeLoanConfirmOverlay } from './ui/finance.js';
 import { renderPerks } from './ui/perks.js';
 import { renderVault } from './ui/vault.js';
 import { renderEstates } from './ui/estates.js';
@@ -69,7 +69,7 @@ import {
   escapeAttr, escapeHtml, fmt, fmtPnL, fmtSignedMoney, quoteForDisplay, setText,
 } from './ui/shared.js';
 export { fmt, fmtPnL } from './ui/shared.js';
-import { getFirmDebt } from './finance.js';
+import { getFirmDebt, getTotalBankDeposits } from './finance.js';
 import { getVaultItem, getVaultBookValue } from './vault.js';
 import { syncEstateDerived, getHighestOwnedEstate } from './estates.js';
 import { getPlayerStanding } from './meta.js';
@@ -138,6 +138,7 @@ export function renderAll(state) {
       debt,
       vaultBook: getVaultBookValue(state),
       estateEquity: state.estateEquity,
+      bankDeposits: getTotalBankDeposits(state.finance),
     });
     renderEstates(state, { netWorth });
   }
@@ -240,7 +241,12 @@ function fillEquityPopover(el, state) {
   const b = getEquityBreakdown(state.portfolio, debt);
   const vaultBook = getVaultBookValue(state);
   const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
-  const displayTotal = getFirmNetWorth(state.portfolio, { debt, vaultBook, estateEquity });
+  const displayTotal = getFirmNetWorth(state.portfolio, {
+    debt,
+    vaultBook,
+    estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
+  });
   const debtCls = b.debt ? 'down' : '';
   const shortCls = b.shortUnrealized >= 0 ? 'up' : 'down';
   const uCls = b.unrealized >= 0 ? 'up' : 'down';
@@ -300,6 +306,7 @@ function updateStatPopovers(state) {
     debt,
     vaultBook: getVaultBookValue(state),
     estateEquity: state.estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
   });
   const licenses = Array.isArray(state.licenses) ? state.licenses : ['retail'];
   const rank = getHighestLicense(licenses);
@@ -360,7 +367,12 @@ function renderHeader(state) {
   const vaultBook = getVaultBookValue(state);
   const estateEquity = Math.max(0, Number(state.estateEquity) || 0);
   const cash = Number(portfolio.cash) || 0;
-  const firm = getFirmNetWorth(portfolio, { debt, vaultBook, estateEquity });
+  const firm = getFirmNetWorth(portfolio, {
+    debt,
+    vaultBook,
+    estateEquity,
+    bankDeposits: getTotalBankDeposits(finance),
+  });
   setText('cash', fmt(cash));
   setText('equity', fmt(firm));
   setText('pnl', fmtPnL(getUnrealizedPnL(portfolio)));
@@ -959,6 +971,7 @@ export function switchView(viewId) {
     hideGlossTip();
     hideStatPopovers();
     hideAchievementCursorTip();
+    closeLoanConfirmOverlay();
     viewChangeListeners.forEach((fn) => {
       try { fn(next, prev); } catch { /* ignore listener errors */ }
     });

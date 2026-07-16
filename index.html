@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/styles.css?v=1.0.43">
+  <link rel="stylesheet" href="css/styles.css?v=1.0.44">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <script>
     if (typeof echarts === 'undefined') {
@@ -602,14 +602,14 @@
         <div class="finance-view">
           <header class="finance-hero">
             <div>
-              <h2 class="finance-title">Financing Desk</h2>
-              <p class="finance-sub" data-gloss="credit-score">Live APR quotes from your credit, utilization, and bank relationship. Hold a loan through one day-end interest tick before payoff builds score — miss payments and it tanks fast.</p>
+              <h2 class="finance-title">Financing desk</h2>
+              <p class="finance-sub" data-gloss="credit-score">Live APR quotes from your credit, utilization, and bank relationship.</p>
             </div>
-            <div class="finance-gauges" id="finance-gauges" data-gloss="credit-score"></div>
           </header>
-          <div class="credit-pills" id="credit-pills"></div>
+          <div class="finance-banking-bar" id="finance-banking-bar"></div>
           <nav class="fin-tabs" id="fin-tabs" role="tablist" aria-label="Financing Desk sections">
             <button type="button" class="fin-tab is-active" role="tab" data-fin-tab="lenders" aria-selected="true">Lenders</button>
+            <button type="button" class="fin-tab" role="tab" data-fin-tab="accounts" aria-selected="false">Accounts</button>
             <button type="button" class="fin-tab" role="tab" data-fin-tab="loans" aria-selected="false">Active Loans</button>
             <button type="button" class="fin-tab" role="tab" data-fin-tab="history" aria-selected="false">Payment History</button>
             <button type="button" class="fin-tab" role="tab" data-fin-tab="builder" aria-selected="false">Credit Builder</button>
@@ -617,6 +617,12 @@
 
           <div class="fin-tab-panel" id="fin-panel-lenders" data-fin-panel="lenders" role="tabpanel">
             <div id="bank-list" class="bank-list"></div>
+          </div>
+
+          <div class="fin-tab-panel hidden" id="fin-panel-accounts" data-fin-panel="accounts" role="tabpanel" hidden>
+            <h4 class="finance-col-title">Checking &amp; savings</h4>
+            <p class="finance-sub accounts-atm-lede">Park reserves at a lender — desk cash drives Available Buying Power; bank cash does not. Savings earns a quiet game-scaled APY; checking is float only.</p>
+            <div id="accounts-atm" class="accounts-atm"></div>
           </div>
 
           <div class="fin-tab-panel hidden" id="fin-panel-loans" data-fin-panel="loans" role="tabpanel" hidden>
@@ -680,6 +686,17 @@
                   <button type="button" class="btn btn-accent" id="settings-quick-save">Save now</button>
                   <button type="button" class="btn" id="settings-goto-trade">Back to Trade</button>
                 </div>
+              </div>
+              <div class="settings-block">
+                <h3>Share play link</h3>
+                <p class="muted-text">Host a temporary public link while this desk is open. Friends click it in Chrome/Edge — no install. Each person gets their own save. The link stops when you quit or hit Stop sharing.</p>
+                <div class="settings-actions">
+                  <button type="button" class="btn btn-accent" id="settings-share-start">Create link</button>
+                  <button type="button" class="btn" id="settings-share-copy" disabled>Copy link</button>
+                  <button type="button" class="btn" id="settings-share-stop" disabled>Stop sharing</button>
+                </div>
+                <input type="text" id="settings-share-url" class="settings-share-url hidden" readonly aria-label="Public play link">
+                <p class="muted-text" id="settings-share-status" aria-live="polite">Not sharing. Create a link while this desk is running.</p>
               </div>
               <div class="settings-block">
                 <h3>Desk access</h3>
@@ -926,6 +943,21 @@
       <div id="help-guide" class="help-scroll"></div>
       <div id="help-glossary" class="help-scroll hidden"></div>
       <button class="btn btn-accent btn-block" id="help-got-it">Got it</button>
+    </div>
+  </div>
+
+  <!-- Loan confirm (term pick + underwriting preview) -->
+  <div id="loan-confirm-overlay" class="modal-overlay blur-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="loan-confirm-title">
+    <div class="modal loan-confirm-modal">
+      <div class="help-section-label" id="loan-confirm-label">Finance</div>
+      <h2 id="loan-confirm-title">Confirm loan application</h2>
+      <p class="loan-confirm-sub" id="loan-confirm-sub"></p>
+      <div class="loan-confirm-body" id="loan-confirm-body"></div>
+      <p class="loan-confirm-footnote" id="loan-confirm-footnote"></p>
+      <div class="loan-confirm-actions">
+        <button type="button" class="btn btn-block" id="loan-confirm-cancel">Cancel</button>
+        <button type="button" class="btn btn-accent btn-block" id="loan-confirm-ok">Confirm borrow</button>
+      </div>
     </div>
   </div>
 

@@ -179,7 +179,15 @@ export function confirmOrder(state, draft, deps = {}) {
   );
   const result = side === 'long'
     ? buyLong(state.portfolio, listing.sym, orderShares, fillPx, risk, state.perks, state.finance?.personalCredit)
-    : openShort(state.portfolio, listing.sym, orderShares, fillPx, state.perks.includes('margin'), risk);
+    : openShort(
+      state.portfolio,
+      listing.sym,
+      orderShares,
+      fillPx,
+      state.perks.includes('margin'),
+      risk,
+      state.finance?.personalCredit,
+    );
   if (!result.ok) {
     return {
       ...alertResult(result.msg, 'Trade failed', { force: true }),
@@ -248,6 +256,7 @@ export function processPendingOrders(state, deps = {}) {
     coverShort,
     hasMargin: state.perks.includes('margin'),
     perks: state.perks,
+    personalCredit: state.finance?.personalCredit,
     applySlippage: deps.applySlippage,
   };
 

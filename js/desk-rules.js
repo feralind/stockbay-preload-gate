@@ -78,3 +78,20 @@ export function marginBuyingPowerMultiplier(personalCredit) {
   if (score >= 580) return 1.5;
   return 1;
 }
+
+/** Poor personal credit open-risk scale (Fair+ stays 1.0). */
+export const POOR_OPEN_RISK_SCALE = 0.7;
+
+/**
+ * Quiet open-risk scale on deployable desk capital.
+ * Fair+ (and missing score) → 1.0; Poor (&lt;580) → 0.70.
+ * Stacks with marginBuyingPowerMultiplier — Poor Margin is 1.0× × 0.70, not leverage.
+ * @param {number} [personalCredit]
+ * @returns {number}
+ */
+export function personalCreditOpenScale(personalCredit) {
+  const score = Number(personalCredit);
+  if (!Number.isFinite(score)) return 1;
+  if (score < 580) return POOR_OPEN_RISK_SCALE;
+  return 1;
+}

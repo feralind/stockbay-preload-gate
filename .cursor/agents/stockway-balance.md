@@ -20,15 +20,17 @@ Compressed real-life trading desk: teach honest money habits; celebrate process;
 
 ### Credit-scaled Available Buying Power
 
-- Header/order UI label: **Available Buying Power** (cash stays raw cash). Implemented in `js/portfolio.js` `getBuyingPower` + `js/desk-rules.js` `marginBuyingPowerMultiplier`.
+- Header/order UI label: **Available Buying Power** (desk cash stays raw cash). Implemented in `js/portfolio.js` `getBuyingPower` + `js/desk-rules.js` `marginBuyingPowerMultiplier` + `personalCreditOpenScale`.
 - With **Margin perk**, long BP multiplier from **personal credit** (hard law):
   - ≥ 670 (Good+ / Exceptional): **2.0×**
   - 580–669 (Fair): **1.5×**
   - &lt; 580 (Poor): **1.0×** (no leverage boost)
-- Without Margin: flat **1.0×** spendable cash at every credit score.
+- **Open-risk scale** (always): Fair+ → **1.0**; Poor (&lt;580) → **0.70** on longs and shorts. Effective Poor + Margin = **0.70×** desk cash.
+- Without Margin + Fair+: flat **1.0×** desk cash; Poor still **0.70×**.
 - Options stay **cash-only** (`getSpendableCash`) — untouched by credit scaling.
+- **Bank deposits** (checking/savings) count in firm NW via `getTotalBankDeposits` — **never** in Available Buying Power.
 - Wire via existing callers (`renderHeader`, trade UI, engine) with personal credit — **in-place `setText`**, no panel remounts.
-- Harness (`BALANCE_DAYS=1000`): synthetic long size dampens when personal credit falls below Good (670); tracks poor-personal days (&lt;580) and asserts held licenses are never stripped.
+- Harness (`BALANCE_DAYS=1000`): synthetic long size dampens when personal credit falls below Good (670) and mirrors Poor 0.70; tracks poor-personal days (&lt;580) and asserts held licenses are never stripped.
 
 ### 30-second revenge cool-down (wall clock)
 
@@ -55,7 +57,8 @@ Compressed real-life trading desk: teach honest money habits; celebrate process;
 - Do not add AFK money printers or easy APR.
 - StockWay UI: never remount whole panels every tick (`renderAll` rules). Fingerprint keys must not include live cash/NW. Staff/HR wage tweaks must not brick day-1 Intern after HR (~$500 start); prefer mid/late role nudges.
 - Cash house buy can stay allowed; **property HELOC / leverage** must respect credit (realism).
-- Prefer gating leverage (BP mult / cool-down) over inventing a dual cash/bank / T+1 ledger unless the user asks.
+- Prefer gating leverage (BP mult / cool-down / bank parking) over inventing a T+1 settlement ledger unless the user asks.
+- Checking = 0% APY float; savings APY is **game-scaled** (cap ~1.5%) — never literal HYSA rates that AFK-print.
 
 ## E2 package (reference)
 

@@ -1,7 +1,7 @@
 // @ts-check
 /** Clamp and validate run data on load / import — blocks save-edit god-mode exploits. */
 import { CONFIG, PERKS } from './config.js';
-import { createFinanceState, getFirmDebt } from './finance.js';
+import { createFinanceState, getFirmDebt, sanitizeBankRelationships, getTotalBankDeposits } from './finance.js';
 import { createMetaState } from './meta.js';
 import { normalizePerkCalloutsShown } from './onboarding-walkthrough.js';
 import { KNOWN_VAULT_IDS, VAULT_COST_BY_ID, getVaultBookValue } from './vault.js';
@@ -202,6 +202,7 @@ function sanitizePortfolio(portfolio) {
     longTermGain: Math.max(0, Number(ta.longTermGain) || 0),
     shortTermLoss: Math.max(0, Number(ta.shortTermLoss) || 0),
     longTermLoss: Math.max(0, Number(ta.longTermLoss) || 0),
+    interestIncome: Math.max(0, Number(ta.interestIncome) || 0),
   };
   p.taxOwed = Math.max(0, Number(p.taxOwed) || 0);
 
@@ -333,6 +334,7 @@ export function sanitizeRunData(run) {
     estateCreditUsed: out.estateCreditUsed,
     estateCashOutCount: out.estateCashOutCount,
     estateLastCashOutDay: out.estateLastCashOutDay,
+    estateCreditMissDays: out.estateCreditMissDays,
   });
   out.estateOwned = estate.estateOwned;
   out.estateSpentTotal = estate.estateSpentTotal;
@@ -345,6 +347,7 @@ export function sanitizeRunData(run) {
   out.estateUpkeepPerDay = estate.estateUpkeepPerDay;
   out.estateCashOutCount = estate.estateCashOutCount;
   out.estateLastCashOutDay = estate.estateLastCashOutDay;
+  out.estateCreditMissDays = estate.estateCreditMissDays;
 
   const collectionOpts = {
     blackMarketPool: BLACKMARKET_ITEM_POOL,
@@ -381,6 +384,7 @@ export function sanitizeRunData(run) {
       debt,
       vaultBook: getVaultBookValue(out),
       estateEquity: out.estateEquity,
+      bankDeposits: getTotalBankDeposits(out.finance),
     });
     const megaCtx = { netWorth, ...collectionOpts };
     m.megaGoalsClaimed = sanitizeMegaGoalsClaimed(m.megaGoalsClaimed, out, megaCtx);
@@ -431,6 +435,7 @@ export function sanitizeRunData(run) {
     const lastLate = Math.floor(Number(f.lastLateDay));
     f.lastLateDay = Number.isFinite(lastLate) && lastLate >= 1 ? lastLate : null;
     if (!Array.isArray(f.loans)) f.loans = [];
+    sanitizeBankRelationships(f);
     out.finance = f;
   }
 

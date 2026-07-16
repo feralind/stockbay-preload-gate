@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const https = require('https');
 const crypto = require('crypto');
+const shareTunnel = require('./share-tunnel.cjs');
 
 const PREFERRED_PORTS = [3847, 8080, 3848];
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0';
@@ -197,14 +198,54 @@ function isValidSymbol(sym) {
   return /^[A-Z0-9.\-]{1,16}$/.test(String(sym || '').toUpperCase());
 }
 
+function isLoopbackReq(req) {
+  const ip = String(req.socket?.remoteAddress || '');
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
 function createRequestHandler(root) {
   return async (req, res) => {
     try {
       const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
       const pathname = url.pathname;
+      const local = isLoopbackReq(req);
 
       if (pathname === '/api/config') {
-        sendJson(res, 200, { yahoo: true, finnhub: !!finnhubKey, port: PORT, app: 'StockWay', shutdownToken: SHUTDOWN_TOKEN });
+        const cfg = { yahoo: true, finnhub: !!finnhubKey, port: PORT, app: 'StockWay', shareAvailable: true };
+        if (local) cfg.shutdownToken = SHUTDOWN_TOKEN;
+        sendJson(res, 200, cfg);
+        return;
+      }
+
+      if (pathname === '/api/share/status') {
+        if (!local) { sendJson(res, 403, { error: 'Host only' }); return; }
+        sendJson(res, 200, shareTunnel.getStatus());
+        return;
+      }
+
+      if (pathname === '/api/share/start') {
+        if (!local) { sendJson(res, 403, { error: 'Host only' }); return; }
+        if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST required' }); return; }
+        try {
+          const status = await shareTunnel.startTunnel(PORT, app.getPath('userData'));
+          sendJson(res, 200, status);
+        } catch (err) {
+          sendJson(res, 502, {
+            active: false,
+            url: null,
+            status: 'error',
+            error: err?.message || 'Could not create share link',
+            provider: null,
+            detail: null,
+          });
+        }
+        return;
+      }
+
+      if (pathname === '/api/share/stop') {
+        if (!local) { sendJson(res, 403, { error: 'Host only' }); return; }
+        if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST required' }); return; }
+        sendJson(res, 200, await shareTunnel.stopTunnel());
         return;
       }
 
@@ -253,6 +294,7 @@ function createRequestHandler(root) {
       }
 
       if (pathname === '/api/shutdown') {
+        if (!local) { sendJson(res, 403, { error: 'Forbidden' }); return; }
         if (req.method !== 'POST') { sendJson(res, 405, { error: 'POST required' }); return; }
         const token = String(req.headers['x-stockway-shutdown'] || '');
         if (token !== SHUTDOWN_TOKEN) { sendJson(res, 403, { error: 'Forbidden' }); return; }
@@ -510,9 +552,11 @@ if (gotLock) {
   app.whenReady().then(createMainWindow);
   app.on('before-quit', () => {
     isQuitting = true;
+    try { shareTunnel.stopTunnel(); } catch (_) {}
     closeServer();
   });
   app.on('window-all-closed', () => {
+    try { shareTunnel.stopTunnel(); } catch (_) {}
     closeServer();
     if (process.platform !== 'darwin') app.quit();
   });

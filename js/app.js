@@ -62,7 +62,8 @@ import {
 } from './onboarding-walkthrough.js';
 import {
   createFinanceState, takeLoan, makeLoanPayment, quoteLoan, getFirmDebt,
-  BANKS, bankDebt, otherBanksDebt, typeDebt,
+  normalizeLoanTermDays, firmStrengthBoostPct, getTotalBankDeposits,
+  depositToBank, withdrawFromBank, transferBankInternal,
 } from './finance.js';
 import {
   createMetaState, recordEquityPoint, rollDailyChallenge,
@@ -73,7 +74,8 @@ import {
 } from './licenses.js';
 import {
   TEACH_MOMENTS, teachIdForLicense, markTeachMoment, pendingLoanTeachMoments,
-  teachMomentShown, detectIvCrush, heldThroughEarnings,
+  pendingEstateTeachMoments,
+  teachMomentShown, detectIvCrush, heldThroughEarnings, resolveCoachTarget,
 } from './teach-moments.js';
 import { getVaultItem, getVaultSlotForItem, purchaseVaultItem, getVaultBookValue, togglePledgedVaultItem, getVaultPledgedAppraisal, sanitizeVaultPledged } from './vault.js';
 import {
@@ -115,10 +117,12 @@ import {
   pauseHotListingRotation, scheduleHotListingResume, isHotListingRotationPaused,
 } from './ui.js';
 import { patchBuySuspendControls } from './ui/trade.js';
-import { initGlossaryTooltips } from './glossary-tooltips.js';
+import { initGlossaryTooltips, setGlossLiveContext } from './glossary-tooltips.js';
 import { archiveRun } from './leaderboard.js';
 import { toast, clearToasts, showAlert, showConfirm, bindDialogUI, deferDaySummary, isCoachQuiet, clearDeferredNotifications } from './notify.js';
 import { bindSaveIO } from './save-io.js';
+import { bindSharePlay } from './share-play.js';
+import { showLoanConfirm, closeLoanConfirmOverlay, isLoanConfirmOpen } from './ui/finance.js';
 import {
   DESK_WIPE_FLAG_KEY,
   markDeskWipe,
@@ -183,6 +187,7 @@ const state = {
   estateEquityExtracted: 0,
   estateCreditUsed: 0,
   estateCreditMax: 0,
+  estateCreditMissDays: 0,
   resilienceRating: 0,
   estateIncomePerDay: 0,
   estateUpkeepPerDay: 0,
@@ -198,13 +203,14 @@ function firmDebt() {
   return getFirmDebt(state.finance, state.estateCreditUsed);
 }
 
-/** Trading equity − firm debt + vault book + estate equity. */
+/** Trading equity − firm debt + vault book + estate equity + bank deposits. */
 function firmNetWorth() {
   syncEstateDerived(state);
   return getFirmNetWorth(state.portfolio, {
     debt: firmDebt(),
     vaultBook: getVaultBookValue(state),
     estateEquity: state.estateEquity,
+    bankDeposits: getTotalBankDeposits(state.finance),
   });
 }
 
@@ -413,6 +419,7 @@ function buildSaveData() {
     estateUpkeepPerDay: state.estateUpkeepPerDay,
     estateCashOutCount: state.estateCashOutCount,
     estateLastCashOutDay: state.estateLastCashOutDay,
+    estateCreditMissDays: state.estateCreditMissDays || 0,
     collectionClaims: state.collectionClaims,
     collectionRewardCashTotal: state.collectionRewardCashTotal,
     aiChat: getAiChatHistory(),
@@ -843,6 +850,7 @@ function loadGame() {
         estateCreditUsed: data.estateCreditUsed,
         estateCashOutCount: data.estateCashOutCount,
         estateLastCashOutDay: data.estateLastCashOutDay,
+        estateCreditMissDays: data.estateCreditMissDays,
       });
       Object.assign(state, estate);
     }
@@ -878,18 +886,31 @@ function noteProfitableShort(pnl) {
 }
 
 /**
- * One-shot teach moment: mark + show as a quiet coachmark (toast fallback).
+ * One-shot teach moment: mark + show as a quiet coachmark.
  * Quiet walkthrough/tour modes never mark it, so it can fire later.
+ * @param {string} id
+ * @param {string} text
+ * @param {string|null} [targetOverride] CSS selector or element id
  */
-function fireTeachMoment(id, text, targetId = null) {
+function fireTeachMoment(id, text, targetOverride = null) {
   if (!text || isCoachQuiet()) return false;
   const overlay = document.getElementById('onboard-overlay');
   if (overlay && !overlay.classList.contains('hidden')) return false;
   if (!markTeachMoment(state.meta, id)) return false;
   saveGame({ immediate: true });
-  const target = (targetId && document.getElementById(targetId)) || 'body';
+
+  const moment = TEACH_MOMENTS[id];
+  const preferView = moment?.preferView;
+  if (preferView) {
+    try { switchView(preferView); } catch (_) { /* ignore */ }
+    try { renderAll(state); } catch (_) { /* ignore */ }
+  }
+
+  const sel = targetOverride || moment?.target || null;
+  const target = resolveCoachTarget(sel);
+
   showCoachmark({
-    target,
+    target: target || undefined,
     text,
     showNext: true,
     onNext: () => hideCoachmark(),
@@ -901,7 +922,7 @@ function fireTeachMoment(id, text, targetId = null) {
 /** First realized losing close — losses are tuition, keep them small. */
 function maybeShowFirstLossTeach(pnl) {
   if (!(pnl < 0)) return;
-  fireTeachMoment('firstLoss', TEACH_MOMENTS.firstLoss.text, 'realized');
+  fireTeachMoment('firstLoss', TEACH_MOMENTS.firstLoss.text);
 }
 
 /**
@@ -916,13 +937,14 @@ function maybeArmRevengeCooloff(pnl) {
     debt,
     vaultBook: getVaultBookValue(state),
     estateEquity: Math.max(0, Number(state.estateEquity) || 0),
+    bankDeposits: getTotalBankDeposits(state.finance),
   });
   if (!shouldArmRevengeCooloff(pnl, nw)) return;
 
   armBuySuspend(state.portfolio);
   const first = !teachMomentShown(state.meta, 'firstRevengeCooloff');
   if (first) {
-    fireTeachMoment('firstRevengeCooloff', TEACH_MOMENTS.firstRevengeCooloff.text, 'btn-quick-long');
+    fireTeachMoment('firstRevengeCooloff', TEACH_MOMENTS.firstRevengeCooloff.text);
   } else {
     toast('Desk cool-down: new opens locked 30s after a heavy loss', { type: 'warn' });
   }
@@ -1608,7 +1630,6 @@ function bindState() {
 
   state.onBorrow = async (bankId, type, amount) => {
     const day = getDayCount();
-    const bank = BANKS.find((b) => b.id === bankId);
     const amt = Math.max(0, Math.round(Number(amount) || 0));
     state.vaultPledged = sanitizeVaultPledged(state.vaultPledged, state.vaultOwned);
     const collateralValue = getVaultPledgedAppraisal(state);
@@ -1618,51 +1639,22 @@ function bindState() {
       collateralIds: state.vaultPledged.slice(),
       firmStrength,
     };
-    const preview = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
-    const debtHere = preview.debtHere ?? bankDebt(state.finance, bankId, type);
-    const debtElsewhere = preview.debtElsewhere ?? otherBanksDebt(state.finance, bankId, type);
-    const totalType = preview.totalTypeDebt ?? typeDebt(state.finance, type);
-    const bankLabel = preview.bank?.name || bank?.name || 'Bank';
-    const strengthPct = preview.strengthPct ?? 0;
 
-    const debtLine = `
-      <br><span style="color:var(--muted);font-size:12px">
-        Your ${type} debt — here: <strong>$${Math.round(debtHere).toLocaleString()}</strong>
-        · other banks: <strong>$${Math.round(debtElsewhere).toLocaleString()}</strong>
-        · total: <strong>$${Math.round(totalType).toLocaleString()}</strong>
-      </span>`;
-
-    const strengthLine = strengthPct > 0
-      ? `<br><span style="color:var(--muted);font-size:12px">Firm strength (net worth): <strong>+${strengthPct}%</strong> facility room</span>`
-      : `<br><span style="color:var(--muted);font-size:12px">Firm strength: base facility (grow net worth to unlock larger lines)</span>`;
-
-    const body = preview.ok
-      ? `<strong>${bankLabel} — ${type} loan</strong><br>
-         Amount: <strong>$${amt.toLocaleString()}</strong><br>
-         Your APR: <strong>${preview.apr}%</strong> (${preview.tier}, credit ${preview.credit})<br>
-         Term: <strong>${preview.termDays} game days</strong>
-         · est. interest ~$${Math.round(preview.estimatedInterest).toLocaleString()}
-         · min auto-pay ~$${Number(preview.minDailyPayment || 0).toFixed(2)}/day
-         ${strengthLine}
-         ${collateralValue > 0 ? `<br><span style="color:var(--muted);font-size:12px">Vault collateral bonus: +$${Math.round(preview.collateralBonus || 0).toLocaleString()} ceiling (50% LTV)</span>` : ''}
-         ${debtLine}<br>
-         <span style="color:var(--muted);font-size:12px">Underwriting uses credit score, utilization, firm strength, and collateral — like a small-business loan review.</span>`
-      : `<strong>${bankLabel} — ${type} application</strong><br>
-         Amount requested: <strong>$${amt.toLocaleString()}</strong>
-         ${strengthLine}
-         ${debtLine}<br>
-         <span style="color:var(--muted);font-size:12px">Submit to see if underwriting approves this loan.</span>`;
-
-    const ok = await showConfirm(body, {
-      title: 'Confirm loan application',
-      label: 'FINANCE',
-      okText: preview.ok ? 'Confirm borrow' : 'Submit application',
-      cancelText: 'Cancel',
+    const pick = await showLoanConfirm({
+      bankId,
+      type: type === 'company' ? 'company' : 'personal',
+      amount: amt,
+      finance: state.finance,
+      gameDay: day,
+      collateralOpts,
     });
-    if (!ok) return;
+    if (!pick?.confirmed) return;
+
+    const termDays = normalizeLoanTermDays(pick.termDays, type);
+    const underwriteOpts = { ...collateralOpts, termDays };
 
     // Underwrite only after the player confirms — deny with a clear reason
-    const decision = quoteLoan(bankId, type, amt, state.finance, day, collateralOpts);
+    const decision = quoteLoan(bankId, type, amt, state.finance, day, underwriteOpts);
     if (!decision.ok) {
       sfxError();
       const denyDebt = `
@@ -1675,10 +1667,10 @@ function bindState() {
       return;
     }
 
-    const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day, collateralOpts);
+    const r = takeLoan(bankId, type, amt, state.finance, state.portfolio, day, underwriteOpts);
     if (r.ok) {
       sfxSuccess();
-      toast(`Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}%`, { type: 'success' });
+      toast(`Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}% · ${r.loan.termDays}d`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Borrowed $${amt.toLocaleString()} @ ${r.loan.apr}% APR` };
       saveGame();
       renderAll(state);
@@ -1698,10 +1690,61 @@ function bindState() {
         : (r.creditDelta ? ` · credit +${r.creditDelta}` : '');
       toast(`Paid $${r.paid.toFixed(2)} · remaining $${r.remaining.toFixed(2)}${creditNote}`, { type: 'success' });
       state.apiStatus = { mode: 'online', label: `Paid $${r.paid.toFixed(2)} · remaining $${r.remaining.toFixed(2)}` };
+      const relEvents = Array.isArray(r.loanEvents) ? r.loanEvents : [];
+      for (const teachId of pendingLoanTeachMoments(relEvents, state.meta)) {
+        const moment = TEACH_MOMENTS[teachId];
+        if (moment) fireTeachMoment(teachId, moment.text, moment.target || null);
+      }
       saveGame();
       checkAchievements();
       renderAll(state);
     } else { sfxError(); showAlert(r.msg, { title: 'Payment failed', label: 'FINANCE' }); }
+  };
+
+  state.onBankDeposit = (bankId, bucket, amount) => {
+    const day = getDayCount();
+    const r = depositToBank(state.finance, state.portfolio, bankId, bucket, amount, day);
+    if (r.ok) {
+      sfxSuccess();
+      toast(`Deposited $${r.amount.toFixed(2)} to ${bucket}`, { type: 'success' });
+      if (!teachMomentShown(state.meta, 'firstBankDeposit')) {
+        fireTeachMoment(
+          'firstBankDeposit',
+          'Desk cash is risk capital (Available Buying Power). Bank checking/savings are reserves — they still count toward net worth, but not buying power. Savings earns a quiet APY; interest shows up on Tax Day.',
+        );
+      }
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg || 'Deposit failed', { title: 'ATM', label: 'FINANCE' });
+    }
+  };
+
+  state.onBankWithdraw = (bankId, bucket, amount) => {
+    const r = withdrawFromBank(state.finance, state.portfolio, bankId, bucket, amount, getDayCount());
+    if (r.ok) {
+      sfxSuccess();
+      toast(`Withdrew $${r.amount.toFixed(2)} from ${bucket}`, { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg || 'Withdraw failed', { title: 'ATM', label: 'FINANCE' });
+    }
+  };
+
+  state.onBankInternal = (bankId, direction, amount) => {
+    const r = transferBankInternal(state.finance, bankId, direction, amount);
+    if (r.ok) {
+      sfxSuccess();
+      toast(direction === 'toSavings' ? 'Moved to savings' : 'Moved to checking', { type: 'success' });
+      saveGame();
+      renderAll(state);
+    } else {
+      sfxError();
+      showAlert(r.msg || 'Transfer failed', { title: 'ATM', label: 'FINANCE' });
+    }
   };
 }
 
@@ -1807,7 +1850,10 @@ let queuedLoanTeachIds = [];
 
 function handleDayEnd(day) {
   const result = runDayEndSettlement(state, day);
-  queuedLoanTeachIds = pendingLoanTeachMoments(result.loanEvents, state.meta);
+  queuedLoanTeachIds = [
+    ...pendingLoanTeachMoments(result.loanEvents, state.meta),
+    ...pendingEstateTeachMoments(result.estateEvents, state.meta),
+  ];
 
   if (result.bestRun?.isRecord) toast('New personal best equity!', { type: 'success' });
 
@@ -1820,16 +1866,25 @@ function handleDayEnd(day) {
     toast(`Repossessed: ${names}`, { type: 'warn' });
   }
 
+  for (const ev of result.estateEvents || []) {
+    if (ev?.type === 'estate_foreclosure') {
+      showAlert(
+        `Property credit stayed unpaid — <strong>${ev.assetName || 'an estate'}</strong> was foreclosed. Recovered $${Math.round(ev.recovered || 0).toLocaleString()} toward the line.`,
+        { title: 'Estate foreclosure', label: 'ESTATES' },
+      );
+      toast(ev.msg || 'Estate foreclosed', { type: 'warn' });
+    } else if (ev?.type === 'estate_foreclosure_warning') {
+      toast(ev.msg, { type: 'warn' });
+    } else if (ev?.msg && ev.type !== 'estate_credit_miss') {
+      toast(ev.msg, { type: ev.amount >= 0 ? 'info' : 'warn' });
+    }
+  }
+
   for (const ex of result.expiredOpts || []) {
     const label = ex.intrinsic > 0 ? `settled ITM +$${Math.round(ex.payout)}` : 'expired worthless';
     toast(`${ex.opt.sym} ${ex.opt.type.toUpperCase()} $${ex.opt.strike} ${label}`, {
       type: ex.pnl >= 0 ? 'success' : 'warn',
     });
-  }
-
-  for (const ev of result.estateEvents || []) {
-    if (!ev?.msg) continue;
-    toast(ev.msg, { type: ev.amount >= 0 ? 'info' : 'warn' });
   }
 
   state.daySummaryPending = result.daySummary;
@@ -1913,6 +1968,7 @@ async function init() {
       gmWelcome: () => document.getElementById('gm-overlay')?.classList.add('hidden'),
       daySummary: () => document.getElementById('day-summary-continue')?.click(),
       mobileNav: closeMobileNav,
+      loanConfirm: closeLoanConfirmOverlay,
     });
     bindSaveIO();
     bindVisibilityAutoPause((running) => setPauseButton(running));
@@ -1922,6 +1978,15 @@ async function init() {
     bindSettingsNav();
     bindStatPopovers();
     initGlossaryTooltips();
+    setGlossLiveContext(() => {
+      syncEstateDerived(state);
+      return {
+        finance: state.finance,
+        estateCreditUsed: state.estateCreditUsed,
+        vaultPledgedValue: getVaultPledgedAppraisal(state),
+        firmStrengthPct: firmStrengthBoostPct(firmNetWorth()),
+      };
+    });
     bindRightSidebarResize();
     bindLeftSidebarResize();
     bindProfileSettings(state);
@@ -2306,6 +2371,7 @@ async function init() {
       sfxSuccess();
       toast('Game saved', { type: 'success' });
     });
+    bindSharePlay();
     document.getElementById('settings-desk-code-submit')?.addEventListener('click', () => {
       void submitDeskAccessCode();
     });
